@@ -56,6 +56,29 @@ fn run(init: std.process.Init) !u8 {
         return 0;
     }
 
+    if (std.mem.eql(u8, cmd, "restart")) {
+        if (argv.len != 2) return invalidArguments("restart");
+        var child = std.process.spawn(io, .{
+            .argv = &.{ "systemctl", "--user", "restart", "sayall.service" },
+            .stdin = .ignore,
+            .stdout = .inherit,
+            .stderr = .inherit,
+        }) catch |err| {
+            std.debug.print("sayall: could not run systemctl ({s})\n", .{@errorName(err)});
+            return 1;
+        };
+        const term = child.wait(io) catch |err| {
+            std.debug.print("sayall: could not restart service ({s})\n", .{@errorName(err)});
+            return 1;
+        };
+        switch (term) {
+            .exited => |code| if (code != 0) return 1,
+            else => return 1,
+        }
+        try printLine(io, "SayAll restarted; configuration reloaded.");
+        return 0;
+    }
+
     if (std.mem.eql(u8, cmd, "toggle") or std.mem.eql(u8, cmd, "stop") or std.mem.eql(u8, cmd, "status")) {
         const is_toggle = std.mem.eql(u8, cmd, "toggle");
         if ((!is_toggle and argv.len != 2) or (is_toggle and argv.len > 3)) return invalidArguments(cmd);
@@ -304,6 +327,7 @@ fn usage() void {
         \\
         \\usage:
         \\  sayall daemon [--verbose]            run the daemon in the foreground
+        \\  sayall restart                       restart the systemd user service and reload config
         \\  sayall toggle [--raw]                toggle recording (raw = skip LLM cleanup)
         \\  sayall stop                          cancel an active recording
         \\  sayall status                        print daemon state

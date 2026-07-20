@@ -46,6 +46,17 @@ systemctl --user enable --now sayall sayall-hud
 Verify it works: `sayall status` → `idle`; `sayall transcribe some.wav` →
 transcript. Then press the bind, speak, press it again.
 
+After changing `~/.config/sayall/config.json`, restart the systemd user service
+to load the new configuration:
+
+```sh
+sayall restart
+```
+
+The HUD reconnects automatically. This command requires the recommended
+systemd user-service setup above; if running `sayall daemon` directly, stop and
+start that foreground process instead.
+
 View persistent transcription metrics:
 
 ```sh
