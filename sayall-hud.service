@@ -1,0 +1,13 @@
+[Unit]
+Description=SayAll recording HUD
+After=graphical-session.target sayall.service
+Requires=sayall.service
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/sayall-hud
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

@@ -8,5 +8,7 @@
         "build.zig.zon",
         "src",
         "ui",
+        "sayall.service",
+        "sayall-hud.service",
     },
 }

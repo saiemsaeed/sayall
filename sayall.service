@@ -1,0 +1,12 @@
+[Unit]
+Description=SayAll voice dictation daemon
+After=graphical-session.target pipewire.service
+
+[Service]
+ExecStart=%h/.local/bin/sayall daemon
+Restart=on-failure
+RestartSec=2
+RestartPreventExitStatus=78
+
+[Install]
+WantedBy=graphical-session.target
