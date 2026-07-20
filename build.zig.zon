@@ -10,5 +10,7 @@
         "ui",
         "sayall.service",
         "sayall-hud.service",
+        "README.md",
+        "docs",
     },
 }
