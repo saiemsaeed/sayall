@@ -27,6 +27,9 @@ character-normalized latency, stop-to-final p50/p95 and under-500 coverage, and
 per-region REST summaries. Nullable fields have no measured samples yet;
 `content_samples` reports coverage for word and character normalization.
 
+`get_capabilities` includes `streaming_stt`. Partial transcripts are not sent
+over protocol v1; output remains one finalized delivery after recording stops.
+
 Successful responses have `ok: true` and a structured `result`. Errors have
 `ok: false` and `error.code` plus `error.message`.
 

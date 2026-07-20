@@ -1,6 +1,12 @@
 .{
     .name = .sayall,
     .version = "0.1.0",
+    .dependencies = .{
+        .websocket = .{
+            .url = "git+https://github.com/karlseguin/websocket.zig.git#b70e733bc0d0ba0a98ff5fe5ef64d3017c85f369",
+            .hash = "websocket-0.1.0-ZPISdUoQBQC7zw1uSwbOEYdxZiTxNN4nf9RlWBsN0_Nd",
+        },
+    },
     .fingerprint = 0x4a48c7e83e40465c,
     .minimum_zig_version = "0.16.0",
     .paths = .{

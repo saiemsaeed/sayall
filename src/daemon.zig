@@ -8,7 +8,7 @@ const ipc = @import("ipc.zig");
 const metrics = @import("metrics.zig");
 const protocol = @import("protocol.zig");
 const recorder_mod = @import("recorder.zig");
-const deepgram = @import("stt/deepgram.zig");
+const deepgram_stream = @import("stt/deepgram_stream.zig");
 const groq = @import("llm/groq.zig");
 const typer = @import("typer.zig");
 const notify = @import("notify.zig");
@@ -21,6 +21,7 @@ const PipelineJob = struct {
     raw: bool,
     session_id: u64,
     stopped_at_awake_ms: i64,
+    stream: ?*deepgram_stream.Session,
 };
 
 const StateSnapshot = struct {
@@ -98,6 +99,7 @@ const Daemon = struct {
     session_id: u64 = 0,
     stage: Stage = .none,
     event_bus: events.EventBus = .{},
+    stream_session: ?*deepgram_stream.Session = null,
 
     fn lock(self: *Daemon) void {
         self.mutex.lockUncancelable(self.io);
@@ -151,6 +153,7 @@ const Daemon = struct {
                 .text_injection = true,
                 .clipboard_fallback = true,
                 .stats = self.metrics_store != null and self.cfg.metrics.expose_api,
+                .streaming_stt = self.cfg.stt.streaming,
             }) catch {};
             return;
         }
@@ -289,6 +292,17 @@ const Daemon = struct {
         self.stage = .none;
         self.rec_raw = raw;
         self.rec_started_ms = self.nowMs();
+        if (self.cfg.stt.streaming) {
+            self.stream_session = deepgram_stream.Session.start(
+                self.gpa,
+                self.io,
+                &self.cfg.stt,
+                self.rec.currentPath().?,
+            ) catch |err| blk: {
+                self.log("streaming setup failed: {s}; REST fallback armed", .{@errorName(err)});
+                break :blk null;
+            };
+        }
         self.unlock();
         self.publishState();
         if (meter_path) |path| {
@@ -320,9 +334,12 @@ const Daemon = struct {
         switch (self.state) {
             .recording => {
                 self.state = .stopping;
+                const stream_session = self.stream_session;
+                self.stream_session = null;
                 self.unlock();
                 self.publishState();
                 self.rec.cancel(self.gpa, self.io);
+                if (stream_session) |stream| stream.cancel();
                 self.lock();
                 self.state = .idle;
                 self.unlock();
@@ -361,8 +378,11 @@ const Daemon = struct {
         const rec = self.rec.stop(self.io) catch |err| {
             self.log("recorder stop failed: {s}", .{@errorName(err)});
             self.lock();
+            const stream_session = self.stream_session;
+            self.stream_session = null;
             self.state = .idle;
             self.unlock();
+            if (stream_session) |stream| stream.cancel();
             self.publishState();
             self.recordPreSttFailure();
             self.publishError("recorder_stop_failed", "Recording failed to stop");
@@ -371,12 +391,16 @@ const Daemon = struct {
         };
         self.lock();
         const session = self.session_id;
+        const stream_session = self.stream_session;
+        self.stream_session = null;
         self.unlock();
+        if (stream_session) |stream| stream.requestFinish();
         const job: PipelineJob = .{
             .path = rec.path,
             .raw = raw,
             .session_id = session,
             .stopped_at_awake_ms = self.nowMs(),
+            .stream = stream_session,
         };
         self.lock();
         self.state = .processing;
@@ -384,6 +408,7 @@ const Daemon = struct {
         self.unlock();
         self.publishState();
         const t = std.Thread.spawn(.{}, pipelineMain, .{ self, job }) catch {
+            if (stream_session) |stream| stream.cancel();
             Io.Dir.deleteFileAbsolute(self.io, job.path) catch {};
             self.gpa.free(job.path);
             self.lock();
@@ -468,6 +493,8 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
     var completion_reason: ?[]const u8 = null;
     var stt_attempted = false;
     var stt_latency_ms: u64 = 0;
+    var stream_session = job.stream;
+    defer if (stream_session) |stream| stream.cancel();
     defer {
         Io.Dir.deleteFileAbsolute(io, job.path) catch {};
         gpa.free(job.path);
@@ -534,27 +561,73 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
     d.setStage(.transcribing);
     completion_phase = "stt";
     stt_attempted = true;
-    const tracked = metrics.transcribeTracked(
-        gpa,
-        io,
-        d.metrics_store,
-        &d.cfg.stt,
-        wav,
-        d.cfg.verbose,
-        "daemon",
-        @intFromFloat(seconds * 1000.0),
-        job.stopped_at_awake_ms,
-    ) catch |err| {
-        completion_reason = "transcription_failed";
-        d.publishError("transcription_failed", "Transcription failed");
-        d.inform("SayAll", "Transcription failed");
-        d.log("stt failed: {s}", .{@errorName(err)});
-        return;
-    };
-    stt_latency_ms = tracked.latency_ms;
-    const transcript = tracked.transcript;
+    var maybe_transcript: ?[]u8 = null;
+    if (stream_session) |stream| {
+        const stream_result = stream.finish();
+        stream_session = null;
+        switch (stream_result) {
+            .success => |success| {
+                maybe_transcript = success.transcript;
+                stt_latency_ms = success.stop_to_final_ms;
+                metrics.recordCompletedTranscript(
+                    gpa,
+                    io,
+                    d.metrics_store,
+                    &d.cfg.stt,
+                    "daemon",
+                    @intFromFloat(seconds * 1000.0),
+                    "stream",
+                    success.transcript,
+                    success.latency_ms,
+                    success.stop_to_final_ms,
+                    success.connect_ms,
+                );
+                d.log("stream finalized in {d}ms; connected in {d}ms ({d} bytes)", .{
+                    success.stop_to_final_ms,
+                    success.connect_ms,
+                    success.transcript.len,
+                });
+            },
+            .failed => |failure| {
+                metrics.recordFailedStream(
+                    gpa,
+                    io,
+                    d.metrics_store,
+                    &d.cfg.stt,
+                    "daemon",
+                    @intFromFloat(seconds * 1000.0),
+                    failure.reason,
+                    failure.latency_ms,
+                );
+                d.log("stream failed after {d}ms ({s}); using REST fallback", .{ failure.latency_ms, failure.reason });
+            },
+        }
+    }
+
+    if (maybe_transcript == null) {
+        const tracked = metrics.transcribeTracked(
+            gpa,
+            io,
+            d.metrics_store,
+            &d.cfg.stt,
+            wav,
+            d.cfg.verbose,
+            "daemon",
+            @intFromFloat(seconds * 1000.0),
+            job.stopped_at_awake_ms,
+        ) catch |err| {
+            completion_reason = "transcription_failed";
+            d.publishError("transcription_failed", "Transcription failed");
+            d.inform("SayAll", "Transcription failed");
+            d.log("stt failed: {s}", .{@errorName(err)});
+            return;
+        };
+        stt_latency_ms = tracked.latency_ms;
+        maybe_transcript = tracked.transcript;
+        d.log("REST STT in {d}ms ({d} bytes)", .{ tracked.latency_ms, tracked.transcript.len });
+    }
+    const transcript = maybe_transcript.?;
     defer gpa.free(transcript);
-    d.log("stt in {d}ms ({d} bytes)", .{ tracked.latency_ms, transcript.len });
 
     if (transcript.len == 0) {
         completion_reason = "no_speech";

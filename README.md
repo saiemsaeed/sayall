@@ -78,11 +78,11 @@ Hyprland bind ──exec──▶ sayall toggle ──unix socket──▶ sayal
                                                   Rust/GTK recording HUD
                                                           │ toggle ON
                                                     spawn pw-record (raw PCM)
+                                                          │ 50-100 ms frames
+                                             WSS api.eu.deepgram.com/v1/listen
                                                           │ toggle OFF
-                                                    PCM → generated WAV
-                                                          │
-                                                 POST api.eu.deepgram.com/v1/listen
-                                                    ?model=nova-3&smart_format=true
+                                                 CloseStream → final text
+                                                          │ REST fallback uses WAV
                                                           │ raw transcript
                                                     POST Groq chat/completions (cleanup)
                                                           │ clean text
@@ -186,7 +186,9 @@ sayall/
     "api_key": "$DEEPGRAM_API_KEY",
     "model": "nova-3",
     "language": "en",
-    "region": "eu"
+    "region": "eu",
+    "streaming": true,
+    "stream_finalize_timeout_ms": 2000
   },
   "llm": {
     "provider": "groq",
@@ -222,12 +224,23 @@ Deepgram region is allow-listed to `global`, `eu`, or `au`. The regional
 endpoint changes data-processing location and network latency without changing
 credentials or the Nova-3 model.
 
+Streaming sends raw 16 kHz mono PCM while recording and inserts text only after
+Deepgram finalizes the stream. The complete local recording is retained until
+then and automatically uses regional REST transcription if connection,
+protocol, or finalization fails. Set `stt.streaming` to `false` to force REST.
+Socket connect, handshake, read, write, and finalization waits are bounded.
+Cancellation also stops waiting after a fixed deadline; a pathological system
+DNS resolver may leave its detached lookup worker alive until resolution ends.
+
 Metrics are stored at `$XDG_STATE_HOME/sayall/metrics-v2.json`, or
 `~/.local/state/sayall/metrics-v2.json`. Existing v1 counters and history are
 imported automatically. The directory is mode `0700`, files are mode `0600`,
 all-time counters are retained, and detailed metadata rotates after the
 configured number of entries. Normalized statistics use successful entries in
-that bounded history; legacy records have no word or character counts.
+that bounded history; legacy records have no word or character counts. Stream
+failures are recorded separately from the successful REST fallback. Provider
+latency covers the full provider operation; stream stop-to-final latency is
+also retained as a dedicated responsiveness metric.
 
 ## Hyprland Setup
 
@@ -242,12 +255,12 @@ bind = SUPER SHIFT, F9, exec, sayall toggle --raw
 
 ## Limitations
 
-- **Network deadlines** — provider requests are memory-bounded, but explicit
-  end-to-end HTTP cancellation deadlines are still roadmap work.
+- **REST network deadlines** — provider responses are memory-bounded, but an
+  explicit end-to-end REST cancellation deadline is still roadmap work.
 - **Wayland input** — direct output requires a compositor implementing the
   virtual-keyboard protocol used by `wtype`.
-- **No streaming STT in v1** — "text appears as you speak" needs Deepgram's
-  WebSocket API; deliberate v2 item. Batch Nova-3 lands stop→text in ~1–1.8s.
+- **Final-only output** — audio streams while recording, but text is inserted
+  only after Deepgram returns its final transcript.
 
 ## Success Criteria
 

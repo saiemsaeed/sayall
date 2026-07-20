@@ -10,6 +10,8 @@ pub const SttConfig = struct {
     language: []const u8 = "en",
     /// "global", "eu", or "au". Hosts are allow-listed in the provider.
     region: []const u8 = "global",
+    streaming: bool = true,
+    stream_finalize_timeout_ms: u32 = 2000,
 };
 
 pub const LlmConfig = struct {
@@ -88,6 +90,8 @@ pub fn validate(cfg: *const Config) ValidationError!void {
     if (!std.mem.eql(u8, cfg.stt.region, "global") and !std.mem.eql(u8, cfg.stt.region, "eu") and
         !std.mem.eql(u8, cfg.stt.region, "au"))
         return invalid("stt.region must be 'global', 'eu', or 'au'");
+    if (cfg.stt.stream_finalize_timeout_ms < 250 or cfg.stt.stream_finalize_timeout_ms > 10_000)
+        return invalid("stt.stream_finalize_timeout_ms must be between 250 and 10000");
     if (!std.mem.eql(u8, cfg.llm.base_url, "https://api.groq.com/openai/v1/chat/completions"))
         return invalid("llm.base_url must be the Groq HTTPS endpoint");
     if (!safeToken(cfg.stt.model) or !safeToken(cfg.stt.language) or !safeToken(cfg.llm.model))

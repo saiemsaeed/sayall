@@ -9,6 +9,7 @@ const events = @import("events.zig");
 const recorder = @import("recorder.zig");
 const protocol = @import("protocol.zig");
 const deepgram = @import("stt/deepgram.zig");
+const deepgram_stream = @import("stt/deepgram_stream.zig");
 const groq = @import("llm/groq.zig");
 
 pub fn main(init: std.process.Init) u8 {
@@ -233,13 +234,6 @@ fn printStats(io: Io, summary: metrics.Summary) !void {
         \\Recent p95:    {d} ms
         \\Under 500 ms:  {d}/{d} ({d:.1}%)
         \\
-        \\Transport comparison (successful history)
-        \\Global REST:   {d} calls, {d} ms avg
-        \\EU REST:       {d} calls, {d} ms avg
-        \\AU REST:       {d} calls, {d} ms avg
-        \\
-        \\History:       {d}/{d}
-        \\
     , .{
         summary.attempts,
         summary.successful,
@@ -264,12 +258,40 @@ fn printStats(io: Io, summary: metrics.Summary) !void {
         summary.stop_to_final_under_500,
         summary.stop_to_final_samples,
         summary.stop_to_final_under_500_percentage orelse 0,
+    });
+    try w.interface.print(
+        \\Transport comparison (successful history)
+        \\Global REST:   {d}/{d} ok, {d} ms avg
+        \\EU REST:       {d}/{d} ok, {d} ms avg
+        \\AU REST:       {d}/{d} ok, {d} ms avg
+        \\Global stream: {d}/{d} ok, {d} ms avg, {d} ms connect
+        \\EU stream:     {d}/{d} ok, {d} ms avg, {d} ms connect
+        \\AU stream:     {d}/{d} ok, {d} ms avg, {d} ms connect
+        \\
+        \\History:       {d}/{d}
+        \\
+    , .{
         summary.global_rest.samples,
+        summary.global_rest.attempts,
         summary.global_rest.average_latency_ms orelse 0,
         summary.eu_rest.samples,
+        summary.eu_rest.attempts,
         summary.eu_rest.average_latency_ms orelse 0,
         summary.au_rest.samples,
+        summary.au_rest.attempts,
         summary.au_rest.average_latency_ms orelse 0,
+        summary.global_stream.samples,
+        summary.global_stream.attempts,
+        summary.global_stream.average_latency_ms orelse 0,
+        summary.global_stream.average_connection_ms orelse 0,
+        summary.eu_stream.samples,
+        summary.eu_stream.attempts,
+        summary.eu_stream.average_latency_ms orelse 0,
+        summary.eu_stream.average_connection_ms orelse 0,
+        summary.au_stream.samples,
+        summary.au_stream.attempts,
+        summary.au_stream.average_latency_ms orelse 0,
+        summary.au_stream.average_connection_ms orelse 0,
         summary.history_entries,
         summary.history_limit,
     });
@@ -298,6 +320,7 @@ test {
     _ = events;
     _ = recorder;
     _ = deepgram;
+    _ = deepgram_stream;
     _ = groq;
     _ = metrics;
     _ = protocol;

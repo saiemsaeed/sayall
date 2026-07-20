@@ -9,6 +9,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const websocket_dep = b.dependency("websocket", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    mod.addImport("websocket", websocket_dep.module("websocket"));
 
     const exe = b.addExecutable(.{
         .name = "sayall",

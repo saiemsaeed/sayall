@@ -46,6 +46,7 @@ pub const Record = struct {
     stop_to_final_ms: ?u64 = null,
     word_count: ?u64 = null,
     character_count: ?u64 = null,
+    connection_ms: ?u64 = null,
 };
 
 pub const State = struct {
@@ -72,14 +73,18 @@ pub const CompletionMetadata = struct {
     stop_to_final_ms: ?u64 = null,
     word_count: ?u64 = null,
     character_count: ?u64 = null,
+    connection_ms: ?u64 = null,
 };
 
 pub const TransportSummary = struct {
+    attempts: usize,
     samples: usize,
+    failed: usize,
     average_latency_ms: ?u64,
     p50_latency_ms: ?u64,
     p95_latency_ms: ?u64,
     realtime_factor: ?f64,
+    average_connection_ms: ?u64,
 };
 
 pub const Summary = struct {
@@ -109,6 +114,9 @@ pub const Summary = struct {
     global_rest: TransportSummary,
     eu_rest: TransportSummary,
     au_rest: TransportSummary,
+    global_stream: TransportSummary,
+    eu_stream: TransportSummary,
+    au_stream: TransportSummary,
     history_entries: usize,
     history_limit: u32,
 };
@@ -172,6 +180,69 @@ pub fn transcribeTracked(
         }) catch {};
     };
     return .{ .transcript = transcript, .latency_ms = elapsed, .outcome = outcome };
+}
+
+pub fn recordCompletedTranscript(
+    gpa: Allocator,
+    io: Io,
+    store: ?Store,
+    cfg: *const config.SttConfig,
+    source: []const u8,
+    audio_ms: u64,
+    transport: []const u8,
+    transcript: []const u8,
+    latency_ms: u64,
+    stop_to_final_ms: u64,
+    connection_ms: u64,
+) void {
+    const metrics_store = store orelse return;
+    const id = metrics_store.begin(gpa, io, .{
+        .source = source,
+        .provider = cfg.provider,
+        .model = cfg.model,
+        .language = cfg.language,
+        .audio_ms = audio_ms,
+        .region = cfg.region,
+        .transport = transport,
+    }) catch return;
+    defer gpa.free(id);
+    const outcome: Outcome = if (transcript.len == 0) .no_speech else .success;
+    metrics_store.complete(gpa, io, id, .{
+        .outcome = outcome,
+        .latency_ms = latency_ms,
+        .stop_to_final_ms = stop_to_final_ms,
+        .word_count = if (outcome == .success) countWords(transcript) else null,
+        .character_count = if (outcome == .success) countCharacters(transcript) else null,
+        .connection_ms = connection_ms,
+    }) catch {};
+}
+
+pub fn recordFailedStream(
+    gpa: Allocator,
+    io: Io,
+    store: ?Store,
+    cfg: *const config.SttConfig,
+    source: []const u8,
+    audio_ms: u64,
+    reason: []const u8,
+    latency_ms: u64,
+) void {
+    const metrics_store = store orelse return;
+    const id = metrics_store.begin(gpa, io, .{
+        .source = source,
+        .provider = cfg.provider,
+        .model = cfg.model,
+        .language = cfg.language,
+        .audio_ms = audio_ms,
+        .region = cfg.region,
+        .transport = "stream",
+    }) catch return;
+    defer gpa.free(id);
+    metrics_store.complete(gpa, io, id, .{
+        .outcome = .failed,
+        .reason = reason,
+        .latency_ms = latency_ms,
+    }) catch {};
 }
 
 fn countWords(text: []const u8) u64 {
@@ -376,6 +447,7 @@ const CompleteUpdate = struct {
             .stop_to_final_ms = self.completion.stop_to_final_ms,
             .word_count = self.completion.word_count,
             .character_count = self.completion.character_count,
+            .connection_ms = self.completion.connection_ms,
         }, self.history_limit) catch return error.OutOfMemory;
         account(&state.totals, self.completion.outcome, self.completion.latency_ms);
     }
@@ -545,6 +617,9 @@ pub fn summarize(gpa: Allocator, state: State, history_limit: u32) !Summary {
         .global_rest = try summarizeTransport(gpa, state.history, "global", "rest"),
         .eu_rest = try summarizeTransport(gpa, state.history, "eu", "rest"),
         .au_rest = try summarizeTransport(gpa, state.history, "au", "rest"),
+        .global_stream = try summarizeTransport(gpa, state.history, "global", "stream"),
+        .eu_stream = try summarizeTransport(gpa, state.history, "eu", "stream"),
+        .au_stream = try summarizeTransport(gpa, state.history, "au", "stream"),
         .history_entries = state.history.len,
         .history_limit = history_limit,
     };
@@ -556,11 +631,21 @@ fn summarizeTransport(gpa: Allocator, history: []const Record, region: []const u
     var count: usize = 0;
     var latency_sum: u64 = 0;
     var audio_sum: u64 = 0;
+    var connection_count: usize = 0;
+    var connection_sum: u64 = 0;
+    var attempts: usize = 0;
+    var failed: usize = 0;
     for (history) |record| {
-        if (record.outcome != .success) continue;
         const record_region = record.region orelse "global";
         const record_transport = record.transport orelse "rest";
         if (!std.mem.eql(u8, record_region, region) or !std.mem.eql(u8, record_transport, transport)) continue;
+        attempts += 1;
+        if (record.outcome == .failed) failed += 1;
+        if (record.connection_ms) |value| {
+            connection_count += 1;
+            connection_sum += value;
+        }
+        if (record.outcome != .success) continue;
         storage[count] = record.latency_ms;
         count += 1;
         latency_sum += record.latency_ms;
@@ -569,11 +654,14 @@ fn summarizeTransport(gpa: Allocator, history: []const Record, region: []const u
     const latencies = storage[0..count];
     std.mem.sort(u64, latencies, {}, std.sort.asc(u64));
     return .{
+        .attempts = attempts,
         .samples = count,
+        .failed = failed,
         .average_latency_ms = if (count == 0) null else latency_sum / count,
         .p50_latency_ms = percentile(latencies, 50),
         .p95_latency_ms = percentile(latencies, 95),
         .realtime_factor = ratio(latency_sum, audio_sum),
+        .average_connection_ms = if (connection_count == 0) null else connection_sum / connection_count,
     };
 }
 
@@ -600,13 +688,16 @@ test "summary separates outcomes and calculates latency" {
             .latency_max_ms = 800,
         },
         .history = &.{
-            .{ .attempt_id = "1", .started_at_unix_ms = 0, .source = "daemon", .provider = "deepgram", .model = "nova-3", .language = "en", .audio_ms = 1, .latency_ms = 200, .outcome = .success },
+            .{ .attempt_id = "1", .started_at_unix_ms = 0, .source = "daemon", .provider = "deepgram", .model = "nova-3", .language = "en", .audio_ms = 1, .latency_ms = 200, .outcome = .success, .region = "eu", .transport = "stream", .connection_ms = 40 },
             .{ .attempt_id = "2", .started_at_unix_ms = 0, .source = "daemon", .provider = "deepgram", .model = "nova-3", .language = "en", .audio_ms = 1, .latency_ms = 800, .outcome = .failed },
         },
     };
     const result = try summarize(std.testing.allocator, state, 1000);
     try std.testing.expectEqual(@as(?u64, 500), result.average_latency_ms);
     try std.testing.expectEqual(@as(u64, 2), result.successful);
+    try std.testing.expectEqual(@as(usize, 1), result.eu_stream.samples);
+    try std.testing.expectEqual(@as(usize, 1), result.eu_stream.attempts);
+    try std.testing.expectEqual(@as(?u64, 40), result.eu_stream.average_connection_ms);
 }
 
 test "store persists outcomes and rotates detailed history" {
