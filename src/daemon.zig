@@ -644,7 +644,7 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
     if (!job.raw and d.cfg.llm.enabled) {
         d.setStage(.cleaning);
         const t_llm = d.nowMs();
-        if (groq.cleanup(gpa, io, &d.cfg.llm, transcript, d.cfg.verbose)) |c| {
+        if (groq.cleanup(gpa, io, &d.cfg.llm, d.cfg.stt.keyterms, transcript, d.cfg.verbose)) |c| {
             cleaned = c;
             final = c;
             d.log("llm cleanup in {d}ms ({d} bytes)", .{ d.nowMs() - t_llm, c.len });

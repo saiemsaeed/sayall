@@ -8,6 +8,8 @@ pub const SttConfig = struct {
     api_key: []const u8 = "",
     model: []const u8 = "nova-3",
     language: []const u8 = "en",
+    /// Global Deepgram recognition hints, also preserved by LLM cleanup.
+    keyterms: []const []const u8 = &.{},
     /// "global", "eu", or "au". Hosts are allow-listed in the provider.
     region: []const u8 = "global",
     streaming: bool = true,
@@ -98,6 +100,21 @@ pub fn validate(cfg: *const Config) ValidationError!void {
         return invalid("model and language values may contain only letters, digits, '.', '-', and '_'");
     if (!safeSecret(cfg.stt.api_key) or !safeSecret(cfg.llm.api_key))
         return invalid("API keys may not contain whitespace or control characters");
+    if (cfg.stt.keyterms.len > 0 and !std.mem.eql(u8, cfg.stt.model, "nova-3") and
+        !std.mem.startsWith(u8, cfg.stt.model, "nova-3-"))
+        return invalid("stt.keyterms requires a Nova-3 model");
+    if (cfg.stt.keyterms.len > 100)
+        return invalid("stt.keyterms must not contain more than 100 entries");
+    var keyterm_bytes: usize = 0;
+    for (cfg.stt.keyterms) |keyterm| {
+        if (keyterm.len == 0 or keyterm.len > 256)
+            return invalid("each stt.keyterms entry must contain between 1 and 256 bytes");
+        for (keyterm) |c| if (std.ascii.isControl(c))
+            return invalid("stt.keyterms entries may not contain control characters");
+        keyterm_bytes += keyterm.len;
+    }
+    if (keyterm_bytes > 4096)
+        return invalid("stt.keyterms must not exceed 4096 bytes in total");
     if (!std.mem.eql(u8, cfg.output.method, "type") and !std.mem.eql(u8, cfg.output.method, "clipboard"))
         return invalid("output.method must be 'type' or 'clipboard'");
     if (cfg.recording.max_seconds == 0 or cfg.recording.max_seconds > 3600)
@@ -168,6 +185,7 @@ test "defaults are sensible" {
     const cfg: Config = .{};
     try std.testing.expectEqualStrings("deepgram", cfg.stt.provider);
     try std.testing.expectEqualStrings("nova-3", cfg.stt.model);
+    try std.testing.expectEqual(@as(usize, 0), cfg.stt.keyterms.len);
     try std.testing.expectEqualStrings("global", cfg.stt.region);
     try std.testing.expect(cfg.llm.enabled);
     try std.testing.expectEqualStrings("type", cfg.output.method);
@@ -177,5 +195,18 @@ test "defaults are sensible" {
 test "validation rejects unknown output methods" {
     var cfg: Config = .{};
     cfg.output.method = "typo";
+    try std.testing.expectError(error.InvalidConfig, validate(&cfg));
+}
+
+test "validation accepts phrases and rejects invalid keyterms" {
+    var cfg: Config = .{};
+    cfg.stt.keyterms = &.{ "SayAll", "Model Context Protocol" };
+    try validate(&cfg);
+
+    cfg.stt.keyterms = &.{"line\nbreak"};
+    try std.testing.expectError(error.InvalidConfig, validate(&cfg));
+
+    cfg.stt.keyterms = &.{"SayAll"};
+    cfg.stt.model = "nova-2";
     try std.testing.expectError(error.InvalidConfig, validate(&cfg));
 }

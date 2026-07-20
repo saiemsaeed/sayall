@@ -3,6 +3,7 @@ const websocket = @import("websocket");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const config = @import("../config.zig");
+const deepgram = @import("deepgram.zig");
 
 pub const Success = struct {
     transcript: []u8,
@@ -124,11 +125,13 @@ pub const Session = struct {
         defer client.deinit();
         if (self.cancel_requested.load(.acquire)) return error.Cancelled;
 
-        const path = try std.fmt.allocPrint(
+        const base_path = try std.fmt.allocPrint(
             self.gpa,
             "/v1/listen?model={s}&language={s}&encoding=linear16&sample_rate=16000&channels=1&smart_format=true&punctuate=true&interim_results=true&endpointing=300",
             .{ self.cfg.model, self.cfg.language },
         );
+        defer self.gpa.free(base_path);
+        const path = try deepgram.addKeyterms(self.gpa, base_path, self.cfg.keyterms);
         defer self.gpa.free(path);
         const headers = try std.fmt.allocPrint(self.gpa, "Host: {s}\r\nAuthorization: Token {s}\r\n", .{
             streamHost(self.cfg.region),

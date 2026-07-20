@@ -44,13 +44,15 @@ const ChatResponse = struct {
 
 /// Cleans up a raw transcript with an OpenAI-compatible chat completions API
 /// (Groq by default). Returns an owned slice on success.
-pub fn cleanup(gpa: Allocator, io: Io, cfg: *const config.LlmConfig, transcript: []const u8, verbose: bool) CleanupError![]u8 {
+pub fn cleanup(gpa: Allocator, io: Io, cfg: *const config.LlmConfig, keyterms: []const []const u8, transcript: []const u8, verbose: bool) CleanupError![]u8 {
     if (cfg.api_key.len == 0) return error.MissingApiKey;
 
+    const cleanup_prompt = promptWithKeyterms(gpa, keyterms) catch return error.OutOfMemory;
+    defer gpa.free(cleanup_prompt);
     const payload = Payload{
         .model = cfg.model,
         .messages = &.{
-            .{ .role = "system", .content = system_prompt },
+            .{ .role = "system", .content = cleanup_prompt },
             .{ .role = "user", .content = transcript },
         },
     };
@@ -104,6 +106,20 @@ pub fn cleanup(gpa: Allocator, io: Io, cfg: *const config.LlmConfig, transcript:
     return gpa.dupe(u8, trimmed) catch return error.OutOfMemory;
 }
 
+fn promptWithKeyterms(gpa: Allocator, keyterms: []const []const u8) Allocator.Error![]u8 {
+    var result: std.ArrayList(u8) = .empty;
+    defer result.deinit(gpa);
+    try result.appendSlice(gpa, system_prompt);
+    if (keyterms.len > 0) {
+        try result.appendSlice(gpa, "\nPreserve the spelling and capitalization of these glossary terms when they occur; do not insert them otherwise:");
+        for (keyterms) |keyterm| {
+            try result.appendSlice(gpa, "\n- ");
+            try result.appendSlice(gpa, keyterm);
+        }
+    }
+    return result.toOwnedSlice(gpa);
+}
+
 fn logVerbose(verbose: bool, comptime fmt: []const u8, args: anytype) void {
     if (verbose) std.debug.print("sayall: " ++ fmt ++ "\n", args);
 }
@@ -119,4 +135,10 @@ test "parses a realistic chat completions response" {
     });
     defer parsed.deinit();
     try std.testing.expectEqualStrings(" Clean text. ", parsed.value.choices[0].message.content);
+}
+
+test "cleanup prompt includes keyterms as spelling hints" {
+    const prompt = try promptWithKeyterms(std.testing.allocator, &.{ "SayAll", "Model Context Protocol" });
+    defer std.testing.allocator.free(prompt);
+    try std.testing.expect(std.mem.endsWith(u8, prompt, "\n- SayAll\n- Model Context Protocol"));
 }

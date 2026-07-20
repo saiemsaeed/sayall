@@ -121,7 +121,7 @@ fn run(init: std.process.Init) !u8 {
         try printLine(io, try std.fmt.allocPrint(arena, "raw: {s}", .{transcript}));
 
         if (!raw and cfg.llm.enabled and transcript.len > 0) {
-            const cleaned = try groq.cleanup(arena, io, &cfg.llm, transcript, cfg.verbose);
+            const cleaned = try groq.cleanup(arena, io, &cfg.llm, cfg.stt.keyterms, transcript, cfg.verbose);
             try printLine(io, try std.fmt.allocPrint(arena, "clean: {s}", .{cleaned}));
         }
         return 0;

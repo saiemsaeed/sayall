@@ -27,11 +27,13 @@ const DeepgramResponse = struct {
 pub fn transcribe(gpa: Allocator, io: Io, cfg: *const config.SttConfig, wav: []const u8, verbose: bool) TranscribeError![]u8 {
     if (cfg.api_key.len == 0) return error.MissingApiKey;
 
-    const url = std.fmt.allocPrint(
+    const base_url = std.fmt.allocPrint(
         gpa,
         "{s}?model={s}&smart_format=true&punctuate=true&language={s}",
         .{ restBaseUrl(cfg.region), cfg.model, cfg.language },
     ) catch return error.OutOfMemory;
+    defer gpa.free(base_url);
+    const url = addKeyterms(gpa, base_url, cfg.keyterms) catch return error.OutOfMemory;
     defer gpa.free(url);
 
     const auth = std.fmt.allocPrint(gpa, "Token {s}", .{cfg.api_key}) catch return error.OutOfMemory;
@@ -88,6 +90,25 @@ pub fn restBaseUrl(region: []const u8) []const u8 {
     return "https://api.deepgram.com/v1/listen";
 }
 
+/// Adds repeated, percent-encoded Deepgram `keyterm` query parameters.
+pub fn addKeyterms(gpa: Allocator, base: []const u8, keyterms: []const []const u8) Allocator.Error![]u8 {
+    var result: std.ArrayList(u8) = .empty;
+    defer result.deinit(gpa);
+    try result.appendSlice(gpa, base);
+    for (keyterms) |keyterm| {
+        try result.appendSlice(gpa, "&keyterm=");
+        for (keyterm) |c| {
+            if (std.ascii.isAlphanumeric(c) or c == '-' or c == '.' or c == '_' or c == '~') {
+                try result.append(gpa, c);
+            } else {
+                const hex = "0123456789ABCDEF";
+                try result.appendSlice(gpa, &.{ '%', hex[c >> 4], hex[c & 0x0f] });
+            }
+        }
+    }
+    return result.toOwnedSlice(gpa);
+}
+
 fn logVerbose(verbose: bool, comptime fmt: []const u8, args: anytype) void {
     if (verbose) std.debug.print("sayall: " ++ fmt ++ "\n", args);
 }
@@ -109,4 +130,13 @@ test "regional endpoints are allow-listed" {
     try std.testing.expectEqualStrings("https://api.deepgram.com/v1/listen", restBaseUrl("global"));
     try std.testing.expectEqualStrings("https://api.eu.deepgram.com/v1/listen", restBaseUrl("eu"));
     try std.testing.expectEqualStrings("https://api.au.deepgram.com/v1/listen", restBaseUrl("au"));
+}
+
+test "keyterms are repeated and percent encoded" {
+    const url = try addKeyterms(std.testing.allocator, "/v1/listen?model=nova-3", &.{ "SayAll", "Model Context Protocol", "C++" });
+    defer std.testing.allocator.free(url);
+    try std.testing.expectEqualStrings(
+        "/v1/listen?model=nova-3&keyterm=SayAll&keyterm=Model%20Context%20Protocol&keyterm=C%2B%2B",
+        url,
+    );
 }

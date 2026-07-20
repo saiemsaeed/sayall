@@ -186,6 +186,7 @@ sayall/
     "api_key": "$DEEPGRAM_API_KEY",
     "model": "nova-3",
     "language": "en",
+    "keyterms": ["SayAll", "Hyprland", "Model Context Protocol"],
     "region": "eu",
     "streaming": true,
     "stream_finalize_timeout_ms": 2000
@@ -223,6 +224,13 @@ Output method `type` passes the complete transcript directly to `wtype`. Use
 Deepgram region is allow-listed to `global`, `eu`, or `au`. The regional
 endpoint changes data-processing location and network latency without changing
 credentials or the Nova-3 model.
+
+`stt.keyterms` is a global vocabulary of names, jargon, and phrases that Nova-3
+should recognize more accurately. Keyterms are applied to both streaming and
+REST fallback transcription, with their spelling and capitalization also
+provided to LLM cleanup when enabled. Keep the list focused on uncommon or
+frequently misrecognized terminology; Deepgram allows up to 100 keyterms and
+enforces a 500-token limit per request.
 
 Streaming sends raw 16 kHz mono PCM while recording and inserts text only after
 Deepgram finalizes the stream. The complete local recording is retained until
