@@ -1,0 +1,9 @@
+.zig-cache/
+zig-out/
+ui/linux/target/
+
+.env
+.env.*
+*.pcm
+*.wav
+*.tmp
