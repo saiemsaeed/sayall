@@ -46,6 +46,34 @@ Treat a successfully published release branch as frozen. If publication
 succeeds and a defect is found afterward, prepare a new patch version rather
 than pushing replacement artifacts to the same branch.
 
+## Publish the AUR packages
+
+Publish AUR updates only after the GitHub Release and its checksum are final:
+
+1. In `packaging/aur/sayall-bin`, set `pkgver` to the release, reset `pkgrel`
+   to 1, and replace the archive checksum with the checksum from the published
+   `SHA256SUMS`.
+2. In `packaging/aur/sayall`, set `pkgver` to the release, reset `pkgrel` to 1,
+   and update the source archive checksum. Keep the pinned `websocket.zig`
+   source unchanged unless the application dependency changed.
+3. Run a clean `makepkg` build in both stable package directories. Verify the
+   packaged CLI reports the release version and both systemd units use
+   `/usr/bin`.
+4. Run a clean `makepkg` build for `sayall-git`. Its `pkgver()` function
+   derives the development version from Git and does not require an update for
+   every upstream commit.
+5. Regenerate every `.SRCINFO` with `makepkg --printsrcinfo > .SRCINFO`, then
+   copy each package directory into its corresponding standalone AUR Git
+   repository and push it.
+6. Upgrade from the previous `sayall-bin`, run
+   `systemctl --user restart sayall.service sayall-hud.service`, then run
+   `sayall doctor` and complete a recording, transcription, HUD, and typing
+   smoke test. Repeat the explicit restart after switching between all three
+   mutually conflicting package variants, and verify each switch preserves
+   `~/.config/sayall/config.json`.
+7. Confirm the public pages for `sayall-bin`, `sayall`, and `sayall-git` show
+   the intended versions and maintainer.
+
 ## Service paths in packages
 
 The checked-in systemd units intentionally target `%h/.local/bin` for the

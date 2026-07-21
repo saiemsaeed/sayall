@@ -5,6 +5,16 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `sayall doctor` installation and runtime diagnostics for Wayland, API
+  credentials, required commands, systemd service state, and daemon health.
+
+### Changed
+
+- AUR installation is now the recommended setup for supported Arch Linux and
+  Omarchy users; source builds are documented as a contributor workflow.
+
 ## [0.1.0] - 2026-07-21
 
 Initial release, tested and supported on x86-64 Arch Linux with Omarchy.

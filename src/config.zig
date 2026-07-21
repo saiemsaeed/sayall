@@ -143,7 +143,7 @@ fn invalid(message: []const u8) ValidationError {
     return error.InvalidConfig;
 }
 
-fn configPath(gpa: Allocator, env: *const std.process.Environ.Map) !?[]const u8 {
+pub fn configPath(gpa: Allocator, env: *const std.process.Environ.Map) !?[]const u8 {
     if (env.get("XDG_CONFIG_HOME")) |dir| {
         return try std.fmt.allocPrint(gpa, "{s}/sayall/config.json", .{dir});
     }

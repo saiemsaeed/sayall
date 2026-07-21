@@ -19,36 +19,98 @@ removed before output.
 
 ## Getting Started
 
-### Build from source
+### Install on Arch Linux or Omarchy
+
+The prebuilt AUR package is the recommended installation for supported users:
 
 ```sh
-# 1. Build and install
-zig build -Doptimize=ReleaseFast
-cp zig-out/bin/sayall ~/.local/bin/
-cargo build --release --manifest-path ui/linux/Cargo.toml
-cp ui/linux/target/release/sayall-hud ~/.local/bin/
+yay -S sayall-bin
+```
 
-# 2. Configure API keys (file is created with your keys)
+Two source-based variants are also available. Install only one variant at a
+time:
+
+| Package | Use case |
+| --- | --- |
+| `sayall-bin` | Official release binaries; recommended for most users |
+| `sayall` | Build the latest stable release from source |
+| `sayall-git` | Build the latest `main` commit from source |
+
+Configure API keys, keeping the file private:
+
+```sh
 mkdir -p ~/.config/sayall
 $EDITOR ~/.config/sayall/config.json   # see Configuration below
 chmod 600 ~/.config/sayall/config.json
 
-# 3. Run the daemon — either via systemd (recommended)…
-mkdir -p ~/.config/systemd/user
-cp sayall.service ~/.config/systemd/user/
-cp sayall-hud.service ~/.config/systemd/user/
-systemctl --user daemon-reload
+# Start SayAll now and on future graphical logins.
 systemctl --user enable --now sayall sayall-hud
-
-#    …or via Hyprland exec-once
-#    exec-once = sayall daemon
-
-# 4. Bind the toggle key in hyprland.conf
-#    bind = SUPER, F9, exec, sayall toggle
 ```
 
-Verify it works: `sayall status` → `idle`; `sayall transcribe some.wav` →
-transcript. Then press the bind, speak, press it again.
+Run the installation diagnostics and microphone test:
+
+```sh
+sayall --version
+sayall doctor
+sayall mic-test
+```
+
+Then add the toggle binding to `~/.config/hypr/hyprland.conf`:
+
+```conf
+bind = SUPER, F9, exec, sayall toggle
+```
+
+Verify `sayall status` reports `idle`, then press the binding, speak, and press
+it again. The transcript should be typed into the focused window.
+
+After upgrading or switching between package variants, restart both running
+processes before checking their versions and health:
+
+```sh
+systemctl --user restart sayall sayall-hud
+sayall --version
+sayall doctor
+```
+
+#### Migrate from a manual installation
+
+Older instructions installed files under `~/.local/bin` and
+`~/.config/systemd/user`. Remove those files before installing an AUR package
+so they cannot override the package-managed binaries and services. This does
+not remove `~/.config/sayall/config.json`:
+
+```sh
+systemctl --user disable --now sayall sayall-hud
+rm -f ~/.local/bin/sayall ~/.local/bin/sayall-hud
+rm -f ~/.config/systemd/user/sayall.service \
+      ~/.config/systemd/user/sayall-hud.service
+systemctl --user daemon-reload
+yay -S sayall-bin
+systemctl --user enable --now sayall sayall-hud
+sayall doctor
+```
+
+### Build from source
+
+Source builds are intended for contributors. Build and test directly from the
+checkout rather than copying over an AUR-managed installation:
+
+```sh
+zig build test
+zig build -Doptimize=ReleaseFast
+cargo test --locked --manifest-path ui/linux/Cargo.toml
+cargo build --locked --release --manifest-path ui/linux/Cargo.toml
+
+# Stop the packaged daemon before running a checkout build; both use the same
+# socket and configuration.
+systemctl --user stop sayall sayall-hud
+./zig-out/bin/sayall daemon --verbose
+```
+
+In another terminal, use `./zig-out/bin/sayall status`, `toggle`, and `stop`.
+Restart the packaged installation afterwards with
+`systemctl --user start sayall sayall-hud`.
 
 Print the installed release version with `sayall --version`.
 
@@ -89,8 +151,10 @@ per-stage timings. `SAYALL_VERBOSE=1` works too.
 ### Install a release archive
 
 Release archives contain both executables, documentation, the license, and
-systemd user-service files. After downloading and verifying the archive's
-entry in `SHA256SUMS`, install it for the current user:
+systemd user-service files. AUR installation is preferred on Arch Linux. Do
+not combine this manual installation with an AUR package. After downloading
+and verifying the archive's entry in `SHA256SUMS`, install it for the current
+user:
 
 ```sh
 sudo pacman -S --needed pipewire-audio wtype wl-clipboard libnotify gtk4 gtk4-layer-shell

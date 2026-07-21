@@ -86,6 +86,11 @@ fn run(init: std.process.Init) !u8 {
         return 0;
     }
 
+    if (std.mem.eql(u8, cmd, "doctor")) {
+        if (argv.len != 2) return invalidArguments("doctor");
+        return doctor(arena, io, env);
+    }
+
     if (std.mem.eql(u8, cmd, "toggle") or std.mem.eql(u8, cmd, "stop") or std.mem.eql(u8, cmd, "status")) {
         const is_toggle = std.mem.eql(u8, cmd, "toggle");
         if ((!is_toggle and argv.len != 2) or (is_toggle and argv.len > 3)) return invalidArguments(cmd);
@@ -230,6 +235,137 @@ fn printLine(io: Io, text: []const u8) !void {
     try w.interface.flush();
 }
 
+fn doctor(arena: std.mem.Allocator, io: Io, env: *const std.process.Environ.Map) !u8 {
+    var failures: u8 = 0;
+    var warnings: u8 = 0;
+    try printLine(io, "SayAll diagnostics");
+
+    const exe = try std.process.executablePathAlloc(io, arena);
+    try diagnostic(arena, io, "ok", "Version", "sayall " ++ build_options.version);
+    try diagnostic(arena, io, "ok", "Executable", exe);
+
+    const wayland = env.get("WAYLAND_DISPLAY");
+    if (wayland) |display| {
+        try diagnostic(arena, io, "ok", "Wayland", display);
+    } else {
+        failures += 1;
+        try diagnostic(arena, io, "fail", "Wayland", "WAYLAND_DISPLAY is not set");
+    }
+
+    var loaded_config: ?config.Config = null;
+    const cfg_path = try config.configPath(arena, env);
+    if (cfg_path) |path| {
+        if (Io.Dir.cwd().statFile(io, path, .{})) |stat| {
+            try diagnostic(arena, io, "ok", "Configuration", path);
+            if (stat.permissions.toMode() & 0o077 == 0) {
+                try diagnostic(arena, io, "ok", "Config permissions", "private");
+            } else {
+                warnings += 1;
+                try diagnostic(arena, io, "warn", "Config permissions", try std.fmt.allocPrint(arena, "restrict {s} to mode 0600", .{path}));
+            }
+        } else |err| switch (err) {
+            error.FileNotFound => {
+                warnings += 1;
+                try diagnostic(arena, io, "warn", "Configuration", "config.json is absent; checking environment credentials");
+            },
+            else => {
+                failures += 1;
+                try diagnostic(arena, io, "fail", "Configuration", @errorName(err));
+            },
+        }
+
+        if (config.load(arena, io, env)) |cfg| {
+            loaded_config = cfg;
+            if (cfg.stt.api_key.len > 0) {
+                try diagnostic(arena, io, "ok", "Deepgram credentials", "configured");
+            } else {
+                failures += 1;
+                try diagnostic(arena, io, "fail", "Deepgram credentials", "missing API key");
+            }
+            if (cfg.llm.enabled and cfg.llm.api_key.len == 0) {
+                warnings += 1;
+                try diagnostic(arena, io, "warn", "Groq credentials", "cleanup is enabled but its API key is missing");
+            } else {
+                try diagnostic(arena, io, "ok", "Groq cleanup", if (cfg.llm.enabled) "configured" else "disabled");
+            }
+        } else |err| {
+            failures += 1;
+            try diagnostic(arena, io, "fail", "Config validation", @errorName(err));
+        }
+    } else {
+        failures += 1;
+        try diagnostic(arena, io, "fail", "Configuration", "HOME and XDG_CONFIG_HOME are unavailable");
+    }
+
+    const required_commands = [_][]const u8{ "pw-record", "wtype", "wl-copy", "sayall-hud" };
+    for (required_commands) |command| {
+        if (try commandExists(arena, io, command)) {
+            try diagnostic(arena, io, "ok", "Command", command);
+        } else {
+            failures += 1;
+            try diagnostic(arena, io, "fail", "Missing command", command);
+        }
+    }
+    if (loaded_config) |cfg| {
+        if (cfg.notifications) {
+            if (try commandExists(arena, io, "notify-send")) {
+                try diagnostic(arena, io, "ok", "Command", "notify-send");
+            } else {
+                warnings += 1;
+                try diagnostic(arena, io, "warn", "Missing command", "notify-send (notifications will fail)");
+            }
+        }
+    }
+
+    if (try commandSucceeds(arena, io, &.{ "systemctl", "--user", "is-active", "--quiet", "sayall.service" })) {
+        try diagnostic(arena, io, "ok", "Service", "sayall.service is active");
+    } else {
+        failures += 1;
+        try diagnostic(arena, io, "fail", "Service", "start with: systemctl --user enable --now sayall sayall-hud");
+    }
+    if (try commandSucceeds(arena, io, &.{ "systemctl", "--user", "is-active", "--quiet", "sayall-hud.service" })) {
+        try diagnostic(arena, io, "ok", "HUD service", "sayall-hud.service is active");
+    } else {
+        failures += 1;
+        try diagnostic(arena, io, "fail", "HUD service", "start with: systemctl --user enable --now sayall-hud");
+    }
+
+    const sock = try config.socketPath(arena, env);
+    if (ipc.sendCommand(arena, io, sock, "status")) |reply| {
+        try diagnostic(arena, io, "ok", "Daemon", reply);
+    } else |err| {
+        failures += 1;
+        try diagnostic(arena, io, "fail", "Daemon", try std.fmt.allocPrint(arena, "cannot reach {s} ({s})", .{ sock, @errorName(err) }));
+    }
+
+    try printLine(io, try std.fmt.allocPrint(arena, "Result: {d} failure(s), {d} warning(s)", .{ failures, warnings }));
+    return if (failures == 0) 0 else 1;
+}
+
+fn diagnostic(arena: std.mem.Allocator, io: Io, status: []const u8, label: []const u8, detail: []const u8) !void {
+    try printLine(io, try std.fmt.allocPrint(arena, "[{s}] {s}: {s}", .{ status, label, detail }));
+}
+
+fn commandExists(arena: std.mem.Allocator, io: Io, command: []const u8) !bool {
+    return commandSucceeds(arena, io, &.{ "sh", "-c", "command -v -- \"$1\" >/dev/null 2>&1", "sayall-doctor", command });
+}
+
+fn commandSucceeds(arena: std.mem.Allocator, io: Io, argv: []const []const u8) !bool {
+    const result = std.process.run(arena, io, .{
+        .argv = argv,
+        .stdout_limit = .limited(4096),
+        .stderr_limit = .limited(4096),
+    }) catch return false;
+    return termSucceeded(result.term);
+}
+
+fn termSucceeded(term: std.process.Child.Term) bool {
+    return switch (term) {
+        .exited => |code| code == 0,
+        else => false,
+    };
+}
+
 fn printStats(io: Io, summary: metrics.Summary) !void {
     const stdout: Io.File = .stdout();
     var buf: [2048]u8 = undefined;
@@ -334,6 +470,7 @@ fn usage() void {
         \\
         \\usage:
         \\  sayall --version                     print the installed version
+        \\  sayall doctor                        check installation and runtime health
         \\  sayall daemon [--verbose]            run the daemon in the foreground
         \\  sayall restart                       restart the systemd user service and reload config
         \\  sayall toggle [--raw]                toggle recording (raw = skip LLM cleanup)
@@ -356,4 +493,10 @@ test {
     _ = groq;
     _ = metrics;
     _ = protocol;
+}
+
+test "doctor recognizes successful process exits" {
+    try std.testing.expect(termSucceeded(.{ .exited = 0 }));
+    try std.testing.expect(!termSucceeded(.{ .exited = 1 }));
+    try std.testing.expect(!termSucceeded(.{ .unknown = 1 }));
 }
