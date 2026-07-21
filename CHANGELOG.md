@@ -5,6 +5,8 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-22
+
 ### Added
 
 - `sayall doctor` installation and runtime diagnostics for Wayland, API
@@ -32,5 +34,6 @@ Initial release, tested and supported on x86-64 Arch Linux with Omarchy.
 - Persistent privacy-safe transcription metrics and microphone diagnostics.
 - systemd user services and Hyprland hotkey integration.
 
-[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/saiemsaeed/sayall/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/saiemsaeed/sayall/releases/tag/v0.1.0
