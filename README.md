@@ -5,17 +5,21 @@ Toggle a hotkey, speak, toggle again, and text is typed into your focused
 window. When Groq cleanup is configured, filler words and false starts are
 removed before output.
 
-- **STT:** Deepgram Nova-3 (cloud, batch upload)
+- **STT:** Deepgram Nova-3 (cloud streaming with REST fallback)
 - **Cleanup:** LLM pass (Groq `llama-3.1-8b-instant`) — removes filler words,
   false starts, stutters; fixes grammar and punctuation without changing meaning
-- **Platform:** Wayland (developed on Hyprland), audio via PipeWire
-- **Zig dependencies:** none; the implementation uses Zig's standard library
+- **Supported platform:** Arch Linux with Omarchy (Wayland/Hyprland), on x86-64
+- **Other Linux systems:** may work, but are not tested or supported for 0.1.0
+- **Zig dependencies:** one pinned WebSocket library; otherwise Zig's standard
+  library
 - **Runtime dependencies:** PipeWire `pw-record`, `wtype`, `wl-copy`, and
   `notify-send`
 - **Linux HUD:** Rust, GTK4, and gtk4-layer-shell
 - **Requires:** Zig 0.16.x
 
 ## Getting Started
+
+### Build from source
 
 ```sh
 # 1. Build and install
@@ -45,6 +49,8 @@ systemctl --user enable --now sayall sayall-hud
 
 Verify it works: `sayall status` → `idle`; `sayall transcribe some.wav` →
 transcript. Then press the bind, speak, press it again.
+
+Print the installed release version with `sayall --version`.
 
 After changing `~/.config/sayall/config.json`, restart the systemd user service
 to load the new configuration:
@@ -79,6 +85,25 @@ sayall mic-test 3687
 
 For debugging: `sayall daemon --verbose` in a terminal logs every stage with
 per-stage timings. `SAYALL_VERBOSE=1` works too.
+
+### Install a release archive
+
+Release archives contain both executables, documentation, the license, and
+systemd user-service files. After downloading and verifying the archive's
+entry in `SHA256SUMS`, install it for the current user:
+
+```sh
+sudo pacman -S --needed pipewire-audio wtype wl-clipboard libnotify gtk4 gtk4-layer-shell
+sha256sum -c SHA256SUMS
+tar -xzf sayall-0.1.0-linux-x86_64.tar.gz
+cd sayall-0.1.0-linux-x86_64
+install -Dm755 -t ~/.local/bin bin/sayall bin/sayall-hud
+install -Dm644 -t ~/.config/systemd/user share/systemd/user/*.service
+systemctl --user daemon-reload
+systemctl --user enable --now sayall sayall-hud
+```
+
+Configuration and hotkey setup are the same as for a source installation.
 
 ## Architecture
 
@@ -274,6 +299,9 @@ bind = SUPER SHIFT, F9, exec, sayall toggle --raw
 
 ## Limitations
 
+- **Initial support scope** — version 0.1.0 is tested and supported only on
+  x86-64 Arch Linux running Omarchy. Other Wayland environments may work but
+  are currently community-supported.
 - **REST network deadlines** — provider responses are memory-bounded, but an
   explicit end-to-end REST cancellation deadline is still roadmap work.
 - **Wayland input** — direct output requires a compositor implementing the
@@ -287,3 +315,16 @@ Press bind → speak → press bind → text typed into the focused window. The
 current test suite covers configuration validation, strict WAV parsing and
 level analysis, and provider response parsing; daemon and HTTP integration
 tests remain roadmap work.
+
+## Versioning and releases
+
+SayAll follows [Semantic Versioning](https://semver.org/). The daemon, CLI, and
+HUD are released together under one product version. Protocol versions are
+independent: SayAll 0.1.0 uses control protocol v1.
+
+During the pre-1.0 period, patch releases remain backward-compatible whenever
+possible. A minor release may make a documented breaking change to
+configuration or behavior. See `CHANGELOG.md` for user-visible changes and
+`docs/releasing.md` for the release process.
+
+SayAll is licensed under the MIT License. See `LICENSE`.

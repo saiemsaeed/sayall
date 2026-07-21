@@ -2,6 +2,7 @@
 zig-out/
 zig-pkg/
 ui/linux/target/
+dist/
 
 .env
 .env.*

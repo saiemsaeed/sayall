@@ -12,6 +12,11 @@
     .paths = .{
         "build.zig",
         "build.zig.zon",
+        "VERSION",
+        "LICENSE",
+        "CHANGELOG.md",
+        "licenses",
+        "scripts",
         "src",
         "ui",
         "sayall.service",

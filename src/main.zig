@@ -1,5 +1,6 @@
 const std = @import("std");
 const Io = std.Io;
+const build_options = @import("build_options");
 
 const config = @import("config.zig");
 const ipc = @import("ipc.zig");
@@ -32,6 +33,12 @@ fn run(init: std.process.Init) !u8 {
     }
 
     const cmd = std.mem.span(argv[1]);
+
+    if (std.mem.eql(u8, cmd, "--version") or std.mem.eql(u8, cmd, "version")) {
+        if (argv.len != 2) return invalidArguments(cmd);
+        try printLine(io, "sayall " ++ build_options.version);
+        return 0;
+    }
 
     if (std.mem.eql(u8, cmd, "daemon")) {
         if (argv.len > 3) return invalidArguments("daemon");
@@ -326,6 +333,7 @@ fn usage() void {
         \\sayall — voice dictation daemon
         \\
         \\usage:
+        \\  sayall --version                     print the installed version
         \\  sayall daemon [--verbose]            run the daemon in the foreground
         \\  sayall restart                       restart the systemd user service and reload config
         \\  sayall toggle [--raw]                toggle recording (raw = skip LLM cleanup)

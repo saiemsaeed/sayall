@@ -3,12 +3,24 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const version_contents = b.build_root.handle.readFileAlloc(
+        b.graph.io,
+        "VERSION",
+        b.allocator,
+        .limited(64),
+    ) catch @panic("could not read VERSION");
+    const version = std.mem.trim(u8, version_contents, " \t\r\n");
+    if (version.len == 0) @panic("VERSION must not be empty");
+
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", version);
 
     const mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
+    mod.addOptions("build_options", build_options);
     const websocket_dep = b.dependency("websocket", .{
         .target = target,
         .optimize = optimize,
