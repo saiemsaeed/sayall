@@ -5,6 +5,8 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-22
+
 ### Added
 
 - `sayall setup` enables and starts or restarts the daemon and HUD systemd user
@@ -42,6 +44,7 @@ Initial release, tested and supported on x86-64 Arch Linux with Omarchy.
 - Persistent privacy-safe transcription metrics and microphone diagnostics.
 - systemd user services and Hyprland hotkey integration.
 
-[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/saiemsaeed/sayall/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/saiemsaeed/sayall/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/saiemsaeed/sayall/releases/tag/v0.1.0
