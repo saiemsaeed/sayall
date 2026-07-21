@@ -39,7 +39,8 @@ if [[ "$reported_version" != "sayall $version" ]]; then
     exit 1
 fi
 
-name="sayall-$version-linux-x86_64"
+source_name="sayall-$version"
+name="$source_name-linux-x86_64"
 stage="dist/$name"
 rm -rf -- "$stage"
 mkdir -p \
@@ -55,9 +56,14 @@ python3 scripts/third-party-licenses.py \
 install -m644 sayall.service sayall-hud.service "$stage/share/systemd/user/"
 
 archive="dist/$name.tar.gz"
+source_archive="dist/$source_name.tar.gz"
 epoch=${SOURCE_DATE_EPOCH:-0}
 tar --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner \
     -C dist -czf "$archive" "$name"
-(cd dist && sha256sum "${name}.tar.gz" > SHA256SUMS)
+git ls-files -z | tar --null --files-from=- --sort=name --mtime="@$epoch" \
+    --owner=0 --group=0 --numeric-owner --transform="s|^|$source_name/|" \
+    -czf "$source_archive"
+(cd dist && sha256sum "${name}.tar.gz" "${source_name}.tar.gz" > SHA256SUMS)
 
-printf 'created %s\ncreated dist/SHA256SUMS\n' "$archive"
+printf 'created %s\ncreated %s\ncreated dist/SHA256SUMS\n' \
+    "$archive" "$source_archive"
