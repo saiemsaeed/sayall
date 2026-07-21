@@ -5,7 +5,7 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-07-21
 
 Initial release, tested and supported on x86-64 Arch Linux with Omarchy.
 
