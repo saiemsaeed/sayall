@@ -44,7 +44,7 @@ $EDITOR ~/.config/sayall/config.json   # see Configuration below
 chmod 600 ~/.config/sayall/config.json
 
 # Start SayAll now and on future graphical logins.
-systemctl --user enable --now sayall sayall-hud
+sayall setup
 ```
 
 Run the installation diagnostics and microphone test:
@@ -64,14 +64,22 @@ bind = SUPER, F9, exec, sayall toggle
 Verify `sayall status` reports `idle`, then press the binding, speak, and press
 it again. The transcript should be typed into the focused window.
 
-After upgrading or switching between package variants, restart both running
-processes before checking their versions and health:
+Update the installed AUR variant and restart both running processes with one
+command:
 
 ```sh
-systemctl --user restart sayall sayall-hud
+sayall update
 sayall --version
 sayall doctor
 ```
+
+`sayall update` detects whether `sayall-bin`, `sayall`, or `sayall-git` owns
+the installation, asks `yay` to update that same package, and only restarts the
+services after the package operation succeeds. It deliberately uses the AUR
+package rather than overwriting `/usr/bin` directly, preserving package
+ownership, dependency handling, checksums, and clean uninstallation. To avoid
+losing audio, it refuses to update while the daemon is recording or processing
+a clip.
 
 #### Migrate from a manual installation
 
@@ -87,7 +95,7 @@ rm -f ~/.config/systemd/user/sayall.service \
       ~/.config/systemd/user/sayall-hud.service
 systemctl --user daemon-reload
 yay -S sayall-bin
-systemctl --user enable --now sayall sayall-hud
+sayall setup
 sayall doctor
 ```
 

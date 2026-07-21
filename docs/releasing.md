@@ -65,12 +65,12 @@ Publish AUR updates only after the GitHub Release and its checksum are final:
 5. Regenerate every `.SRCINFO` with `makepkg --printsrcinfo > .SRCINFO`, then
    copy each package directory into its corresponding standalone AUR Git
    repository and push it.
-6. Upgrade from the previous `sayall-bin`, run
-   `systemctl --user restart sayall.service sayall-hud.service`, then run
+6. Upgrade from the previous `sayall-bin`, run `sayall setup`, then run
    `sayall doctor` and complete a recording, transcription, HUD, and typing
-   smoke test. Repeat the explicit restart after switching between all three
-   mutually conflicting package variants, and verify each switch preserves
-   `~/.config/sayall/config.json`.
+   smoke test. Repeat `sayall setup` after switching between all three mutually
+   conflicting package variants, and verify each switch preserves
+   `~/.config/sayall/config.json`. Verify `sayall update` detects and targets
+   the installed variant before preparing the next release.
 7. Confirm the public pages for `sayall-bin`, `sayall`, and `sayall-git` show
    the intended versions and maintainer.
 

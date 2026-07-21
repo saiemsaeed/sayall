@@ -86,6 +86,47 @@ fn run(init: std.process.Init) !u8 {
         return 0;
     }
 
+    if (std.mem.eql(u8, cmd, "setup")) {
+        if (argv.len != 2) return invalidArguments("setup");
+        if (!setupServices(io)) {
+            std.debug.print("sayall: could not configure the systemd user services\n", .{});
+            return 1;
+        }
+        try printLine(io, "SayAll services enabled and restarted.");
+        return 0;
+    }
+
+    if (std.mem.eql(u8, cmd, "update")) {
+        if (argv.len != 2) return invalidArguments("update");
+        const sock = try config.socketPath(arena, env);
+        if (ipc.sendCommand(arena, io, sock, "status")) |state| {
+            if (!updateAllowed(state)) {
+                std.debug.print("sayall: cannot update while the daemon is {s}; wait for it to become idle\n", .{state});
+                return 1;
+            }
+        } else |_| {}
+        const package = try installedPackage(arena, io) orelse {
+            std.debug.print("sayall: update requires an installed AUR package (sayall-bin, sayall, or sayall-git)\n", .{});
+            return 1;
+        };
+        if (!try commandExists(arena, io, "yay")) {
+            std.debug.print("sayall: update requires the 'yay' AUR helper\n", .{});
+            return 1;
+        }
+        try printLine(io, try std.fmt.allocPrint(arena, "Checking/updating {s} with yay...", .{package}));
+        const updated = runInherited(io, &.{ "yay", "-S", "--needed", package });
+        if (!updated) {
+            std.debug.print("sayall: package update failed; services were not restarted\n", .{});
+            return 1;
+        }
+        if (!setupServices(io)) {
+            std.debug.print("sayall: yay completed successfully, but the systemd user services could not be restarted\n", .{});
+            return 1;
+        }
+        try printLine(io, "yay completed successfully; SayAll services enabled and restarted.");
+        return 0;
+    }
+
     if (std.mem.eql(u8, cmd, "doctor")) {
         if (argv.len != 2) return invalidArguments("doctor");
         return doctor(arena, io, env);
@@ -233,6 +274,35 @@ fn printLine(io: Io, text: []const u8) !void {
     try w.interface.writeAll(text);
     try w.interface.writeByte('\n');
     try w.interface.flush();
+}
+
+fn setupServices(io: Io) bool {
+    if (!runInherited(io, &.{ "systemctl", "--user", "daemon-reload" })) return false;
+    if (!runInherited(io, &.{ "systemctl", "--user", "enable", "sayall.service", "sayall-hud.service" })) return false;
+    return runInherited(io, &.{ "systemctl", "--user", "restart", "sayall.service", "sayall-hud.service" });
+}
+
+fn runInherited(io: Io, argv: []const []const u8) bool {
+    var child = std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .inherit,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    }) catch return false;
+    const term = child.wait(io) catch return false;
+    return termSucceeded(term);
+}
+
+fn installedPackage(arena: std.mem.Allocator, io: Io) !?[]const u8 {
+    const packages = [_][]const u8{ "sayall-bin", "sayall", "sayall-git" };
+    for (packages) |package| {
+        if (try commandSucceeds(arena, io, &.{ "pacman", "-Qq", package })) return package;
+    }
+    return null;
+}
+
+fn updateAllowed(daemon_state: []const u8) bool {
+    return std.mem.eql(u8, daemon_state, "idle");
 }
 
 fn doctor(arena: std.mem.Allocator, io: Io, env: *const std.process.Environ.Map) !u8 {
@@ -470,6 +540,8 @@ fn usage() void {
         \\
         \\usage:
         \\  sayall --version                     print the installed version
+        \\  sayall setup                         enable and restart user services
+        \\  sayall update                        update the installed AUR package
         \\  sayall doctor                        check installation and runtime health
         \\  sayall daemon [--verbose]            run the daemon in the foreground
         \\  sayall restart                       restart the systemd user service and reload config
@@ -499,4 +571,11 @@ test "doctor recognizes successful process exits" {
     try std.testing.expect(termSucceeded(.{ .exited = 0 }));
     try std.testing.expect(!termSucceeded(.{ .exited = 1 }));
     try std.testing.expect(!termSucceeded(.{ .unknown = 1 }));
+}
+
+test "updates only restart an idle daemon" {
+    try std.testing.expect(updateAllowed("idle"));
+    try std.testing.expect(!updateAllowed("recording"));
+    try std.testing.expect(!updateAllowed("processing"));
+    try std.testing.expect(!updateAllowed("stopping"));
 }

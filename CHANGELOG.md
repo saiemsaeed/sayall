@@ -5,6 +5,14 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `sayall setup` enables and starts or restarts the daemon and HUD systemd user
+  services without requiring users to remember the underlying `systemctl`
+  commands.
+- `sayall update` upgrades the currently installed AUR package with `yay`, then
+  reloads, enables, and restarts both user services after a successful update.
+
 ## [0.1.1] - 2026-07-22
 
 ### Added
