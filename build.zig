@@ -9,8 +9,13 @@ pub fn build(b: *std.Build) void {
         b.allocator,
         .limited(64),
     ) catch @panic("could not read VERSION");
-    const version = std.mem.trim(u8, version_contents, " \t\r\n");
-    if (version.len == 0) @panic("VERSION must not be empty");
+    const release_version = std.mem.trim(u8, version_contents, " \t\r\n");
+    if (release_version.len == 0) @panic("VERSION must not be empty");
+    const version = b.option(
+        []const u8,
+        "version",
+        "Override the embedded version (for development packages)",
+    ) orelse release_version;
 
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
