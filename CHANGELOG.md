@@ -3,7 +3,7 @@
 All notable user-visible changes to SayAll are documented in this file. SayAll
 follows [Semantic Versioning](https://semver.org/).
 
-## [0.1.4] - Unreleased
+## [0.1.4] - 2026-07-22
 
 ### Added
 
@@ -83,7 +83,7 @@ Initial release, tested and supported on x86-64 Arch Linux with Omarchy.
 - Persistent privacy-safe transcription metrics and microphone diagnostics.
 - systemd user services and Hyprland hotkey integration.
 
-[0.1.4]: https://github.com/saiemsaeed/sayall/compare/v0.1.3...HEAD
+[0.1.4]: https://github.com/saiemsaeed/sayall/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/saiemsaeed/sayall/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/saiemsaeed/sayall/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/saiemsaeed/sayall/compare/v0.1.0...v0.1.1
