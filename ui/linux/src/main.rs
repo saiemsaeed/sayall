@@ -1,15 +1,19 @@
+mod protocol;
+
 use gtk::cairo;
 use gtk::glib;
 use gtk::prelude::*;
 use gtk::{Application, ApplicationWindow, DrawingArea};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
-use serde_json::{Value, json};
+use protocol::{EventKind, ProcessingStage, ProtocolEvent, State, StateSnapshot};
+use serde_json::json;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::env;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufReader, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -20,7 +24,8 @@ const BAR_COUNT: usize = 18;
 
 #[derive(Debug)]
 enum UiMessage {
-    Frame(Value),
+    Snapshot(StateSnapshot),
+    Event(ProtocolEvent),
     Disconnected,
 }
 
@@ -61,75 +66,44 @@ impl Default for Model {
 }
 
 impl Model {
-    fn apply(&mut self, value: &Value) {
-        if value.get("type").and_then(Value::as_str) == Some("response") {
-            if let Some(snapshot) = value.pointer("/result/state") {
-                self.apply_state(snapshot);
-            }
-            return;
-        }
-        if value.get("type").and_then(Value::as_str) != Some("event") {
-            return;
-        }
-        match value
-            .get("event")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-        {
-            "state.changed" => self.apply_state(&value["data"]),
-            "audio.level" => {
-                let rms = value
-                    .pointer("/data/rms")
-                    .and_then(Value::as_f64)
-                    .unwrap_or(0.0);
-                let peak = value
-                    .pointer("/data/peak")
-                    .and_then(Value::as_f64)
-                    .unwrap_or(0.0);
-                let level = (rms * 2.2).max(peak * 0.72).clamp(0.0, 1.0);
+    fn apply_event(&mut self, event: ProtocolEvent) {
+        match event.kind {
+            EventKind::StateChanged(snapshot) => self.apply_state(&snapshot),
+            EventKind::AudioLevel(data) => {
+                let level = (data.rms * 2.2).max(data.peak * 0.72).clamp(0.0, 1.0);
                 self.history.pop_front();
                 self.history.push_back(level);
-                if value.pointer("/data/clipping").and_then(Value::as_bool) == Some(true) {
+                if data.clipping {
                     self.clipping_until = Some(Instant::now() + Duration::from_millis(350));
                 }
             }
-            "processing.stage_changed" => {
-                self.stage = value
-                    .pointer("/data/stage")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_owned();
+            EventKind::ProcessingStageChanged(data) => {
+                self.stage = data.stage.0.map_or("", ProcessingStage::as_str).to_owned();
             }
-            "operation.error" => {
+            EventKind::OperationError(error) => {
                 self.state = HudState::Error;
-                self.error = value
-                    .pointer("/data/message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Something went wrong")
-                    .to_owned();
+                self.error = error.message;
                 self.hide_at = Some(Instant::now() + Duration::from_secs(3));
             }
-            "session.completed" => {
-                if value.pointer("/data/ok").and_then(Value::as_bool) == Some(true) {
+            EventKind::SessionCompleted(data) => {
+                if data.ok {
                     self.state = HudState::Success;
                     self.hide_at = Some(Instant::now() + Duration::from_millis(700));
                 }
             }
-            _ => {}
+            EventKind::RecordingLimitReached(_)
+            | EventKind::OutputCompleted(_)
+            | EventKind::Unknown { .. } => {}
         }
     }
 
-    fn apply_state(&mut self, snapshot: &Value) {
+    fn apply_state(&mut self, snapshot: &StateSnapshot) {
         let previous = self.state;
-        let next = match snapshot
-            .get("state")
-            .and_then(Value::as_str)
-            .unwrap_or("idle")
-        {
-            "recording" => HudState::Recording,
-            "stopping" => HudState::Stopping,
-            "processing" => HudState::Processing,
-            _ => HudState::Idle,
+        let next = match snapshot.state {
+            State::Idle => HudState::Idle,
+            State::Recording => HudState::Recording,
+            State::Stopping => HudState::Stopping,
+            State::Processing => HudState::Processing,
         };
         if next == HudState::Idle
             && matches!(previous, HudState::Success | HudState::Error)
@@ -141,9 +115,9 @@ impl Model {
         }
         self.state = next;
         self.stage = snapshot
-            .get("stage")
-            .and_then(Value::as_str)
-            .unwrap_or("")
+            .stage
+            .0
+            .map_or("", ProcessingStage::as_str)
             .to_owned();
         if self.state == HudState::Recording && previous != HudState::Recording {
             self.recording_started = Some(Instant::now());
@@ -240,7 +214,8 @@ fn install_tick(
     glib::timeout_add_local(Duration::from_millis(16), move || {
         while let Ok(message) = receiver.try_recv() {
             match message {
-                UiMessage::Frame(value) => model.borrow_mut().apply(&value),
+                UiMessage::Snapshot(snapshot) => model.borrow_mut().apply_state(&snapshot),
+                UiMessage::Event(event) => model.borrow_mut().apply_event(event),
                 UiMessage::Disconnected => {
                     let mut model = model.borrow_mut();
                     if model.state != HudState::Idle {
@@ -276,30 +251,67 @@ fn connection_loop(sender: Sender<UiMessage>) {
 }
 
 fn subscribe(sender: &Sender<UiMessage>) -> std::io::Result<()> {
-    let mut stream = UnixStream::connect(socket_path())?;
-    let request = json!({"v":1,"type":"request","id":1,"method":"subscribe","params":{}});
+    const REQUEST_ID: u64 = 1;
+
+    let mut stream = UnixStream::connect(socket_path()?)?;
+    let request = json!({"v":1,"type":"request","id":REQUEST_ID,"method":"subscribe","params":{}});
     writeln!(stream, "{request}")?;
     let mut reader = BufReader::new(stream);
-    let mut line = String::new();
+    let mut storage = [0; protocol::MAX_FRAME_LEN];
+    let mut decoder = protocol::SubscriptionDecoder::new(REQUEST_ID);
     loop {
-        line.clear();
-        if reader.read_line(&mut line)? == 0 {
-            return Err(std::io::ErrorKind::UnexpectedEof.into());
-        }
-        if let Ok(value) = serde_json::from_str::<Value>(&line) {
-            if sender.send(UiMessage::Frame(value)).is_err() {
-                return Ok(());
+        let frame = protocol::read_frame(&mut reader, &mut storage)?;
+        let message = match decoder.decode(frame)? {
+            protocol::SubscriptionMessage::Snapshot(snapshot) => {
+                UiMessage::Snapshot(snapshot.state)
             }
+            protocol::SubscriptionMessage::Event(event) => UiMessage::Event(event),
+        };
+        if sender.send(message).is_err() {
+            return Ok(());
         }
     }
 }
 
-fn socket_path() -> PathBuf {
+fn socket_path() -> io::Result<PathBuf> {
+    if let Some(path) = env::var_os("SAYALL_SOCKET") {
+        let path = PathBuf::from(path);
+        validate_socket_path(&path)?;
+        return Ok(path);
+    }
     if let Some(dir) = env::var_os("XDG_RUNTIME_DIR") {
-        return PathBuf::from(dir).join("sayall.sock");
+        return Ok(PathBuf::from(dir).join("sayall.sock"));
     }
     let uid = unsafe { libc::geteuid() };
-    PathBuf::from(format!("/tmp/sayall-{uid}.sock"))
+    Ok(PathBuf::from(format!("/tmp/sayall-{uid}.sock")))
+}
+
+fn validate_socket_path(path: &Path) -> io::Result<()> {
+    // Linux sockaddr_un.sun_path has 108 bytes and needs a trailing NUL.
+    const UNIX_PATH_MAX: usize = 108;
+    let bytes = path.as_os_str().as_bytes();
+    let invalid = || io::Error::new(io::ErrorKind::InvalidInput, "unsafe SAYALL_SOCKET path");
+    if !path.is_absolute()
+        || bytes.is_empty()
+        || bytes.len() >= UNIX_PATH_MAX
+        || bytes.last() == Some(&b'/')
+        || bytes.iter().any(u8::is_ascii_control)
+    {
+        return Err(invalid());
+    }
+    let mut segments = bytes.split(|byte| *byte == b'/');
+    if segments.next() != Some(&b""[..]) {
+        return Err(invalid());
+    }
+    let remaining: Vec<_> = segments.collect();
+    if remaining.len() < 2
+        || remaining
+            .iter()
+            .any(|segment| segment.is_empty() || *segment == b"." || *segment == b"..")
+    {
+        return Err(invalid());
+    }
+    Ok(())
 }
 
 fn draw_hud(cr: &cairo::Context, width: i32, height: i32, model: &Model) {
@@ -432,40 +444,73 @@ fn rounded_rect(cr: &cairo::Context, x: f64, y: f64, width: f64, height: f64, ra
 mod tests {
     use super::*;
 
+    fn decoder_with_idle_snapshot() -> protocol::SubscriptionDecoder {
+        let mut decoder = protocol::SubscriptionDecoder::new(1);
+        decoder
+            .decode(
+                br#"{"v":1,"type":"response","id":1,"ok":true,"result":{"state":{"state":"idle","stage":null,"session_id":1,"elapsed_ms":0,"cleanup":true},"next_seq":1}}"#,
+            )
+            .unwrap();
+        decoder
+    }
+
+    fn decode_event(decoder: &mut protocol::SubscriptionDecoder, frame: &[u8]) -> ProtocolEvent {
+        let protocol::SubscriptionMessage::Event(event) = decoder.decode(frame).unwrap() else {
+            panic!("expected event")
+        };
+        event
+    }
+
     #[test]
     fn model_tracks_recording_and_levels() {
         let mut model = Model::default();
-        model.apply(&json!({
-            "v": 1,
-            "type": "event",
-            "event": "state.changed",
-            "data": {"state": "recording", "stage": null}
-        }));
+        let mut decoder = decoder_with_idle_snapshot();
+        let state = decode_event(
+            &mut decoder,
+            br#"{"v":1,"type":"event","seq":1,"event":"state.changed","session_id":1,"data":{"state":"recording","stage":null,"session_id":1,"elapsed_ms":0,"cleanup":true}}"#,
+        );
+        model.apply_event(state);
         assert_eq!(model.state, HudState::Recording);
-        model.apply(&json!({
-            "v": 1,
-            "type": "event",
-            "event": "audio.level",
-            "data": {"rms": 0.2, "peak": 0.5, "clipping": false}
-        }));
+        let level = decode_event(
+            &mut decoder,
+            br#"{"v":1,"type":"event","seq":2,"event":"audio.level","session_id":1,"data":{"rms":0.2,"peak":0.5,"clipping":false,"window_ms":100}}"#,
+        );
+        model.apply_event(level);
         assert!(model.history.back().copied().unwrap_or_default() > 0.3);
     }
 
     #[test]
     fn error_survives_following_idle_state_until_timeout() {
         let mut model = Model::default();
-        model.apply(&json!({
-            "v": 1,
-            "type": "event",
-            "event": "operation.error",
-            "data": {"message": "Network failed"}
-        }));
-        model.apply(&json!({
-            "v": 1,
-            "type": "event",
-            "event": "state.changed",
-            "data": {"state": "idle", "stage": null}
-        }));
+        let mut decoder = decoder_with_idle_snapshot();
+        let error = decode_event(
+            &mut decoder,
+            br#"{"v":1,"type":"event","seq":1,"event":"operation.error","session_id":1,"data":{"code":"failed","message":"Network failed"}}"#,
+        );
+        model.apply_event(error);
+        let idle = decode_event(
+            &mut decoder,
+            br#"{"v":1,"type":"event","seq":2,"event":"state.changed","session_id":1,"data":{"state":"idle","stage":null,"session_id":1,"elapsed_ms":0,"cleanup":true}}"#,
+        );
+        model.apply_event(idle);
         assert_eq!(model.state, HudState::Error);
+    }
+
+    #[test]
+    fn socket_override_validation_matches_safe_filesystem_paths() {
+        assert!(validate_socket_path(Path::new("/tmp/private/sayall.sock")).is_ok());
+        for invalid in [
+            "relative.sock",
+            "/sayall.sock",
+            "/tmp/../sayall.sock",
+            "/tmp//sayall.sock",
+            "/tmp/private/",
+            "/tmp/private/socket\n.sock",
+        ] {
+            assert!(
+                validate_socket_path(Path::new(invalid)).is_err(),
+                "{invalid}"
+            );
+        }
     }
 }
