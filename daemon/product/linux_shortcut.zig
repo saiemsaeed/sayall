@@ -1,4 +1,5 @@
 const std = @import("std");
+const contract = @import("contracts.zig");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
@@ -7,12 +8,7 @@ const state_version = 1;
 const managed_begin = "# BEGIN SAYALL MANAGED SHORTCUT";
 const managed_end = "# END SAYALL MANAGED SHORTCUT";
 
-pub const State = struct {
-    enabled: bool,
-    shortcut: []const u8,
-    persisted: bool,
-    external: bool = false,
-};
+pub const State = contract.ShortcutState;
 
 const StoredState = struct {
     version: u8 = state_version,
@@ -20,23 +16,9 @@ const StoredState = struct {
     shortcut: []const u8 = default_shortcut,
 };
 
-pub const Activation = enum {
-    reloaded,
-    deferred,
-};
-
-pub const Conflict = struct {
-    path: []const u8,
-    line: usize,
-    binding: []const u8,
-    equivalent: bool,
-};
-
-pub const Unresolved = struct {
-    path: []const u8,
-    line: usize,
-    expression: []const u8,
-};
+pub const Activation = contract.ShortcutActivation;
+pub const Conflict = contract.ShortcutConflict;
+pub const Unresolved = contract.ShortcutUnresolved;
 
 pub const Request = union(enum) {
     current,
@@ -45,27 +27,8 @@ pub const Request = union(enum) {
     disable,
 };
 
-pub const RollbackFailure = enum {
-    concurrent_modification,
-    io_failure,
-};
-
-pub const ApplyResult = union(enum) {
-    applied: struct {
-        state: State,
-        changed: bool,
-        activation: Activation,
-    },
-    external: State,
-    external_owned: State,
-    conflict: Conflict,
-    unresolved: Unresolved,
-    unsupported: []const u8,
-    unsafe_root: []const u8,
-    concurrent_modification: []const u8,
-    reload_failed: []const u8,
-    rollback_failed: RollbackFailure,
-};
+pub const RollbackFailure = contract.ShortcutRollbackFailure;
+pub const ApplyResult = contract.ShortcutApplyResult;
 
 const Paths = struct {
     state: []const u8,

@@ -12,7 +12,9 @@ const daemon = @import("daemon.zig");
 const events = @import("events.zig");
 const recorder = @import("recorder.zig");
 const protocol = @import("protocol.zig");
-const shortcut = @import("shortcut.zig");
+const product_module = @import("product.zig");
+const product = product_module.Integration;
+const product_contract = product_module.contracts;
 const deepgram = @import("stt/deepgram.zig");
 const deepgram_stream = @import("stt/deepgram_stream.zig");
 const groq = @import("llm/groq.zig");
@@ -69,22 +71,17 @@ fn run(init: std.process.Init) !u8 {
 
     if (std.mem.eql(u8, cmd, "restart")) {
         if (argv.len != 2) return invalidArguments("restart");
-        var child = std.process.spawn(io, .{
-            .argv = &.{ "systemctl", "--user", "restart", "sayall.service" },
-            .stdin = .ignore,
-            .stdout = .inherit,
-            .stderr = .inherit,
-        }) catch |err| {
-            std.debug.print("sayall: could not run systemctl ({s})\n", .{@errorName(err)});
-            return 1;
-        };
-        const term = child.wait(io) catch |err| {
-            std.debug.print("sayall: could not restart service ({s})\n", .{@errorName(err)});
-            return 1;
-        };
-        switch (term) {
-            .exited => |code| if (code != 0) return 1,
-            else => return 1,
+        switch (product.restart(io) catch |err| return productError("restart", err)) {
+            .restarted => {},
+            .spawn_failed => |err| {
+                std.debug.print("sayall: could not run systemctl ({s})\n", .{@errorName(err)});
+                return 1;
+            },
+            .wait_failed => |err| {
+                std.debug.print("sayall: could not restart service ({s})\n", .{@errorName(err)});
+                return 1;
+            },
+            .failed => return 1,
         }
         try printLine(io, "SayAll restarted; configuration reloaded.");
         return 0;
@@ -92,13 +89,12 @@ fn run(init: std.process.Init) !u8 {
 
     if (std.mem.eql(u8, cmd, "setup")) {
         if (argv.len != 2) return invalidArguments("setup");
-        const shortcut_ok = try setupShortcut(arena, io, env);
-        const services_ok = setupServices(io);
-        if (!services_ok) {
+        const result = product.setup(arena, io, env, reportShortcutResult) catch |err| return productError("setup", err);
+        if (!result.services_ok) {
             std.debug.print("sayall: could not configure the systemd user services\n", .{});
             return 1;
         }
-        if (!shortcut_ok) {
+        if (!result.shortcut_ok) {
             std.debug.print("sayall: services were enabled and restarted, but shortcut setup is incomplete; resolve the error above and retry 'sayall setup'.\n", .{});
             return 1;
         }
@@ -115,31 +111,36 @@ fn run(init: std.process.Init) !u8 {
                 return 1;
             }
         } else |_| {}
-        const package = try installedPackage(arena, io) orelse {
-            std.debug.print("sayall: update requires an installed AUR package (sayall, sayall-src, or sayall-git; legacy sayall-bin is also recognized)\n", .{});
-            return 1;
+        const preparation = product.prepareUpdate(arena, io) catch |err| return productError("update", err);
+        const package = switch (preparation) {
+            .package_missing => {
+                std.debug.print("sayall: update requires an installed AUR package (sayall, sayall-src, or sayall-git; legacy sayall-bin is also recognized)\n", .{});
+                return 1;
+            },
+            .yay_missing => {
+                std.debug.print("sayall: update requires the 'yay' AUR helper\n", .{});
+                return 1;
+            },
+            .ready => |plan| plan,
         };
-        if (!try commandExists(arena, io, "yay")) {
-            std.debug.print("sayall: update requires the 'yay' AUR helper\n", .{});
-            return 1;
-        }
         if (package.legacy_migration) {
             try printLine(io, "Migrating legacy sayall-bin installation to the current sayall package with yay...");
         } else {
             try printLine(io, try std.fmt.allocPrint(arena, "Checking/updating {s} with yay...", .{package.installed}));
         }
-        const updated = runInherited(io, &.{ "yay", "-S", "--needed", package.update_target });
-        if (!updated) {
-            std.debug.print("sayall: package update failed; services were not restarted\n", .{});
-            return 1;
-        }
-        if (!setupServices(io)) {
-            std.debug.print("sayall: yay completed successfully, but the systemd user services could not be restarted\n", .{});
-            return 1;
-        }
-        if (!try setupShortcut(arena, io, env)) {
-            std.debug.print("sayall: package updated and services restarted, but the saved shortcut could not be applied\n", .{});
-            return 1;
+        switch (product.finishUpdate(arena, io, env, package) catch |err| return productError("update", err)) {
+            .package_failed => {
+                std.debug.print("sayall: package update failed; services were not restarted\n", .{});
+                return 1;
+            },
+            .services_failed => {
+                std.debug.print("sayall: yay completed successfully, but the systemd user services could not be restarted\n", .{});
+                return 1;
+            },
+            .shortcut => |result| if (!try reportShortcutResult(arena, io, result)) {
+                std.debug.print("sayall: package updated and services restarted, but the saved shortcut could not be applied\n", .{});
+                return 1;
+            },
         }
         try printLine(io, "yay completed successfully; SayAll services enabled and restarted.");
         return 0;
@@ -421,6 +422,12 @@ fn invalidArguments(command: []const u8) u8 {
     return 2;
 }
 
+fn productError(command: []const u8, err: anyerror) anyerror!u8 {
+    if (err != error.UnsupportedPlatform) return err;
+    std.debug.print("sayall: '{s}' is unsupported on this platform\n", .{command});
+    return 1;
+}
+
 fn printLine(io: Io, text: []const u8) !void {
     const stdout: Io.File = .stdout();
     var buf: [256]u8 = undefined;
@@ -430,16 +437,6 @@ fn printLine(io: Io, text: []const u8) !void {
     try w.interface.flush();
 }
 
-fn setupServices(io: Io) bool {
-    if (!runInherited(io, &.{ "systemctl", "--user", "daemon-reload" })) return false;
-    if (!runInherited(io, &.{ "systemctl", "--user", "enable", "sayall.service", "sayall-hud.service" })) return false;
-    return runInherited(io, &.{ "systemctl", "--user", "restart", "sayall.service", "sayall-hud.service" });
-}
-
-fn setupShortcut(arena: std.mem.Allocator, io: Io, env: *const std.process.Environ.Map) !bool {
-    return reportShortcutResult(arena, io, try shortcut.apply(arena, io, env, .current));
-}
-
 fn shortcutCommand(
     arena: std.mem.Allocator,
     io: Io,
@@ -447,10 +444,12 @@ fn shortcutCommand(
     argv: []const [*:0]const u8,
 ) !u8 {
     if (argv.len == 2 or (argv.len == 3 and std.mem.eql(u8, std.mem.span(argv[2]), "show"))) {
-        const state = shortcut.loadState(arena, io, env) catch |err| {
+        const result = product.shortcut(arena, io, env, .show) catch |err| {
+            if (err == error.UnsupportedPlatform) return productError("shortcut", err);
             std.debug.print("sayall: cannot read shortcut state ({s})\n", .{@errorName(err)});
             return 1;
         };
+        const state = result.state;
         if (state.external) {
             try printLine(io, try std.fmt.allocPrint(arena, "SayAll shortcut: {s} (existing external binding)", .{state.shortcut}));
         } else if (state.enabled) {
@@ -465,13 +464,11 @@ fn shortcutCommand(
     }
 
     if (argv.len == 3 and std.mem.eql(u8, std.mem.span(argv[2]), "disable")) {
-        const ok = try reportShortcutResult(arena, io, try shortcut.apply(arena, io, env, .disable));
-        return if (ok) 0 else 1;
+        return presentShortcutCommand(arena, io, product.shortcut(arena, io, env, .disable) catch |err| return productError("shortcut", err));
     }
 
     if (argv.len == 3 and std.mem.eql(u8, std.mem.span(argv[2]), "reset")) {
-        const ok = try reportShortcutResult(arena, io, try shortcut.apply(arena, io, env, .reset));
-        return if (ok) 0 else 1;
+        return presentShortcutCommand(arena, io, product.shortcut(arena, io, env, .reset) catch |err| return productError("shortcut", err));
     }
 
     if ((argv.len == 4 or argv.len == 5) and std.mem.eql(u8, std.mem.span(argv[2]), "set")) {
@@ -479,15 +476,21 @@ fn shortcutCommand(
             std.mem.span(argv[3])
         else
             try std.fmt.allocPrint(arena, "{s}+{s}", .{ std.mem.span(argv[3]), std.mem.span(argv[4]) });
-        const normalized = shortcut.parseShortcut(arena, requested) catch {
-            std.debug.print("sayall: invalid shortcut '{s}'; use a chord such as CTRL+SLASH, SUPER+SPACE, or F9\n", .{requested});
-            return 2;
-        };
-        const ok = try reportShortcutResult(arena, io, try shortcut.apply(arena, io, env, .{ .set = normalized }));
-        return if (ok) 0 else 1;
+        return presentShortcutCommand(arena, io, product.shortcut(arena, io, env, .{ .set = requested }) catch |err| return productError("shortcut", err));
     }
 
     return invalidArguments("shortcut");
+}
+
+fn presentShortcutCommand(arena: std.mem.Allocator, io: Io, result: product_contract.ShortcutResult) !u8 {
+    return switch (result) {
+        .applied => |applied| if (try reportShortcutResult(arena, io, applied)) 0 else 1,
+        .invalid => |requested| blk: {
+            std.debug.print("sayall: invalid shortcut '{s}'; use a chord such as CTRL+SLASH, SUPER+SPACE, or F9\n", .{requested});
+            break :blk 2;
+        },
+        .state => unreachable,
+    };
 }
 
 fn externalShortcutRequiresMigration(value: []const u8) u8 {
@@ -495,7 +498,7 @@ fn externalShortcutRequiresMigration(value: []const u8) u8 {
     return 1;
 }
 
-fn reportShortcutResult(arena: std.mem.Allocator, io: Io, result: shortcut.ApplyResult) !bool {
+fn reportShortcutResult(arena: std.mem.Allocator, io: Io, result: product_contract.ShortcutApplyResult) !bool {
     switch (result) {
         .applied => |applied| {
             if (applied.state.enabled) {
@@ -562,53 +565,6 @@ fn reportShortcutResult(arena: std.mem.Allocator, io: Io, result: shortcut.Apply
     }
 }
 
-fn runInherited(io: Io, argv: []const []const u8) bool {
-    var child = std.process.spawn(io, .{
-        .argv = argv,
-        .stdin = .inherit,
-        .stdout = .inherit,
-        .stderr = .inherit,
-    }) catch return false;
-    const term = child.wait(io) catch return false;
-    return termSucceeded(term);
-}
-
-const InstalledPackage = struct {
-    installed: []const u8,
-    update_target: []const u8,
-    legacy_migration: bool,
-};
-
-fn installedPackage(arena: std.mem.Allocator, io: Io) !?InstalledPackage {
-    for (aur_package_candidates) |package| {
-        if (try commandSucceeds(arena, io, &.{ "pacman", "-Qq", package })) return packageIdentity(package).?;
-    }
-    return null;
-}
-
-fn packageIdentity(installed: []const u8) ?InstalledPackage {
-    if (std.mem.eql(u8, installed, "sayall-bin")) return .{
-        .installed = installed,
-        .update_target = "sayall",
-        .legacy_migration = true,
-    };
-    for (aur_package_candidates[0..3]) |current| {
-        if (std.mem.eql(u8, installed, current)) return .{
-            .installed = installed,
-            .update_target = installed,
-            .legacy_migration = false,
-        };
-    }
-    return null;
-}
-
-const aur_package_candidates = [_][]const u8{
-    "sayall",
-    "sayall-src",
-    "sayall-git",
-    "sayall-bin", // Legacy migration/update fallback; no current recipe uses this name.
-};
-
 fn updateAllowed(daemon_state: []const u8) bool {
     return std.mem.eql(u8, daemon_state, "idle");
 }
@@ -622,13 +578,8 @@ fn doctor(arena: std.mem.Allocator, io: Io, env: *const std.process.Environ.Map)
     try diagnostic(arena, io, "ok", "Version", "sayall " ++ build_options.version);
     try diagnostic(arena, io, "ok", "Executable", exe);
 
-    const wayland = env.get("WAYLAND_DISPLAY");
-    if (wayland) |display| {
-        try diagnostic(arena, io, "ok", "Wayland", display);
-    } else {
-        failures += 1;
-        try diagnostic(arena, io, "fail", "Wayland", "WAYLAND_DISPLAY is not set");
-    }
+    const environment_diagnostic = product.environmentDiagnostic(env) catch |err| return productError("doctor", err);
+    try presentDiagnostic(arena, io, environment_diagnostic, &failures, &warnings);
 
     var loaded_config: ?config.Config = null;
     const cfg_path = try paths.Config.file(arena, env);
@@ -675,38 +626,14 @@ fn doctor(arena: std.mem.Allocator, io: Io, env: *const std.process.Environ.Map)
         try diagnostic(arena, io, "fail", "Configuration", "HOME and XDG_CONFIG_HOME are unavailable");
     }
 
-    const required_commands = [_][]const u8{ "pw-record", "wtype", "wl-copy", "sayall-hud" };
-    for (required_commands) |command| {
-        if (try commandExists(arena, io, command)) {
-            try diagnostic(arena, io, "ok", "Command", command);
-        } else {
-            failures += 1;
-            try diagnostic(arena, io, "fail", "Missing command", command);
-        }
-    }
-    if (loaded_config) |cfg| {
-        if (cfg.notifications) {
-            if (try commandExists(arena, io, "notify-send")) {
-                try diagnostic(arena, io, "ok", "Command", "notify-send");
-            } else {
-                warnings += 1;
-                try diagnostic(arena, io, "warn", "Missing command", "notify-send (notifications will fail)");
-            }
-        }
-    }
-
-    if (try commandSucceeds(arena, io, &.{ "systemctl", "--user", "is-active", "--quiet", "sayall.service" })) {
-        try diagnostic(arena, io, "ok", "Service", "sayall.service is active");
-    } else {
-        failures += 1;
-        try diagnostic(arena, io, "fail", "Service", "start with: systemctl --user enable --now sayall sayall-hud");
-    }
-    if (try commandSucceeds(arena, io, &.{ "systemctl", "--user", "is-active", "--quiet", "sayall-hud.service" })) {
-        try diagnostic(arena, io, "ok", "HUD service", "sayall-hud.service is active");
-    } else {
-        failures += 1;
-        try diagnostic(arena, io, "fail", "HUD service", "start with: systemctl --user enable --now sayall-hud");
-    }
+    const platform_diagnostics = product.diagnostics(arena, io, if (loaded_config) |cfg| cfg.notifications else null) catch |err|
+        return productError("doctor", err);
+    for (platform_diagnostics.commands) |item|
+        try presentDiagnostic(arena, io, item, &failures, &warnings);
+    if (platform_diagnostics.notification) |item|
+        try presentDiagnostic(arena, io, item, &failures, &warnings);
+    for (platform_diagnostics.services) |item|
+        try presentDiagnostic(arena, io, item, &failures, &warnings);
 
     const runtime = try paths.Runtime.discover(arena, env);
     if (ipc.sendCommand(arena, io, runtime.endpoint, "status")) |reply| {
@@ -720,28 +647,29 @@ fn doctor(arena: std.mem.Allocator, io: Io, env: *const std.process.Environ.Map)
     return if (failures == 0) 0 else 1;
 }
 
+fn presentDiagnostic(
+    arena: std.mem.Allocator,
+    io: Io,
+    item: product_contract.Diagnostic,
+    failures: *u8,
+    warnings: *u8,
+) !void {
+    const status = switch (item.status) {
+        .ok => "ok",
+        .warn => blk: {
+            warnings.* += 1;
+            break :blk "warn";
+        },
+        .fail => blk: {
+            failures.* += 1;
+            break :blk "fail";
+        },
+    };
+    try diagnostic(arena, io, status, item.label, item.detail);
+}
+
 fn diagnostic(arena: std.mem.Allocator, io: Io, status: []const u8, label: []const u8, detail: []const u8) !void {
     try printLine(io, try std.fmt.allocPrint(arena, "[{s}] {s}: {s}", .{ status, label, detail }));
-}
-
-fn commandExists(arena: std.mem.Allocator, io: Io, command: []const u8) !bool {
-    return commandSucceeds(arena, io, &.{ "sh", "-c", "command -v -- \"$1\" >/dev/null 2>&1", "sayall-doctor", command });
-}
-
-fn commandSucceeds(arena: std.mem.Allocator, io: Io, argv: []const []const u8) !bool {
-    const result = std.process.run(arena, io, .{
-        .argv = argv,
-        .stdout_limit = .limited(4096),
-        .stderr_limit = .limited(4096),
-    }) catch return false;
-    return termSucceeded(result.term);
-}
-
-fn termSucceeded(term: std.process.Child.Term) bool {
-    return switch (term) {
-        .exited => |code| code == 0,
-        else => false,
-    };
 }
 
 fn printStats(io: Io, summary: metrics.Summary) !void {
@@ -884,13 +812,7 @@ test {
     _ = metrics;
     _ = keywords;
     _ = protocol;
-    _ = shortcut;
-}
-
-test "doctor recognizes successful process exits" {
-    try std.testing.expect(termSucceeded(.{ .exited = 0 }));
-    try std.testing.expect(!termSucceeded(.{ .exited = 1 }));
-    try std.testing.expect(!termSucceeded(.{ .unknown = 1 }));
+    _ = product_module;
 }
 
 test "updates only restart an idle daemon" {
@@ -898,25 +820,6 @@ test "updates only restart an idle daemon" {
     try std.testing.expect(!updateAllowed("recording"));
     try std.testing.expect(!updateAllowed("processing"));
     try std.testing.expect(!updateAllowed("stopping"));
-}
-
-test "update recognizes every current AUR package and the legacy binary name" {
-    try std.testing.expectEqualSlices(
-        []const u8,
-        &.{ "sayall", "sayall-src", "sayall-git", "sayall-bin" },
-        &aur_package_candidates,
-    );
-    for (aur_package_candidates[0..3]) |package| {
-        const identity = packageIdentity(package).?;
-        try std.testing.expectEqualStrings(package, identity.installed);
-        try std.testing.expectEqualStrings(package, identity.update_target);
-        try std.testing.expect(!identity.legacy_migration);
-    }
-    const legacy = packageIdentity("sayall-bin").?;
-    try std.testing.expectEqualStrings("sayall-bin", legacy.installed);
-    try std.testing.expectEqualStrings("sayall", legacy.update_target);
-    try std.testing.expect(legacy.legacy_migration);
-    try std.testing.expect(packageIdentity("unrelated") == null);
 }
 
 test "keyword search preserves values and folds ASCII case" {

@@ -1,6 +1,11 @@
 #!/bin/sh
 set -eu
 
+if [ "$(uname -s)" != Linux ]; then
+  echo 'shortcut CLI tests skipped: Linux host required'
+  exit 0
+fi
+
 sayall=$1
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 test_dir=$(mktemp -d /tmp/sayall-shortcut-test.XXXXXX)

@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -69,11 +70,13 @@ pub fn build(b: *std.Build) void {
         .root_module = runtime_platform_test_module,
     });
     const run_runtime_platform_tests = b.addRunArtifact(runtime_platform_tests);
-    const shortcut_cli_tests = b.addSystemCommand(&.{ "sh", b.pathFromRoot("tests/shortcut-cli.sh") });
-    shortcut_cli_tests.addArtifactArg(exe);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(&run_portable_audio_tests.step);
     test_step.dependOn(&run_runtime_platform_tests.step);
-    test_step.dependOn(&shortcut_cli_tests.step);
+    if (builtin.os.tag == .linux and target.result.os.tag == .linux) {
+        const shortcut_cli_tests = b.addSystemCommand(&.{ "sh", b.pathFromRoot("tests/shortcut-cli.sh") });
+        shortcut_cli_tests.addArtifactArg(exe);
+        test_step.dependOn(&shortcut_cli_tests.step);
+    }
 }
