@@ -8,14 +8,26 @@ removed before output.
 - **STT:** Deepgram Nova-3 (cloud streaming with REST fallback)
 - **Cleanup:** LLM pass (Groq `llama-3.1-8b-instant`) — removes filler words,
   false starts, stutters; fixes grammar and punctuation without changing meaning
-- **Supported platform:** Arch Linux with Omarchy (Wayland/Hyprland), on x86-64
-- **Other Linux systems:** may work, but are not tested or supported for 0.1.0
 - **Zig dependencies:** one pinned WebSocket library; otherwise Zig's standard
   library
 - **Runtime dependencies:** PipeWire `pw-record`, `wtype`, `wl-copy`, and
   `notify-send`
 - **Linux HUD:** Rust, GTK4, and gtk4-layer-shell
 - **Requires:** Zig 0.16.x
+
+## Platform support
+
+| Platform / target | 0.1.4 status |
+| --- | --- |
+| x86-64 Arch Linux with Omarchy (Wayland/Hyprland) | Supported and tested; the only app/runtime/package and binary release target |
+| Darwin (`aarch64-macos` compile target) | Core compile readiness only; no app, runtime, package, or installable output |
+| Windows (`x86_64-windows` compile target) | Core compile readiness only; no app, runtime, package, or installable output |
+
+Other Linux systems may work but are not tested or supported. Darwin and
+Windows readiness does not constitute product or runtime support. The accepted
+[`0.1.4 platform ownership and support ADR`](docs/adr-platform-ownership-and-support.md)
+defines these boundaries; the current Linux control and HUD compatibility API
+is the [`protocol-v1 contract`](docs/protocol-v1.md).
 
 ## Getting Started
 
@@ -171,9 +183,11 @@ Restart the packaged installation afterwards with
 Print the installed release version with `sayall --version`.
 
 The Darwin and Windows commands are contributor readiness checks only. They
-compile portable core seams against explicit unsupported-platform modules;
-they do not run foreign binaries, create installable outputs, or claim runtime
-or product support. Linux x86-64 remains the only release artifact target.
+compile portable core seams against explicit unsupported-platform modules.
+Their foreign test binaries are compilation outputs only: the build does not
+run or install them, and the packaging script does not include them. They are
+not apps, runtimes, packages, or supported products. Linux x86-64 remains the
+only binary release artifact target.
 
 After changing `~/.config/sayall/config.json`, restart the systemd user service
 to load the new configuration:
@@ -237,9 +251,10 @@ user:
 
 ```sh
 sudo pacman -S --needed pipewire-audio wtype wl-clipboard libnotify gtk4 gtk4-layer-shell
-sha256sum -c SHA256SUMS
-tar -xzf sayall-0.1.0-linux-x86_64.tar.gz
-cd sayall-0.1.0-linux-x86_64
+sha256sum --check --ignore-missing SHA256SUMS
+# Replace VERSION with the published version from the archive filename.
+tar -xzf sayall-VERSION-linux-x86_64.tar.gz
+cd sayall-VERSION-linux-x86_64
 install -Dm755 -t ~/.local/bin bin/sayall bin/sayall-hud
 install -Dm644 -t ~/.config/systemd/user share/systemd/user/*.service
 systemctl --user daemon-reload
@@ -530,9 +545,9 @@ satisfied.
 
 ## Limitations
 
-- **Initial support scope** — version 0.1.0 is tested and supported only on
-  x86-64 Arch Linux running Omarchy. Other Wayland environments may work but
-  are currently community-supported.
+- **Support scope** — the [0.1.4 platform matrix](#platform-support) is limited
+  to x86-64 Arch Linux running Omarchy. Other Wayland environments may work
+  but are currently community-supported.
 - **REST network deadlines** — provider responses are memory-bounded, but an
   explicit end-to-end REST cancellation deadline is still roadmap work.
 - **Wayland input** — direct output requires a compositor implementing the
@@ -551,7 +566,8 @@ tests remain roadmap work.
 
 SayAll follows [Semantic Versioning](https://semver.org/). The daemon, CLI, and
 HUD are released together under one product version. Protocol versions are
-independent: SayAll 0.1.0 uses control protocol v1.
+independent: SayAll 0.1.4 continues to use the documented
+[`protocol-v1 contract`](docs/protocol-v1.md).
 
 During the pre-1.0 period, patch releases remain backward-compatible whenever
 possible. A minor release may make a documented breaking change to

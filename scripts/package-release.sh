@@ -11,10 +11,19 @@ cargo_version=$(awk '
     /^\[/ { package = 0 }
     package && /^version = "/ { gsub(/^version = "|"$/, ""); print; exit }
 ' ui/linux/Cargo.toml)
+cargo_lock_version=$(awk '
+    /^\[\[package\]\]$/ { package = 1; hud = 0; next }
+    /^\[/ { package = 0; hud = 0 }
+    package && /^name = "sayall-hud"$/ { hud = 1; next }
+    package && hud && /^version = "/ {
+        gsub(/^version = "|"$/, ""); print; exit
+    }
+' ui/linux/Cargo.lock)
 
-if [[ -z "$version" || "$version" != "$zon_version" || "$version" != "$cargo_version" ]]; then
-    printf 'version mismatch: VERSION=%q build.zig.zon=%q Cargo.toml=%q\n' \
-        "$version" "$zon_version" "$cargo_version" >&2
+if [[ -z "$version" || "$version" != "$zon_version" || \
+      "$version" != "$cargo_version" || "$version" != "$cargo_lock_version" ]]; then
+    printf 'version mismatch: VERSION=%q build.zig.zon=%q Cargo.toml=%q Cargo.lock=%q\n' \
+        "$version" "$zon_version" "$cargo_version" "$cargo_lock_version" >&2
     exit 1
 fi
 

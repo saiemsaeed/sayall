@@ -3,7 +3,24 @@
 All notable user-visible changes to SayAll are documented in this file. SayAll
 follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.1.4] - Unreleased
+
+### Added
+
+- Compile-only core readiness checks for `aarch64-macos` and `x86_64-windows`
+  exercise portable orchestration and contracts against explicit unsupported
+  runtime/product boundaries. They do not provide a macOS or Windows app,
+  runtime, package, or installable output.
+
+### Changed
+
+- Platform-independent orchestration and contracts are separated from the
+  Linux-owned runtime and product integrations, following the accepted
+  [platform ownership and support ADR](docs/adr-platform-ownership-and-support.md).
+- [Control protocol v1](docs/protocol-v1.md) now has explicit compatibility
+  fixtures, bounded framing, coherent subscription snapshots and sequencing,
+  event-gap recovery, and safer stale-socket replacement. The Linux HUD client
+  validates the same contract and resynchronizes after connection loss.
 
 ## [0.1.3] - 2026-07-22
 
@@ -66,7 +83,7 @@ Initial release, tested and supported on x86-64 Arch Linux with Omarchy.
 - Persistent privacy-safe transcription metrics and microphone diagnostics.
 - systemd user services and Hyprland hotkey integration.
 
-[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.1.3...HEAD
+[0.1.4]: https://github.com/saiemsaeed/sayall/compare/v0.1.3...HEAD
 [0.1.3]: https://github.com/saiemsaeed/sayall/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/saiemsaeed/sayall/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/saiemsaeed/sayall/compare/v0.1.0...v0.1.1

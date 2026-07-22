@@ -26,7 +26,13 @@ jobs:
           test "$GITHUB_REF_NAME" = "release/$version"
           grep -Eq "^## \[$version\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGELOG.md
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      - name: Build release archive
+      - name: Compile readiness / unsupported runtime — Darwin core
+        run: zig build check-darwin-core
+      - name: Compile readiness / unsupported runtime — Windows core
+        run: zig build check-windows-core
+      - name: Check Rust HUD
+        run: cargo check --locked --manifest-path ui/linux/Cargo.toml
+      - name: Build Linux x86-64 release archive
         run: bash scripts/package-release.sh
       - name: Publish GitHub release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
@@ -35,7 +41,8 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: SayAll ${{ steps.release.outputs.version }}
           files: |
-            dist/sayall-*.tar.gz
+            dist/sayall-${{ steps.release.outputs.version }}-linux-x86_64.tar.gz
+            dist/sayall-${{ steps.release.outputs.version }}.tar.gz
             dist/SHA256SUMS
           fail_on_unmatched_files: true
           generate_release_notes: true

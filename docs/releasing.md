@@ -2,33 +2,51 @@
 
 SayAll's Zig daemon/CLI and Rust HUD share one product version. `VERSION` is
 the source of truth. `build.zig.zon` and `ui/linux/Cargo.toml` must carry the
-same version because their package formats require literal metadata; the
-release script rejects mismatches.
+same version because their package formats require literal metadata, and
+`ui/linux/Cargo.lock` records that local HUD package version. The release
+script rejects a mismatch among all four files.
 
 Protocol versions are independent of the product version. Do not increment
 the control protocol merely for an application release.
 
 ## Supported release target
 
-Version 0.1.0 is built, tested, and supported for x86-64 Arch Linux with
-Omarchy. Release binaries may work on related Wayland systems, but that is not
-part of the 0.1.0 compatibility promise.
+| Platform / target | Release status |
+| --- | --- |
+| x86-64 Arch Linux with Omarchy (Wayland/Hyprland) | Supported and tested; the only app/runtime/package and binary artifact target |
+| Darwin (`aarch64-macos` compile target) | Core compile readiness only; no app, runtime, package, or installable output |
+| Windows (`x86_64-windows` compile target) | Core compile readiness only; no app, runtime, package, or installable output |
+
+Release binaries may work on related Linux Wayland systems, but that is not
+part of the 0.1.4 compatibility promise. The Darwin and Windows checks compile
+foreign test binaries without running or installing them. They are not release
+artifacts and do not extend the supported platform matrix. See the accepted
+[`0.1.4 platform ownership and support ADR`](adr-platform-ownership-and-support.md)
+and the current Linux HUD/control [`protocol-v1 compatibility contract`](protocol-v1.md).
 
 ## Prepare a release
 
 1. Start `release/<version>` from the tested `main` commit, for example
-   `git switch -c release/0.1.0`. Only release branches can publish; pushes to
+   `git switch -c release/0.1.4`. Only release branches can publish; pushes to
    `main` never create a release.
-2. On the release branch, move completed entries from `Unreleased` into the
-   versioned changelog section and set its date.
+2. On the release branch, replace the versioned changelog section's
+   `Unreleased` marker with the publication date and change its comparison
+   link from `HEAD` to the new tag.
 3. Set the same SemVer value in `VERSION`, `build.zig.zon`, and
-   `ui/linux/Cargo.toml`. The branch name must match that value exactly.
-4. Run `zig build test` and `cargo test --manifest-path ui/linux/Cargo.toml`.
+   `ui/linux/Cargo.toml`, then update `ui/linux/Cargo.lock`. The branch name
+   must match that value exactly.
+4. Run `zig build test`, `zig build check-darwin-core`,
+   `zig build check-windows-core`, `cargo test --locked --manifest-path
+   ui/linux/Cargo.toml`, and `cargo check --locked --manifest-path
+   ui/linux/Cargo.toml` on supported Linux.
 5. Run `scripts/package-release.sh`. It checks version agreement, builds both
-   executables, verifies `sayall --version`, and writes the archive and
-   checksum to `dist/`.
-6. Install the archive in a clean supported environment and complete a manual
-   recording, transcription, HUD, typing, restart, and uninstall smoke test.
+   Linux executables, verifies `sayall --version`, and writes the Linux x86-64
+   binary archive, source archive, and checksums to `dist/`. Inspect both
+   archive listings; no Darwin or Windows compile output is installable or
+   included.
+6. Install the Linux x86-64 archive in a clean x86-64 Arch Linux environment
+   running Omarchy and complete a manual recording, transcription, HUD,
+   typing, restart, and uninstall smoke test.
 7. Commit the release preparation and push `release/<version>`. The release
    workflow repeats all checks, creates the immutable `v<version>` tag at that
    exact commit, and publishes the GitHub Release with binary and source
