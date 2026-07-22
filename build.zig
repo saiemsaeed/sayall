@@ -52,9 +52,28 @@ pub fn build(b: *std.Build) void {
         .root_module = mod,
     });
     const run_unit_tests = b.addRunArtifact(unit_tests);
+    const portable_audio_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("daemon/recorder.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_portable_audio_tests = b.addRunArtifact(portable_audio_tests);
+    const runtime_platform_test_module = b.createModule(.{
+        .root_source_file = b.path("daemon/platform/runtime_platforms_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const runtime_platform_tests = b.addTest(.{
+        .root_module = runtime_platform_test_module,
+    });
+    const run_runtime_platform_tests = b.addRunArtifact(runtime_platform_tests);
     const shortcut_cli_tests = b.addSystemCommand(&.{ "sh", b.pathFromRoot("tests/shortcut-cli.sh") });
     shortcut_cli_tests.addArtifactArg(exe);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+    test_step.dependOn(&run_portable_audio_tests.step);
+    test_step.dependOn(&run_runtime_platform_tests.step);
     test_step.dependOn(&shortcut_cli_tests.step);
 }

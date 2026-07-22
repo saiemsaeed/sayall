@@ -1,11 +1,6 @@
+//! Portable PCM/WAV inspection, validation, conversion, and level analysis.
 const std = @import("std");
-const Io = std.Io;
 const Allocator = std.mem.Allocator;
-
-pub const Recording = struct {
-    /// Owned by the caller.
-    path: []u8,
-};
 
 pub const WavInfo = struct {
     seconds: f64,
@@ -19,92 +14,8 @@ pub const Levels = struct {
     rms: f64,
 };
 
-pub const Recorder = struct {
-    child: ?std.process.Child = null,
-    path: ?[]u8 = null,
-
-    /// Spawns pw-record writing 16 kHz mono s16 raw PCM to `dir`.
-    /// `source` may be empty (default source), or a PipeWire node name/serial.
-    pub fn start(self: *Recorder, gpa: Allocator, io: Io, dir_path: []const u8, source: []const u8) !void {
-        std.debug.assert(self.child == null);
-        var nonce: u64 = undefined;
-        try std.Io.randomSecure(io, std.mem.asBytes(&nonce));
-        const path = try std.fmt.allocPrint(gpa, "{s}/sayall-rec-{d}-{x}.pcm", .{
-            dir_path, std.os.linux.getpid(), nonce,
-        });
-        errdefer gpa.free(path);
-
-        var argv_buf: [11][]const u8 = undefined;
-        var argv_len: usize = 0;
-        const base_args = [_][]const u8{
-            "pw-record",
-            "--raw",
-            "--format",
-            "s16",
-            "--rate",
-            "16000",
-            "--channels",
-            "1",
-        };
-        for (base_args) |a| {
-            argv_buf[argv_len] = a;
-            argv_len += 1;
-        }
-        if (source.len > 0) {
-            argv_buf[argv_len] = "--target";
-            argv_buf[argv_len + 1] = source;
-            argv_len += 2;
-        }
-        argv_buf[argv_len] = path;
-        argv_len += 1;
-
-        const argv = try gpa.dupe([]const u8, argv_buf[0..argv_len]);
-        defer gpa.free(argv);
-
-        const child = try std.process.spawn(io, .{
-            .argv = argv,
-            .stdin = .ignore,
-            .stdout = .ignore,
-            .stderr = .ignore,
-        });
-
-        self.child = child;
-        self.path = path;
-    }
-
-    pub fn currentPath(self: *const Recorder) ?[]const u8 {
-        return self.path;
-    }
-
-    /// Sends SIGINT (so pw-record finalizes the WAV header), waits for exit,
-    /// and returns the recording. The caller owns `path` and must delete/free it.
-    pub fn stop(self: *Recorder, io: Io) !Recording {
-        const child = if (self.child) |*child| child else return error.NotRecording;
-        const path = self.path orelse return error.NotRecording;
-
-        if (child.id) |pid| {
-            std.posix.kill(pid, std.posix.SIG.INT) catch {};
-        }
-        _ = child.wait(io) catch {
-            child.kill(io);
-        };
-
-        self.child = null;
-        self.path = null;
-
-        return .{ .path = path };
-    }
-
-    /// Aborts an in-progress recording, deleting the file.
-    pub fn cancel(self: *Recorder, gpa: Allocator, io: Io) void {
-        const rec = self.stop(io) catch return;
-        Io.Dir.deleteFileAbsolute(io, rec.path) catch {};
-        gpa.free(rec.path);
-    }
-};
-
 /// Validates a WAV file and extracts duration. Handles arbitrary chunk layouts
-/// (pw-record may emit more than a bare 44-byte header).
+/// and remains independent of the platform capture implementation.
 pub fn inspectWav(bytes: []const u8) error{InvalidWav}!WavInfo {
     return (try parseWav(bytes)).info;
 }

@@ -94,7 +94,7 @@ const Daemon = struct {
 
     mutex: Io.Mutex = .init,
     state: State = .idle,
-    rec: recorder_mod.Recorder = .{},
+    rec: platform.Recorder = .{},
     rec_raw: bool = false,
     rec_started_ms: i64 = 0,
     session_id: u64 = 0,
@@ -121,7 +121,9 @@ const Daemon = struct {
 
     fn inform(self: *Daemon, title: []const u8, body: []const u8) void {
         self.log("{s}: {s}", .{ title, body });
-        if (self.cfg.notifications) notify.send(self.io, title, body);
+        if (self.cfg.notifications) notify.send(self.io, title, body) catch |err| {
+            self.log("notification unavailable: {s}", .{@errorName(err)});
+        };
     }
 
     fn handle(self: *Daemon, stream: Io.net.Stream) void {
@@ -306,7 +308,7 @@ const Daemon = struct {
             self.unlock();
             return "busy: daemon is not idle";
         }
-        self.rec.start(self.gpa, self.io, self.scratch_dir, self.cfg.recording.source) catch |err| {
+        const recording_path = self.rec.start(self.gpa, self.io, self.scratch_dir, self.cfg.recording.source) catch |err| {
             self.log("recorder start failed: {s}", .{@errorName(err)});
             self.unlock();
             self.recordPreSttFailure();
@@ -316,7 +318,7 @@ const Daemon = struct {
         };
         self.session_id +%= 1;
         const session = self.session_id;
-        const meter_path = self.gpa.dupe(u8, self.rec.currentPath().?) catch null;
+        const meter_path = self.gpa.dupe(u8, recording_path) catch null;
         self.state = .recording;
         self.stage = .none;
         self.rec_raw = raw;
@@ -326,7 +328,7 @@ const Daemon = struct {
                 self.gpa,
                 self.io,
                 &self.cfg.stt,
-                self.rec.currentPath().?,
+                recording_path,
             ) catch |err| blk: {
                 self.log("streaming setup failed: {s}; REST fallback armed", .{@errorName(err)});
                 break :blk null;
@@ -368,7 +370,9 @@ const Daemon = struct {
                 self.stream_session = null;
                 self.publishStateLocked();
                 self.unlock();
-                self.rec.cancel(self.gpa, self.io);
+                self.rec.cancel(self.gpa, self.io) catch |err| {
+                    self.log("recorder cancel failed: {s}", .{@errorName(err)});
+                };
                 if (stream_session) |stream| stream.cancel();
                 self.lock();
                 self.state = .idle;

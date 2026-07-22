@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const types = @import("platform/types.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -91,210 +92,75 @@ fn unsupported(name: []const u8) Capabilities {
 }
 
 pub const capabilities = descriptorFor(builtin.os.tag);
+pub const RuntimeRoot = types.RuntimeRoot;
+pub const ParentSecurity = types.ParentSecurity;
+pub const Recording = types.Recording;
 
-pub const RuntimeRoot = struct {
-    path: []const u8,
-    parent_security: ParentSecurity,
-};
+fn implementationFor(comptime os: std.Target.Os.Tag) type {
+    return switch (os) {
+        .linux => @import("platform/linux.zig"),
+        .driverkit, .ios, .maccatalyst, .macos, .tvos, .visionos, .watchos => @import("platform/darwin.zig"),
+        .windows => @import("platform/windows.zig"),
+        else => @import("platform/unsupported.zig"),
+    };
+}
 
-pub const ParentSecurity = enum {
-    private,
-    shared_sticky_tmp,
-};
+const implementation = implementationFor(builtin.os.tag);
 
-const implementation = switch (builtin.os.tag) {
-    .linux => Linux,
-    .driverkit, .ios, .maccatalyst, .macos, .tvos, .visionos, .watchos => Darwin,
-    .windows => Windows,
-    else => Unsupported,
-};
+/// The selected recorder is a concrete compile-time type; there is no runtime
+/// dispatch, registry, or injected platform object.
+pub const Recorder = implementation.Recorder;
 
-pub fn configFile(gpa: Allocator, env: *const std.process.Environ.Map) !?[]u8 {
+pub fn typeText(io: std.Io, text: []const u8) anyerror!void {
+    return implementation.typeText(io, text);
+}
+
+pub fn copyToClipboard(io: std.Io, text: []const u8) anyerror!void {
+    return implementation.copyToClipboard(io, text);
+}
+
+pub fn sendNotification(io: std.Io, title: []const u8, body: []const u8) anyerror!void {
+    return implementation.sendNotification(io, title, body);
+}
+
+pub fn configFile(gpa: Allocator, env: *const std.process.Environ.Map) anyerror!?[]u8 {
     return implementation.configFile(gpa, env);
 }
 
-pub fn keywordsFile(gpa: Allocator, env: *const std.process.Environ.Map) !?[]u8 {
+pub fn keywordsFile(gpa: Allocator, env: *const std.process.Environ.Map) anyerror!?[]u8 {
     return implementation.keywordsFile(gpa, env);
 }
 
-pub fn metricsFile(gpa: Allocator, env: *const std.process.Environ.Map) ![]u8 {
+pub fn metricsFile(gpa: Allocator, env: *const std.process.Environ.Map) anyerror![]u8 {
     return implementation.metricsFile(gpa, env);
 }
 
-pub fn runtimeRoot(env: *const std.process.Environ.Map) !RuntimeRoot {
+pub fn runtimeRoot(env: *const std.process.Environ.Map) anyerror!RuntimeRoot {
     return implementation.runtimeRoot(env);
 }
 
-pub fn effectiveUserId() !u32 {
+pub fn effectiveUserId() anyerror!u32 {
     return implementation.effectiveUserId();
 }
 
-pub fn validatePrivateParent(io: std.Io, path: []const u8) !void {
+pub fn validatePrivateParent(io: std.Io, path: []const u8) anyerror!void {
     return implementation.validatePrivateParent(io, path);
 }
 
-pub fn validateSharedTmpParent(io: std.Io, path: []const u8) !void {
+pub fn validateSharedTmpParent(io: std.Io, path: []const u8) anyerror!void {
     return implementation.validateSharedTmpParent(io, path);
 }
 
-pub fn validatePrivateSocket(io: std.Io, path: []const u8) !void {
+pub fn validatePrivateSocket(io: std.Io, path: []const u8) anyerror!void {
     return implementation.validatePrivateSocket(io, path);
 }
 
-pub fn validateSocketKind(io: std.Io, path: []const u8) !void {
+pub fn validateSocketKind(io: std.Io, path: []const u8) anyerror!void {
     return implementation.validateSocketKind(io, path);
 }
 
-pub fn makeSocketPrivate(path: []const u8) !void {
+pub fn makeSocketPrivate(path: []const u8) anyerror!void {
     return implementation.makeSocketPrivate(path);
-}
-
-const Linux = struct {
-    fn configFile(gpa: Allocator, env: *const std.process.Environ.Map) !?[]u8 {
-        if (env.get("XDG_CONFIG_HOME")) |dir| {
-            return try std.fmt.allocPrint(gpa, "{s}/sayall/config.json", .{dir});
-        }
-        if (env.get("HOME")) |home| {
-            return try std.fmt.allocPrint(gpa, "{s}/.config/sayall/config.json", .{home});
-        }
-        return null;
-    }
-
-    fn keywordsFile(gpa: Allocator, env: *const std.process.Environ.Map) !?[]u8 {
-        if (env.get("XDG_CONFIG_HOME")) |dir| {
-            if (dir.len == 0 or dir[0] != '/') return error.InvalidConfigHome;
-            return try std.fmt.allocPrint(gpa, "{s}/sayall/keywords.json", .{dir});
-        }
-        if (env.get("HOME")) |home| {
-            if (home.len == 0 or home[0] != '/') return error.InvalidConfigHome;
-            return try std.fmt.allocPrint(gpa, "{s}/.config/sayall/keywords.json", .{home});
-        }
-        return null;
-    }
-
-    fn metricsFile(gpa: Allocator, env: *const std.process.Environ.Map) ![]u8 {
-        if (env.get("XDG_STATE_HOME")) |dir| {
-            if (dir.len == 0 or dir[0] != '/') return error.InvalidStateHome;
-            return std.fmt.allocPrint(gpa, "{s}/sayall/metrics-v2.json", .{dir});
-        }
-        if (env.get("HOME")) |home| {
-            if (home.len == 0 or home[0] != '/') return error.InvalidStateHome;
-            return std.fmt.allocPrint(gpa, "{s}/.local/state/sayall/metrics-v2.json", .{home});
-        }
-        return error.StateHomeUnavailable;
-    }
-
-    fn runtimeRoot(env: *const std.process.Environ.Map) !RuntimeRoot {
-        if (env.get("XDG_RUNTIME_DIR")) |dir| {
-            try validateAbsoluteRoot(dir, error.InvalidRuntimeDir);
-            return .{ .path = dir, .parent_security = .private };
-        }
-        return .{ .path = "/tmp", .parent_security = .shared_sticky_tmp };
-    }
-
-    fn effectiveUserId() !u32 {
-        return @intCast(std.os.linux.geteuid());
-    }
-
-    fn validatePrivateParent(io: std.Io, path: []const u8) !void {
-        const value = try std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false });
-        if (value.kind != .directory) return error.EndpointParentNotDirectory;
-        if (value.permissions.toMode() & 0o077 != 0) return error.EndpointParentNotPrivate;
-    }
-
-    fn validateSharedTmpParent(io: std.Io, path: []const u8) !void {
-        if (!std.mem.eql(u8, path, "/tmp")) return error.InvalidSharedRuntimeDir;
-        const value = try std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false });
-        const mode = value.permissions.toMode();
-        if (value.kind != .directory) return error.EndpointParentNotDirectory;
-        if (mode & 0o1000 == 0 or mode & 0o002 == 0)
-            return error.SharedRuntimeDirNotSticky;
-    }
-
-    fn validatePrivateSocket(io: std.Io, path: []const u8) !void {
-        const value = try std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false });
-        if (value.kind != .unix_domain_socket) return error.EndpointNotSocket;
-        if (value.permissions.toMode() & 0o077 != 0) return error.EndpointNotPrivate;
-    }
-
-    fn validateSocketKind(io: std.Io, path: []const u8) !void {
-        const value = try std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false });
-        if (value.kind != .unix_domain_socket) return error.EndpointNotSocket;
-    }
-
-    fn makeSocketPrivate(path: []const u8) !void {
-        var path_buffer: [std.Io.net.UnixAddress.max_len + 1]u8 = undefined;
-        const path_z = try nullTerminate(path, &path_buffer);
-        if (std.c.chmod(path_z.ptr, 0o600) != 0) return error.EndpointPermissionDenied;
-    }
-
-    fn nullTerminate(path: []const u8, buffer: []u8) ![:0]const u8 {
-        if (path.len >= buffer.len) return error.NameTooLong;
-        @memcpy(buffer[0..path.len], path);
-        buffer[path.len] = 0;
-        return buffer[0..path.len :0];
-    }
-};
-
-fn validateAbsoluteRoot(path: []const u8, invalid: anyerror) !void {
-    if (!std.fs.path.isAbsolute(path) or path.len <= 1 or path[path.len - 1] == '/' or
-        std.mem.indexOfScalar(u8, path, 0) != null or hasUnsafeSegment(path))
-        return invalid;
-    for (path) |byte| if (std.ascii.isControl(byte)) return invalid;
-}
-
-fn hasUnsafeSegment(path: []const u8) bool {
-    var segments = std.mem.splitScalar(u8, path, '/');
-    var first = true;
-    while (segments.next()) |segment| {
-        if (first) {
-            first = false;
-            continue;
-        }
-        if (segment.len == 0 or std.mem.eql(u8, segment, ".") or std.mem.eql(u8, segment, ".."))
-            return true;
-    }
-    return false;
-}
-
-const Darwin = unsupportedPaths("darwin");
-const Windows = unsupportedPaths("windows");
-const Unsupported = unsupportedPaths("unsupported");
-
-fn unsupportedPaths(comptime name: []const u8) type {
-    _ = name;
-    return struct {
-        fn configFile(_: Allocator, _: *const std.process.Environ.Map) !?[]u8 {
-            return error.UnsupportedPlatform;
-        }
-        fn keywordsFile(_: Allocator, _: *const std.process.Environ.Map) !?[]u8 {
-            return error.UnsupportedPlatform;
-        }
-        fn metricsFile(_: Allocator, _: *const std.process.Environ.Map) ![]u8 {
-            return error.UnsupportedPlatform;
-        }
-        fn runtimeRoot(_: *const std.process.Environ.Map) !RuntimeRoot {
-            return error.UnsupportedPlatform;
-        }
-        fn effectiveUserId() !u32 {
-            return error.UnsupportedPlatform;
-        }
-        fn validatePrivateParent(_: std.Io, _: []const u8) !void {
-            return error.UnsupportedPlatform;
-        }
-        fn validateSharedTmpParent(_: std.Io, _: []const u8) !void {
-            return error.UnsupportedPlatform;
-        }
-        fn validatePrivateSocket(_: std.Io, _: []const u8) !void {
-            return error.UnsupportedPlatform;
-        }
-        fn validateSocketKind(_: std.Io, _: []const u8) !void {
-            return error.UnsupportedPlatform;
-        }
-        fn makeSocketPrivate(_: []const u8) !void {
-            return error.UnsupportedPlatform;
-        }
-    };
 }
 
 test "capability descriptors keep implementation separate from readiness and permission" {

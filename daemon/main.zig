@@ -7,6 +7,7 @@ const keywords = @import("keywords.zig");
 const ipc = @import("ipc.zig");
 const metrics = @import("metrics.zig");
 const paths = @import("paths.zig");
+const platform = @import("platform.zig");
 const daemon = @import("daemon.zig");
 const events = @import("events.zig");
 const recorder = @import("recorder.zig");
@@ -251,12 +252,12 @@ fn run(init: std.process.Init) !u8 {
         const cfg = try config.load(arena, io, env);
         const source = requested_source orelse cfg.recording.source;
         const runtime = try paths.Runtime.discover(arena, env);
-        var mic_recorder: recorder.Recorder = .{};
+        var mic_recorder: platform.Recorder = .{};
         try printLine(io, try std.fmt.allocPrint(arena, "Source: {s}", .{
             if (source.len == 0) "OS default" else source,
         }));
         try printLine(io, "Speak normally for 3 seconds...");
-        try mic_recorder.start(gpa, io, runtime.scratch_dir, source);
+        _ = try mic_recorder.start(gpa, io, runtime.scratch_dir, source);
         std.Io.sleep(io, .fromSeconds(3), .awake) catch {};
         const recording = try mic_recorder.stop(io);
         defer {

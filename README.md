@@ -337,12 +337,16 @@ sayall/
 │   ├── keywords.zig           # XDG keyword persistence and validation
 │   ├── daemon.zig             # recording/processing state machine
 │   ├── ipc.zig                # unix socket @ $XDG_RUNTIME_DIR/sayall.sock
-│   ├── recorder.zig           # pw-record spawn/SIGINT, WAV validation
+│   ├── platform.zig           # compile-time runtime selection/capabilities
+│   ├── platform/linux.zig     # Linux capture, output, notification, paths
+│   ├── platform/darwin.zig    # explicit unsupported Darwin runtime
+│   ├── platform/windows.zig   # explicit unsupported Windows runtime
+│   ├── recorder.zig           # portable PCM/WAV validation and analysis
 │   ├── stt/deepgram.zig       # raw-body POST, JSON parse
 │   ├── llm/groq.zig           # OpenAI-compatible chat completions
 │   ├── typer.zig              # direct wtype delivery, clipboard fallback
 │   ├── config.zig             # ~/.config/sayall/config.json + env var keys
-│   └── notify.zig             # notify-send for state/error feedback
+│   └── notify.zig             # platform notification dispatch
 ├── ui/<platform>/             # platform-specific HUD/application UI
 └── README.md
 ```
