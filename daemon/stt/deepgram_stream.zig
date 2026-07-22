@@ -125,13 +125,7 @@ pub const Session = struct {
         defer client.deinit();
         if (self.cancel_requested.load(.acquire)) return error.Cancelled;
 
-        const base_path = try std.fmt.allocPrint(
-            self.gpa,
-            "/v1/listen?model={s}&language={s}&encoding=linear16&sample_rate=16000&channels=1&smart_format=true&punctuate=true&interim_results=true&endpointing=300",
-            .{ self.cfg.model, self.cfg.language },
-        );
-        defer self.gpa.free(base_path);
-        const path = try deepgram.addKeyterms(self.gpa, base_path, self.cfg.keyterms);
+        const path = try listenPath(self.gpa, self.cfg);
         defer self.gpa.free(path);
         const headers = try std.fmt.allocPrint(self.gpa, "Host: {s}\r\nAuthorization: Token {s}\r\n", .{
             streamHost(self.cfg.region),
@@ -203,6 +197,16 @@ pub const Session = struct {
         return @intCast(@max(0, std.Io.Clock.now(.awake, self.io).toMilliseconds() - self.started_ms));
     }
 };
+
+fn listenPath(gpa: Allocator, cfg: *const config.SttConfig) ![]u8 {
+    const base_path = try std.fmt.allocPrint(
+        gpa,
+        "/v1/listen?model={s}&language={s}&encoding=linear16&sample_rate=16000&channels=1&smart_format=true&punctuate=true&interim_results=true&endpointing=300",
+        .{ cfg.model, cfg.language },
+    );
+    defer gpa.free(base_path);
+    return deepgram.addKeyterms(gpa, base_path, cfg.keyterms);
+}
 
 fn workerMain(self: *Session) void {
     const result = if (self.run()) |success|
@@ -316,4 +320,16 @@ test "regional streaming hosts are allow-listed" {
     try std.testing.expectEqualStrings("api.deepgram.com", streamHost("global"));
     try std.testing.expectEqualStrings("api.eu.deepgram.com", streamHost("eu"));
     try std.testing.expectEqualStrings("api.au.deepgram.com", streamHost("au"));
+}
+
+test "streaming path uses effective keyterms" {
+    var cfg: config.SttConfig = .{};
+    cfg.keyterms = &.{ "SayAll", "Model Context Protocol", "München" };
+    const path = try listenPath(std.testing.allocator, &cfg);
+    defer std.testing.allocator.free(path);
+    try std.testing.expect(std.mem.endsWith(
+        u8,
+        path,
+        "&keyterm=SayAll&keyterm=Model%20Context%20Protocol&keyterm=M%C3%BCnchen",
+    ));
 }

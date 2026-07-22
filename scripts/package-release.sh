@@ -68,7 +68,8 @@ source_paths=(
     CHANGELOG.md
     licenses
     scripts
-    src
+    tests
+    daemon
     ui
     sayall.service
     sayall-hud.service

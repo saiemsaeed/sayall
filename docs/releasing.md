@@ -60,28 +60,53 @@ key rather than trusting a dynamic `ssh-keyscan` result. Keeping the publishing
 workflow on the default branch prevents release-branch workflow changes from
 reading the AUR credential.
 
-`scripts/prepare-aur-release.sh` copies the checked-in package templates,
-updates both stable package versions and final checksums, and regenerates all
-three `.SRCINFO` files. The workflow then clones and pushes each standalone AUR
-repository. A retry is safe: packages that already match are skipped.
+`scripts/prepare-aur-release.sh` copies the checked-in `sayall`, `sayall-src`,
+and `sayall-git` templates, updates both stable package versions and final
+checksums, and regenerates all three `.SRCINFO` files. The workflow checks the
+public package ownership, clones all three standalone AUR repositories before
+the first mutation, and then publishes `sayall-src`, `sayall`, and `sayall-git`
+in that order. A retry is safe: commits are never forced and repositories whose
+generated files already match are skipped.
+
+Set the `AUR_MAINTAINER` Actions variable to the AUR username that owns the
+dedicated publishing key. Before the first renamed release, that account must
+maintain the existing `sayall` and `sayall-git` packages. The new `sayall-src`
+name must be unclaimed or already maintained by the same account. If it is
+unclaimed, the workflow's first authenticated push creates it. A package found
+under another maintainer causes the workflow to stop before any AUR push.
+
+The old `sayall-bin` repository is intentionally outside the automation. Only
+after all three current packages are live, submit a manual AUR merge request
+from `sayall-bin` into `sayall` so votes and comments follow the binary package's
+new canonical name. Do not delete or merge `sayall-bin` first: existing binary
+users need a live `sayall` target for their explicit one-time switch.
 
 Before pushing the release branch:
 
-1. Run a clean `makepkg` build in both stable package directories. Verify the
-   packaged CLI reports the release version and both systemd units use
-   `/usr/bin`.
+1. Run a clean `makepkg` build in the `sayall` and `sayall-src` package
+   directories. Inspect (do not install) each package archive. Verify the
+   packaged CLI reports the release version, both systemd units use `/usr/bin`,
+   and licenses are under `/usr/share/licenses/<pkgname>`.
 2. Run a clean `makepkg` build for `sayall-git`. Its `pkgver()` function
    derives the development version from Git and does not require an update for
    every upstream commit.
-3. Upgrade from the previous `sayall-bin`, run `sayall setup`, then run
-   `sayall doctor` and complete a recording, transcription, HUD, and typing
-   smoke test. Repeat `sayall setup` after switching between all three mutually
-   conflicting package variants, and verify each switch preserves
-   `~/.config/sayall/config.json`. Verify `sayall update` detects and targets
-   the installed variant before preparing the next release.
-4. After the workflow succeeds, confirm the public pages for `sayall-bin`,
-   `sayall`, and `sayall-git` show
-   the intended versions and maintainer.
+3. Test both legacy paths. Upgrade an existing `sayall` source installation to
+   the new prebuilt `sayall`, and switch a previous `sayall-bin` installation
+   explicitly with `yay -S sayall`. Also switch an existing `sayall` source
+   installation to `sayall-src`. Review each conflict-removal prompt, run
+   `sayall setup` and `sayall doctor`, and complete a recording,
+   transcription, HUD, and typing smoke test. Verify all switches preserve
+   `~/.config/sayall/config.json`.
+4. Repeat `sayall setup` after switching among all three mutually conflicting
+   current variants and verify each switch preserves the selected or disabled
+   shortcut state. Also test an upgrade with an existing manual
+   `bind = CTRL, SLASH, exec, sayall toggle`: setup must leave the line intact
+   while successfully restarting both services. Verify `sayall update` detects
+   and targets `sayall`, `sayall-src`, and `sayall-git`; retain `sayall-bin`
+   coverage only as a legacy migration fallback.
+5. After the workflow succeeds, confirm the public pages for `sayall`,
+   `sayall-src`, and `sayall-git` show the intended versions and maintainer.
+   Then request the external `sayall-bin` into `sayall` AUR merge.
 
 ## Service paths in packages
 

@@ -24,7 +24,7 @@ removed before output.
 The prebuilt AUR package is the recommended installation for supported users:
 
 ```sh
-yay -S sayall-bin
+yay -S sayall
 ```
 
 Two source-based variants are also available. Install only one variant at a
@@ -32,8 +32,8 @@ time:
 
 | Package | Use case |
 | --- | --- |
-| `sayall-bin` | Official release binaries; recommended for most users |
-| `sayall` | Build the latest stable release from source |
+| `sayall` | Official release binaries; recommended for most users |
+| `sayall-src` | Build the latest stable release from source |
 | `sayall-git` | Build the latest `main` commit from source |
 
 Configure API keys, keeping the file private:
@@ -47,6 +47,12 @@ chmod 600 ~/.config/sayall/config.json
 sayall setup
 ```
 
+`sayall setup` enables and restarts the daemon and HUD services and installs the
+default `Ctrl+Slash` Hyprland shortcut for `sayall toggle`. It preserves a
+shortcut previously selected or disabled through the SayAll CLI. If
+`Ctrl+Slash` is already manually bound to `sayall toggle`, setup recognizes it
+as equivalent and leaves the existing line untouched.
+
 Run the installation diagnostics and microphone test:
 
 ```sh
@@ -55,14 +61,28 @@ sayall doctor
 sayall mic-test
 ```
 
-Then add the toggle binding to `~/.config/hypr/hyprland.conf`:
+Verify `sayall status` reports `idle`, then press `Ctrl+Slash`, speak, and press
+it again. The transcript should be typed into the focused window.
 
-```conf
-bind = SUPER, F9, exec, sayall toggle
+View or customize the managed shortcut at any time:
+
+```sh
+sayall shortcut                 # show the current/default state
+sayall shortcut set SUPER+SPACE # choose another Hyprland chord
+sayall shortcut reset           # restore Ctrl+Slash
+sayall shortcut disable         # keep services, remove the managed binding
 ```
 
-Verify `sayall status` reports `idle`, then press the binding, speak, and press
-it again. The transcript should be typed into the focused window.
+Shortcut changes are checked against the Hyprland configuration include tree.
+SayAll reports the conflicting file and line and does not add an `unbind` or
+overwrite another binding. When run inside Hyprland, it reloads the compositor
+and checks `hyprctl configerrors`; if safe activation fails, it restores the
+previous SayAll files. Outside a Hyprland session it saves the change and tells
+you to run `hyprctl reload` inside the session (or log in again).
+Variable-based `source`, modifier, and key expressions are not partially
+evaluated: shortcut management stops and reports the exact file and line for
+manual resolution. A symlinked `hyprland.conf` is likewise rejected before any
+shortcut configuration is written.
 
 Update the installed AUR variant and restart both running processes with one
 command:
@@ -73,13 +93,39 @@ sayall --version
 sayall doctor
 ```
 
-`sayall update` detects whether `sayall-bin`, `sayall`, or `sayall-git` owns
+`sayall update` detects whether `sayall`, `sayall-src`, or `sayall-git` owns
 the installation, asks `yay` to update that same package, and only restarts the
 services after the package operation succeeds. It deliberately uses the AUR
 package rather than overwriting `/usr/bin` directly, preserving package
 ownership, dependency handling, checksums, and clean uninstallation. To avoid
 losing audio, it refuses to update while the daemon is recording or processing
-a clip.
+a clip. After a successful package operation it restarts both services and
+re-applies the saved custom, default, or disabled shortcut state. The retired
+`sayall-bin` name remains recognized only for migration: `sayall update`
+explicitly targets the replacement `sayall` package and explains the rename
+before invoking `yay`.
+
+#### Migrate from the earlier AUR package names
+
+The package transition does not own or remove
+`~/.config/sayall/config.json`. Review the AUR helper's conflict-removal prompt
+and switch packages in one operation; do not uninstall the old package first.
+
+- Existing `sayall` source users who want the recommended prebuilt package can
+  run `yay -S sayall`. The package name stays the same, and the transition's
+  `pkgrel` bump ensures the new recipe is offered even at the same upstream
+  version.
+- Existing `sayall` source users who want to keep building stable tags should
+  run `yay -S sayall-src`. This replaces `sayall` with the renamed source
+  package.
+- Existing `sayall-bin` users must run `yay -S sayall`. The new package declares
+  that it replaces and provides the retired binary name, but AUR helpers cannot
+  safely infer an installed-package rename from the public AUR merge alone.
+
+After any switch, run `sayall setup`, `sayall doctor`, and a short dictation
+smoke test. Locally installed units in `~/.config/systemd/user` override the
+package units; remove obsolete manual units as described below if diagnostics
+show paths under `~/.local/bin`.
 
 #### Migrate from a manual installation
 
@@ -94,7 +140,7 @@ rm -f ~/.local/bin/sayall ~/.local/bin/sayall-hud
 rm -f ~/.config/systemd/user/sayall.service \
       ~/.config/systemd/user/sayall-hud.service
 systemctl --user daemon-reload
-yay -S sayall-bin
+yay -S sayall
 sayall setup
 sayall doctor
 ```
@@ -132,6 +178,24 @@ sayall restart
 The HUD reconnects automatically. This command requires the recommended
 systemd user-service setup above; if running `sayall daemon` directly, stop and
 start that foreground process instead.
+
+Manage recognition keywords locally with the CLI. Quote phrases and any value
+whose leading or trailing spaces are intentional:
+
+```sh
+sayall keywords list
+sayall keywords search protocol
+sayall keywords add SayAll "Model Context Protocol" " München "
+sayall keywords update SayAll sayALL
+# `rename` is an alias for `update`.
+sayall keywords delete " München "
+sayall keywords clear --confirm
+```
+
+Matching for updates and deletion is exact, including spelling, case, Unicode,
+and spaces. Search is a substring search with ASCII case folding. Mutating
+commands print the `sayall restart` command needed to activate the change in a
+running daemon; restart the foreground process instead when not using systemd.
 
 View persistent transcription metrics:
 
@@ -175,7 +239,31 @@ systemctl --user daemon-reload
 systemctl --user enable --now sayall sayall-hud
 ```
 
-Configuration and hotkey setup are the same as for a source installation.
+Configuration and shortcut setup are the same as for an AUR installation; run
+`sayall setup` after installing the files and user units.
+
+### Uninstall
+
+Disable the managed shortcut while the CLI is still installed, then stop the
+services and remove the package variant:
+
+```sh
+sayall shortcut disable
+systemctl --user disable --now sayall sayall-hud
+yay -Rns sayall # or sayall-src / sayall-git
+```
+
+If disable reports that the shortcut is an external manual binding, remove
+that `sayall toggle` line from `~/.config/hypr/bindings.conf` instead.
+
+Package removal deliberately preserves user configuration. To remove every
+shortcut trace as well, delete the block between `BEGIN SAYALL MANAGED
+SHORTCUT` and `END SAYALL MANAGED SHORTCUT` in
+`~/.config/hypr/hyprland.conf`, plus `~/.config/hypr/sayall.conf` and
+`~/.config/sayall/shortcut.json`, then run `hyprctl reload`. After all SayAll
+commands have stopped, `~/.config/sayall/shortcut.lock` can also be removed.
+Keep `~/.config/sayall/config.json` if you may reinstall and want to retain
+provider settings.
 
 ## Architecture
 
@@ -243,8 +331,9 @@ sayall/
 ├── build.zig                  # zig build, native target
 ├── build.zig.zon              # package metadata and minimum Zig version
 ├── sayall.service             # optional systemd user unit
-├── src/
+├── daemon/
 │   ├── main.zig               # CLI, mic-test, and transcribe commands
+│   ├── keywords.zig           # XDG keyword persistence and validation
 │   ├── daemon.zig             # recording/processing state machine
 │   ├── ipc.zig                # unix socket @ $XDG_RUNTIME_DIR/sayall.sock
 │   ├── recorder.zig           # pw-record spawn/SIGINT, WAV validation
@@ -253,6 +342,7 @@ sayall/
 │   ├── typer.zig              # direct wtype delivery, clipboard fallback
 │   ├── config.zig             # ~/.config/sayall/config.json + env var keys
 │   └── notify.zig             # notify-send for state/error feedback
+├── ui/<platform>/             # platform-specific HUD/application UI
 └── README.md
 ```
 
@@ -294,7 +384,6 @@ sayall/
     "api_key": "$DEEPGRAM_API_KEY",
     "model": "nova-3",
     "language": "en",
-    "keyterms": ["SayAll", "Hyprland", "Model Context Protocol"],
     "region": "eu",
     "streaming": true,
     "stream_finalize_timeout_ms": 2000
@@ -333,12 +422,24 @@ Deepgram region is allow-listed to `global`, `eu`, or `au`. The regional
 endpoint changes data-processing location and network latency without changing
 credentials or the Nova-3 model.
 
-`stt.keyterms` is a global vocabulary of names, jargon, and phrases that Nova-3
-should recognize more accurately. Keyterms are applied to both streaming and
-REST fallback transcription, with their spelling and capitalization also
-provided to LLM cleanup when enabled. Keep the list focused on uncommon or
-frequently misrecognized terminology; Deepgram allows up to 100 keyterms and
-enforces a 500-token limit per request.
+Keywords are a global vocabulary of names, jargon, and phrases that Nova-3
+should recognize more accurately. Manage them with `sayall keywords`; the
+authoritative file is `$XDG_CONFIG_HOME/sayall/keywords.json`, falling back to
+`~/.config/sayall/keywords.json`. It is written atomically with mode `0600`, and
+the containing directory is restricted to mode `0700`. Keep the list focused
+on uncommon or frequently misrecognized terminology. SayAll rejects empty or
+duplicate entries, control characters, entries over 256 bytes, more than 100
+entries, and lists over 4096 bytes. Deepgram also enforces its request token
+limit.
+
+For compatibility, if the keyword file is absent and an older config contains
+`stt.keyterms`, SayAll validates and atomically imports that list on first load.
+Legacy exact duplicates are collapsed without reordering: the first spelling,
+case, and spacing is retained. The keyword file is authoritative after
+migration; the old field is not rewritten and can be removed from `config.json`
+after verifying `sayall keywords list`. Streaming, REST fallback, and LLM
+cleanup all consume this same effective keyword list while preserving spelling,
+case, spaces, and Unicode.
 
 Streaming sends raw 16 kHz mono PCM while recording and inserts text only after
 Deepgram finalizes the stream. The complete local recording is retained until
@@ -358,16 +459,62 @@ failures are recorded separately from the successful REST fallback. Provider
 latency covers the full provider operation; stream stop-to-final latency is
 also retained as a dedicated responsiveness metric.
 
-## Hyprland Setup
+### Backup and removal
 
-```conf
-exec-once = sayall daemon
-bind = SUPER, F9, exec, sayall toggle
-# optional: raw (no LLM cleanup) on a second bind
-bind = SUPER SHIFT, F9, exec, sayall toggle --raw
+Back up both `config.json` and `keywords.json` from the SayAll directory under
+`$XDG_CONFIG_HOME` (or `~/.config/sayall`). `config.json` can contain API-key
+references or secrets, so keep backups private. Package removal and the manual
+installation cleanup commands intentionally leave this directory in place.
+
+After uninstalling SayAll, remove its local configuration only if it is no
+longer needed. This is irreversible unless backed up:
+
+```sh
+# Default XDG location; adjust if XDG_CONFIG_HOME is set.
+rm ~/.config/sayall/config.json ~/.config/sayall/keywords.json
+rm -f ~/.config/sayall/keywords.json.lock
+rmdir ~/.config/sayall  # succeeds only when the directory is otherwise empty
 ```
 
-(A systemd `--user` service is the alternative to `exec-once`.)
+The adjacent `keywords.json.lock` is coordination metadata; remove it only
+after all SayAll processes have stopped. Persistent metrics are separate under
+`$XDG_STATE_HOME/sayall` (or `~/.local/state/sayall`) and must be backed up or
+removed independently.
+
+## Hyprland Setup
+
+The supported Omarchy setup is managed through the CLI:
+
+```sh
+sayall setup                  # services + saved shortcut; default Ctrl+Slash
+sayall shortcut show
+sayall shortcut set SUPER+H
+sayall shortcut reset
+sayall shortcut disable
+```
+
+SayAll stores shortcut intent in `~/.config/sayall/shortcut.json`, generates
+`~/.config/hypr/sayall.conf`, and adds one marked source block to
+`~/.config/hypr/hyprland.conf`. Repeated setup and upgrade runs are idempotent
+and keep a custom or disabled state. A different existing binding is never
+silently replaced. Shortcut errors do not prevent `sayall setup` from enabling
+and restarting the daemon and HUD services, though setup exits unsuccessfully
+until the shortcut conflict is resolved or the managed shortcut is disabled.
+
+The shortcut manager intentionally controls only the normal `sayall toggle`
+binding. To keep a second raw/no-cleanup shortcut, add it normally to
+`~/.config/hypr/bindings.conf`; for example:
+
+```conf
+bindd = SUPER SHIFT, F9, Raw SayAll dictation, exec, sayall toggle --raw
+```
+
+On upgrade from a manual `bind = CTRL, SLASH, exec, sayall toggle` line, setup
+recognizes the equivalent binding and does not take ownership of or rewrite
+it. `shortcut set` and `shortcut disable` will likewise refuse to claim that
+external binding; remove the manual line first if you later want the SayAll CLI
+to manage the shortcut. `shortcut reset` treats the external default as already
+satisfied.
 
 ## Limitations
 

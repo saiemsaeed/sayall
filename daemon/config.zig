@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const keywords = @import("keywords.zig");
 
 pub const SttConfig = struct {
     provider: []const u8 = "deepgram",
@@ -82,8 +83,45 @@ pub fn load(gpa: Allocator, io: Io, env: *const std.process.Environ.Map) !Config
         if (v.len > 0 and v[0] != '0') cfg.verbose = true;
     }
 
+    if (try keywords.path(gpa, env)) |keywords_path| {
+        const store = keywords.Store.init(keywords_path);
+        if (try store.load(gpa, io)) |stored| {
+            cfg.stt.keyterms = stored;
+        } else {
+            // Validate the complete legacy configuration before migration has
+            // any filesystem side effects.
+            cfg.stt.keyterms = try keywords.normalizeLegacy(gpa, cfg.stt.keyterms);
+            try validate(&cfg);
+            cfg.stt.keyterms = try store.loadOrMigrate(gpa, io, cfg.stt.keyterms);
+        }
+    } else {
+        cfg.stt.keyterms = try keywords.normalizeLegacy(gpa, cfg.stt.keyterms);
+    }
     try validate(&cfg);
     return cfg;
+}
+
+const LegacySttConfig = struct {
+    keyterms: []const []const u8 = &.{},
+};
+
+const LegacyConfig = struct {
+    stt: LegacySttConfig = .{},
+};
+
+/// Reads only legacy stt.keyterms for the keyword CLI. This intentionally
+/// avoids loading, resolving, or printing API credentials and unrelated config.
+pub fn loadLegacyKeyterms(gpa: Allocator, io: Io, env: *const std.process.Environ.Map) ![]const []const u8 {
+    const config_path = try configPath(gpa, env) orelse return &.{};
+    const bytes = Io.Dir.cwd().readFileAlloc(io, config_path, gpa, .limited(1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => return &.{},
+        else => return err,
+    };
+    const legacy = try std.json.parseFromSliceLeaky(LegacyConfig, gpa, bytes, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    });
+    return keywords.normalizeLegacy(gpa, legacy.stt.keyterms);
 }
 
 pub fn validate(cfg: *const Config) ValidationError!void {
@@ -103,18 +141,8 @@ pub fn validate(cfg: *const Config) ValidationError!void {
     if (cfg.stt.keyterms.len > 0 and !std.mem.eql(u8, cfg.stt.model, "nova-3") and
         !std.mem.startsWith(u8, cfg.stt.model, "nova-3-"))
         return invalid("stt.keyterms requires a Nova-3 model");
-    if (cfg.stt.keyterms.len > 100)
-        return invalid("stt.keyterms must not contain more than 100 entries");
-    var keyterm_bytes: usize = 0;
-    for (cfg.stt.keyterms) |keyterm| {
-        if (keyterm.len == 0 or keyterm.len > 256)
-            return invalid("each stt.keyterms entry must contain between 1 and 256 bytes");
-        for (keyterm) |c| if (std.ascii.isControl(c))
-            return invalid("stt.keyterms entries may not contain control characters");
-        keyterm_bytes += keyterm.len;
-    }
-    if (keyterm_bytes > 4096)
-        return invalid("stt.keyterms must not exceed 4096 bytes in total");
+    keywords.validate(cfg.stt.keyterms) catch
+        return invalid("stt.keyterms must be unique UTF-8 entries of 1-256 bytes, without controls (100 entries and 4096 bytes total maximum)");
     if (!std.mem.eql(u8, cfg.output.method, "type") and !std.mem.eql(u8, cfg.output.method, "clipboard"))
         return invalid("output.method must be 'type' or 'clipboard'");
     if (cfg.recording.max_seconds == 0 or cfg.recording.max_seconds > 3600)
@@ -206,7 +234,48 @@ test "validation accepts phrases and rejects invalid keyterms" {
     cfg.stt.keyterms = &.{"line\nbreak"};
     try std.testing.expectError(error.InvalidConfig, validate(&cfg));
 
+    cfg.stt.keyterms = &.{ "SayAll", "SayAll" };
+    try std.testing.expectError(error.InvalidConfig, validate(&cfg));
+
     cfg.stt.keyterms = &.{"SayAll"};
     cfg.stt.model = "nova-2";
     try std.testing.expectError(error.InvalidConfig, validate(&cfg));
+}
+
+test "config load migrates legacy exact duplicates without startup failure" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const relative_base = try std.fmt.allocPrint(std.testing.allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer std.testing.allocator.free(relative_base);
+    const absolute_base = try Io.Dir.cwd().realPathFileAlloc(std.testing.io, relative_base, std.testing.allocator);
+    defer std.testing.allocator.free(absolute_base);
+    const config_dir = try std.fmt.allocPrint(std.testing.allocator, "{s}/sayall", .{absolute_base});
+    defer std.testing.allocator.free(config_dir);
+    const dir = try Io.Dir.cwd().createDirPathOpen(std.testing.io, config_dir, .{});
+    dir.close(std.testing.io);
+    const config_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/config.json", .{config_dir});
+    defer std.testing.allocator.free(config_path);
+    try Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = config_path,
+        .data =
+        \\{"stt":{"keyterms":["SayAll","München","SayAll","sayall","München"," spaced "]}}
+        ,
+    });
+
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    try env.put("XDG_CONFIG_HOME", absolute_base);
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const cfg = try load(arena, std.testing.io, &env);
+    try std.testing.expectEqual(@as(usize, 4), cfg.stt.keyterms.len);
+    try std.testing.expectEqualStrings("SayAll", cfg.stt.keyterms[0]);
+    try std.testing.expectEqualStrings("München", cfg.stt.keyterms[1]);
+    try std.testing.expectEqualStrings("sayall", cfg.stt.keyterms[2]);
+    try std.testing.expectEqualStrings(" spaced ", cfg.stt.keyterms[3]);
+
+    const keywords_path = try std.fmt.allocPrint(arena, "{s}/keywords.json", .{config_dir});
+    const stored = (try keywords.Store.init(keywords_path).load(arena, std.testing.io)).?;
+    try std.testing.expectEqual(@as(usize, 4), stored.len);
 }

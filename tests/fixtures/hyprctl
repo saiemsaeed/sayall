@@ -1,0 +1,17 @@
+#!/bin/sh
+printf '%s\n' "$*" >>"$SAYALL_TEST_HYPRCTL_LOG"
+case $1 in
+  reload)
+    if [ -n "${SAYALL_TEST_MUTATE_ROOT_ON_RELOAD:-}" ]; then
+      printf '%s\n' '# concurrent external edit' >"$SAYALL_TEST_MUTATE_ROOT_ON_RELOAD"
+    fi
+    exit 0
+    ;;
+  configerrors)
+    if [ -n "${SAYALL_TEST_CONFIGERRORS:-}" ]; then
+      printf '%s\n' "$SAYALL_TEST_CONFIGERRORS"
+    fi
+    exit 0
+    ;;
+esac
+exit 1

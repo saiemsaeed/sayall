@@ -1,0 +1,2 @@
+#!/bin/sh
+printf '%s\n' "$*" >>"$SAYALL_TEST_SYSTEMCTL_LOG"

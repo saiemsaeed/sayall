@@ -21,7 +21,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption([]const u8, "version", version);
 
     const mod = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
+        .root_source_file = b.path("daemon/main.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -48,6 +48,9 @@ pub fn build(b: *std.Build) void {
         .root_module = mod,
     });
     const run_unit_tests = b.addRunArtifact(unit_tests);
+    const shortcut_cli_tests = b.addSystemCommand(&.{ "sh", b.pathFromRoot("tests/shortcut-cli.sh") });
+    shortcut_cli_tests.addArtifactArg(exe);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+    test_step.dependOn(&shortcut_cli_tests.step);
 }

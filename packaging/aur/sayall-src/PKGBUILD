@@ -1,9 +1,9 @@
 # Maintainer: Saiem Saeed <saiem.saeed7 at gmail dot com>
 
-pkgname=sayall-git
-pkgver=0.1.2.r1.g6d0f472
+pkgname=sayall-src
+pkgver=0.1.2
 pkgrel=1
-pkgdesc='Wayland voice dictation daemon and recording HUD (development version)'
+pkgdesc='Wayland voice dictation daemon and recording HUD (stable source)'
 arch=('x86_64')
 url='https://github.com/saiemsaeed/sayall'
 license=('MIT')
@@ -18,38 +18,40 @@ depends=(
   'wl-clipboard'
   'wtype'
 )
-makedepends=('cargo' 'git' 'pkgconf' 'python' 'zig')
+makedepends=('cargo' 'pkgconf' 'python' 'zig')
 provides=("sayall=$pkgver")
-conflicts=('sayall' 'sayall-bin' 'sayall-src')
+conflicts=('sayall' 'sayall-bin' 'sayall-git')
 options=('!debug')
-install='sayall-git.install'
-source=("sayall::git+$url.git")
-sha256sums=('SKIP')
-
-pkgver() {
-  cd "$srcdir/sayall"
-  git describe --long --tags --abbrev=7 | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g'
-}
+install='sayall-src.install'
+source=(
+  "sayall-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz"
+  'websocket.zig-b70e733.tar.gz::https://github.com/karlseguin/websocket.zig/archive/b70e733bc0d0ba0a98ff5fe5ef64d3017c85f369.tar.gz'
+)
+sha256sums=(
+  '4c5ff35859ee48d7e3d27353c5c5e5c723dc04f1f6d5dba8b90bfb70a55171a3'
+  '55e6b7d11c61a81bcf7482578e460da78719459dd4c8370f52033229ae529fe9'
+)
 
 prepare() {
-  cd "$srcdir/sayall"
+  cd "$srcdir/sayall-$pkgver"
   export CARGO_HOME="$srcdir/cargo-home"
   export ZIG_GLOBAL_CACHE_DIR="$srcdir/zig-cache"
+  ln -sfn 'websocket.zig-b70e733bc0d0ba0a98ff5fe5ef64d3017c85f369' "$srcdir/websocket.zig"
+  sed -i '/        .websocket = .{/,/        },/c\        .websocket = .{ .path = "../websocket.zig" },' build.zig.zon
   cargo fetch --locked --manifest-path ui/linux/Cargo.toml
-  zig build --fetch=all
 }
 
 build() {
-  cd "$srcdir/sayall"
+  cd "$srcdir/sayall-$pkgver"
   export CARGO_HOME="$srcdir/cargo-home"
   export CARGO_TARGET_DIR="$srcdir/cargo-target"
   export ZIG_GLOBAL_CACHE_DIR="$srcdir/zig-cache"
-  zig build -Doptimize=ReleaseFast -Dversion="$pkgver"
+  zig build -Doptimize=ReleaseFast
   cargo build --frozen --release --manifest-path ui/linux/Cargo.toml
 }
 
 check() {
-  cd "$srcdir/sayall"
+  cd "$srcdir/sayall-$pkgver"
   export CARGO_HOME="$srcdir/cargo-home"
   export CARGO_TARGET_DIR="$srcdir/cargo-target"
   export ZIG_GLOBAL_CACHE_DIR="$srcdir/zig-cache"
@@ -58,7 +60,7 @@ check() {
 }
 
 package() {
-  local src="$srcdir/sayall"
+  local src="$srcdir/sayall-$pkgver"
 
   install -Dm755 -t "$pkgdir/usr/bin" \
     "$src/zig-out/bin/sayall" \
