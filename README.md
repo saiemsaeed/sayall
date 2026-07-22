@@ -152,6 +152,8 @@ checkout rather than copying over an AUR-managed installation:
 
 ```sh
 zig build test
+zig build check-darwin-core   # compile-only; no macOS product or artifact
+zig build check-windows-core  # compile-only; no Windows product or artifact
 zig build -Doptimize=ReleaseFast
 cargo test --locked --manifest-path ui/linux/Cargo.toml
 cargo build --locked --release --manifest-path ui/linux/Cargo.toml
@@ -167,6 +169,11 @@ Restart the packaged installation afterwards with
 `systemctl --user start sayall sayall-hud`.
 
 Print the installed release version with `sayall --version`.
+
+The Darwin and Windows commands are contributor readiness checks only. They
+compile portable core seams against explicit unsupported-platform modules;
+they do not run foreign binaries, create installable outputs, or claim runtime
+or product support. Linux x86-64 remains the only release artifact target.
 
 After changing `~/.config/sayall/config.json`, restart the systemd user service
 to load the new configuration:

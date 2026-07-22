@@ -63,6 +63,13 @@ reported capability does not extend that promise. In particular, 0.1.4 makes
 no macOS or Windows implementation, package, artifact, runtime-readiness, or
 runtime-support claim.
 
+`zig build check-darwin-core` and `zig build check-windows-core` are
+compile-only source-readiness checks. They compile representative portable
+orchestration and contracts with the explicit unsupported runtime and product
+boundaries for aarch64-macos and x86_64-windows, respectively. The checks do
+not run or install their foreign test artifacts, build a native CLI, adapt
+Windows argv, produce packages, or expand the supported release matrix.
+
 ### Protocol and composition
 
 [Control protocol v1](protocol-v1.md) is the current Linux HUD, control, and

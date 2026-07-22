@@ -268,11 +268,13 @@ test "store migrates legacy values and CRUD preserves bytes" {
     try std.testing.expectEqual(@as(usize, 3), remaining.len);
     try std.testing.expectError(error.KeywordNotFound, store.delete(arena, std.testing.io, &.{}, "spaced phrase"));
 
-    const stat = try Io.Dir.cwd().statFile(std.testing.io, store_path, .{});
-    try std.testing.expectEqual(@as(u32, 0o600), stat.permissions.toMode() & 0o777);
-    const parent = std.fs.path.dirname(store_path).?;
-    const parent_stat = try Io.Dir.cwd().statFile(std.testing.io, parent, .{});
-    try std.testing.expectEqual(@as(u32, 0o700), parent_stat.permissions.toMode() & 0o777);
+    if (comptime @import("builtin").os.tag != .windows) {
+        const stat = try Io.Dir.cwd().statFile(std.testing.io, store_path, .{});
+        try std.testing.expectEqual(@as(u32, 0o600), stat.permissions.toMode() & 0o777);
+        const parent = std.fs.path.dirname(store_path).?;
+        const parent_stat = try Io.Dir.cwd().statFile(std.testing.io, parent, .{});
+        try std.testing.expectEqual(@as(u32, 0o700), parent_stat.permissions.toMode() & 0o777);
+    }
 
     try store.clear(arena, std.testing.io);
     const cleared = try store.loadOrMigrate(arena, std.testing.io, &.{"legacy must not return"});
