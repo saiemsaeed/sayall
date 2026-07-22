@@ -51,6 +51,9 @@ than pushing replacement artifacts to the same branch.
 
 The default-branch `Publish AUR` workflow runs only after the `Release` workflow
 succeeds and verifies that the published release targets the triggering commit.
+It can also be manually retried with an explicit version after a publishing
+failure; the retry verifies the immutable release, tag, and matching release
+branch before reading the AUR credential.
 It uses a dedicated, unencrypted CI key stored in the `AUR_SSH_PRIVATE_KEY`
 GitHub Actions secret. Its public-key fingerprint is stored in the
 `AUR_SSH_KEY_FINGERPRINT` Actions variable and checked before any AUR access.
