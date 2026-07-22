@@ -60,9 +60,24 @@ source_archive="dist/$source_name.tar.gz"
 epoch=${SOURCE_DATE_EPOCH:-0}
 tar --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner \
     -C dist -czf "$archive" "$name"
-git ls-files -z | tar --null --files-from=- --sort=name --mtime="@$epoch" \
-    --owner=0 --group=0 --numeric-owner --transform="s|^|$source_name/|" \
-    -czf "$source_archive"
+source_paths=(
+    build.zig
+    build.zig.zon
+    VERSION
+    LICENSE
+    CHANGELOG.md
+    licenses
+    scripts
+    src
+    ui
+    sayall.service
+    sayall-hud.service
+    README.md
+    docs
+)
+tar --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner \
+    --exclude='ui/linux/target' --transform="s|^|$source_name/|" \
+    -C "$root" -czf "$source_archive" "${source_paths[@]}"
 (cd dist && sha256sum "${name}.tar.gz" "${source_name}.tar.gz" > SHA256SUMS)
 
 printf 'created %s\ncreated %s\ncreated dist/SHA256SUMS\n' \

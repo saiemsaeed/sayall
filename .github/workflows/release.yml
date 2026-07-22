@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Install build dependencies
-        run: pacman -Syu --noconfirm git zig rust python gtk4 gtk4-layer-shell
+        run: pacman -Syu --noconfirm zig rust python gtk4 gtk4-layer-shell
       - name: Verify tag version
         id: release
         run: |
