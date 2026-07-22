@@ -51,15 +51,19 @@ pub const EventBus = struct {
         defer self.mutex.unlock(io);
 
         const seq = self.next_seq;
+        self.next_seq += 1;
+        const slot = &self.slots[seq % history_capacity];
+        if (slot.data) |old| self.gpa.free(old);
+        // Reserve the sequence before fallible encoding/allocation. A missing
+        // slot is then an explicit gap instead of undetectable event loss.
+        slot.* = .{ .seq = seq, .data = null };
+
         var frame: [max_frame_len]u8 = undefined;
         const encoded = try encodeEvent(&frame, seq, session_id, event);
         const owned = try self.gpa.dupe(u8, encoded);
         errdefer self.gpa.free(owned);
 
-        const slot = &self.slots[seq % history_capacity];
-        if (slot.data) |old| self.gpa.free(old);
         slot.* = .{ .seq = seq, .data = owned };
-        self.next_seq += 1;
     }
 
     /// Copies one frame without ever repairing a stale cursor implicitly.
@@ -166,7 +170,7 @@ test "event ring reports overflow gap without changing cursor" {
     try std.testing.expectEqual(@as(u64, history_capacity + 2), gap.next_seq);
 }
 
-test "oversized event is rejected without consuming a sequence" {
+test "failed event publication leaves an explicit sequence gap" {
     var bus = EventBus.init(std.testing.allocator);
     defer bus.deinit();
     var message: [max_frame_len]u8 = undefined;
@@ -175,13 +179,15 @@ test "oversized event is rejected without consuming a sequence" {
         .code = "oversized",
         .message = &message,
     } }));
-    try std.testing.expectEqual(@as(u64, 1), bus.cursor(std.testing.io));
+    try std.testing.expectEqual(@as(u64, 2), bus.cursor(std.testing.io));
 
     try bus.publish(std.testing.io, 4, .{ .recording_limit_reached = .{} });
     var cursor: u64 = 1;
     var out: [max_frame_len]u8 = undefined;
+    try std.testing.expect(bus.read(std.testing.io, &cursor, &out) == .gap);
+    cursor = 2;
     const frame = switch (bus.read(std.testing.io, &cursor, &out)) {
-        .event => |frame| frame,
+        .event => |value| value,
         else => return error.MissingEvent,
     };
     const parsed = try std.json.parseFromSlice(
@@ -191,5 +197,5 @@ test "oversized event is rejected without consuming a sequence" {
         .{ .ignore_unknown_fields = true },
     );
     defer parsed.deinit();
-    try std.testing.expectEqual(@as(u64, 1), parsed.value.seq);
+    try std.testing.expectEqual(@as(u64, 2), parsed.value.seq);
 }

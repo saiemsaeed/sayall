@@ -141,6 +141,10 @@ pub fn validatePrivateSocket(io: std.Io, path: []const u8) !void {
     return implementation.validatePrivateSocket(io, path);
 }
 
+pub fn validateSocketKind(io: std.Io, path: []const u8) !void {
+    return implementation.validateSocketKind(io, path);
+}
+
 pub fn makeSocketPrivate(path: []const u8) !void {
     return implementation.makeSocketPrivate(path);
 }
@@ -213,6 +217,11 @@ const Linux = struct {
         if (value.permissions.toMode() & 0o077 != 0) return error.EndpointNotPrivate;
     }
 
+    fn validateSocketKind(io: std.Io, path: []const u8) !void {
+        const value = try std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false });
+        if (value.kind != .unix_domain_socket) return error.EndpointNotSocket;
+    }
+
     fn makeSocketPrivate(path: []const u8) !void {
         var path_buffer: [std.Io.net.UnixAddress.max_len + 1]u8 = undefined;
         const path_z = try nullTerminate(path, &path_buffer);
@@ -277,6 +286,9 @@ fn unsupportedPaths(comptime name: []const u8) type {
             return error.UnsupportedPlatform;
         }
         fn validatePrivateSocket(_: std.Io, _: []const u8) !void {
+            return error.UnsupportedPlatform;
+        }
+        fn validateSocketKind(_: std.Io, _: []const u8) !void {
             return error.UnsupportedPlatform;
         }
         fn makeSocketPrivate(_: []const u8) !void {

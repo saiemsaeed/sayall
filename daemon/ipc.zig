@@ -10,7 +10,10 @@ pub const max_command_len = protocol.max_frame_len;
 /// Binds the unix socket, removing any stale socket file first.
 pub fn listen(io: Io, endpoint: paths.Endpoint) !Io.net.Server {
     try endpoint.validateParent(io);
-    endpoint.validateSocket(io) catch |err| switch (err) {
+    // Legacy releases created sockets using the process umask. Accept an
+    // existing socket of any mode for replacement; parent/sticky-directory
+    // rules and unlink permissions still protect against cross-user removal.
+    endpoint.validateStaleSocket(io) catch |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
     };
@@ -69,10 +72,16 @@ test "listen creates a private socket and rejects a non-socket endpoint" {
     {
         var server = try listen(std.testing.io, endpoint);
         defer server.deinit(std.testing.io);
-        defer Io.Dir.deleteFileAbsolute(std.testing.io, socket_path) catch {};
         try endpoint.validateSocket(std.testing.io);
         const socket_stat = try Io.Dir.cwd().statFile(std.testing.io, socket_path, .{});
         try std.testing.expectEqual(@as(u32, 0o600), socket_stat.permissions.toMode() & 0o777);
+    }
+    try setMode(socket_path, 0o755);
+    {
+        var server = try listen(std.testing.io, endpoint);
+        defer server.deinit(std.testing.io);
+        defer Io.Dir.deleteFileAbsolute(std.testing.io, socket_path) catch {};
+        try endpoint.validateSocket(std.testing.io);
     }
     try Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = socket_path, .data = "not a socket" });
     try std.testing.expectError(error.EndpointNotSocket, listen(std.testing.io, endpoint));
@@ -84,14 +93,23 @@ test "listen creates a private socket and rejects a non-socket endpoint" {
 /// Returns the command (without newline) pointing into `storage`, or null on EOF.
 pub fn readCommand(stream: Io.net.Stream, io: Io, storage: []u8) !?[]const u8 {
     var reader = stream.reader(io, storage);
-    const line = reader.interface.takeDelimiter('\n') catch |err| switch (err) {
+    const frame = reader.interface.takeDelimiterInclusive('\n') catch |err| switch (err) {
+        error.EndOfStream => return error.UnterminatedCommand,
         error.StreamTooLong => return error.CommandTooLong,
         else => return err,
     };
-    const raw = line orelse return null;
+    const raw = frame[0 .. frame.len - 1];
     const command = std.mem.trimEnd(u8, raw, "\r");
     try validateCommandLength(command);
     return command;
+}
+
+fn setMode(path: []const u8, mode: c_uint) !void {
+    var buffer: [std.Io.net.UnixAddress.max_len + 1]u8 = undefined;
+    if (path.len >= buffer.len) return error.NameTooLong;
+    @memcpy(buffer[0..path.len], path);
+    buffer[path.len] = 0;
+    if (std.c.chmod(buffer[0..path.len :0].ptr, mode) != 0) return error.PermissionDenied;
 }
 
 /// The newline is part of the bounded NDJSON/plaintext wire frame.

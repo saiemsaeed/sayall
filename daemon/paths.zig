@@ -35,6 +35,11 @@ pub const Endpoint = struct {
         try validateSocketPath(self.path);
         try platform.validatePrivateSocket(io, self.path);
     }
+
+    pub fn validateStaleSocket(self: Endpoint, io: std.Io) !void {
+        try validateSocketPath(self.path);
+        try platform.validateSocketKind(io, self.path);
+    }
 };
 
 pub const Runtime = struct {
