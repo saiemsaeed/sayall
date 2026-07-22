@@ -13,7 +13,7 @@ const groq = @import("llm/groq.zig");
 const typer = @import("typer.zig");
 const notify = @import("notify.zig");
 
-pub const State = enum { idle, recording, stopping, processing };
+pub const State = protocol.State;
 const Stage = enum { none, validating, transcribing, cleaning, delivering };
 
 const PipelineJob = struct {
@@ -22,14 +22,6 @@ const PipelineJob = struct {
     session_id: u64,
     stopped_at_awake_ms: i64,
     stream: ?*deepgram_stream.Session,
-};
-
-const StateSnapshot = struct {
-    state: []const u8,
-    stage: ?[]const u8,
-    session_id: u64,
-    elapsed_ms: i64,
-    cleanup: bool,
 };
 
 pub fn run(gpa: Allocator, io: Io, cfg: *config.Config, socket_path: []const u8, metrics_path: []const u8) !void {
@@ -57,7 +49,9 @@ pub fn run(gpa: Allocator, io: Io, cfg: *config.Config, socket_path: []const u8,
         .cfg = cfg,
         .scratch_dir = std.fs.path.dirname(socket_path) orelse "/tmp",
         .metrics_store = metrics_store,
+        .event_bus = events.EventBus.init(gpa),
     };
+    defer d.event_bus.deinit();
 
     var server = try ipc.listen(io, socket_path);
     defer server.deinit(io);
@@ -98,7 +92,7 @@ const Daemon = struct {
     rec_started_ms: i64 = 0,
     session_id: u64 = 0,
     stage: Stage = .none,
-    event_bus: events.EventBus = .{},
+    event_bus: events.EventBus,
     stream_session: ?*deepgram_stream.Session = null,
 
     fn lock(self: *Daemon) void {
@@ -126,8 +120,12 @@ const Daemon = struct {
     fn handle(self: *Daemon, stream: Io.net.Stream) void {
         defer stream.close(self.io);
         var buf: [ipc.max_command_len]u8 = undefined;
-        const cmd = ipc.readCommand(stream, self.io, &buf) catch {
-            ipc.writeReply(stream, self.io, "error: malformed command") catch {};
+        const cmd = ipc.readCommand(stream, self.io, &buf) catch |err| {
+            if (err == error.CommandTooLong) {
+                protocol.writeError(stream, self.io, 0, "frame_too_large", "Frame exceeds 65536 bytes including newline") catch {};
+            } else {
+                ipc.writeReply(stream, self.io, "error: malformed command") catch {};
+            }
             return;
         } orelse return;
         if (cmd.len > 0 and cmd[0] == '{') {
@@ -146,8 +144,7 @@ const Daemon = struct {
         const request = parsed.value;
 
         if (std.mem.eql(u8, request.method, "get_capabilities")) {
-            protocol.writeResponse(stream, self.io, request.id, .{
-                .protocol_version = protocol.version,
+            protocol.writeResponse(stream, self.io, request.id, protocol.Capabilities{
                 .platform = "linux",
                 .live_levels = true,
                 .text_injection = true,
@@ -174,12 +171,10 @@ const Daemon = struct {
             return;
         }
         if (std.mem.eql(u8, request.method, "subscribe")) {
-            var cursor = self.event_bus.cursor(self.io);
-            protocol.writeResponse(stream, self.io, request.id, .{
-                .state = self.snapshot(),
-                .next_seq = cursor,
-            }) catch return;
-            self.subscriptionLoop(stream, &cursor);
+            const barrier = self.subscriptionBarrier();
+            var cursor = barrier.next_seq;
+            protocol.writeResponse(stream, self.io, request.id, barrier) catch return;
+            self.subscriptionLoop(stream, request.id, &cursor);
             return;
         }
 
@@ -203,49 +198,75 @@ const Daemon = struct {
         }
     }
 
-    fn subscriptionLoop(self: *Daemon, stream: Io.net.Stream, cursor: *u64) void {
+    fn subscriptionLoop(self: *Daemon, stream: Io.net.Stream, request_id: u64, cursor: *u64) void {
         var frame: [events.max_frame_len]u8 = undefined;
         while (true) {
-            if (self.event_bus.read(self.io, cursor, &frame)) |event_frame| {
-                ipc.writeFrame(stream, self.io, event_frame) catch return;
-            } else {
-                std.Io.sleep(self.io, .fromMilliseconds(20), .awake) catch return;
+            switch (self.event_bus.read(self.io, cursor, &frame)) {
+                .event => |event_frame| ipc.writeFrame(stream, self.io, event_frame) catch return,
+                .empty => std.Io.sleep(self.io, .fromMilliseconds(20), .awake) catch return,
+                .gap => {
+                    protocol.writeError(
+                        stream,
+                        self.io,
+                        request_id,
+                        "event_gap",
+                        "Event history overflowed; resubscribe for a fresh snapshot",
+                    ) catch {};
+                    return;
+                },
             }
         }
     }
 
-    fn snapshot(self: *Daemon) StateSnapshot {
+    fn snapshot(self: *Daemon) protocol.StateSnapshot {
         self.lock();
         defer self.unlock();
+        return self.snapshotLocked();
+    }
+
+    fn snapshotLocked(self: *Daemon) protocol.StateSnapshot {
         return .{
-            .state = @tagName(self.state),
-            .stage = if (self.stage == .none) null else @tagName(self.stage),
+            .state = self.state,
+            .stage = protocolStage(self.stage),
             .session_id = self.session_id,
             .elapsed_ms = if (self.state == .recording) @max(0, self.nowMs() - self.rec_started_ms) else 0,
             .cleanup = !self.rec_raw,
         };
     }
 
-    fn publishState(self: *Daemon) void {
-        const value = self.snapshot();
-        self.event_bus.publish(self.io, "state.changed", value.session_id, value);
+    /// State and cursor are captured under the same lock used to publish state
+    /// transitions, making this a coherent subscription barrier.
+    fn subscriptionBarrier(self: *Daemon) protocol.SubscribeResult {
+        self.lock();
+        defer self.unlock();
+        return .{
+            .state = self.snapshotLocked(),
+            .next_seq = self.event_bus.cursor(self.io),
+        };
+    }
+
+    /// Caller holds `mutex`, so the mutation and its event are indivisible from
+    /// a subscription barrier's point of view.
+    fn publishStateLocked(self: *Daemon) void {
+        const value = self.snapshotLocked();
+        self.event_bus.publish(self.io, value.session_id, .{ .state_changed = value }) catch {};
     }
 
     fn setStage(self: *Daemon, stage: Stage) void {
         self.lock();
         self.stage = stage;
         const session = self.session_id;
+        self.event_bus.publish(self.io, session, .{ .processing_stage_changed = .{
+            .stage = protocolStage(stage),
+        } }) catch {};
         self.unlock();
-        self.event_bus.publish(self.io, "processing.stage_changed", session, .{
-            .stage = if (stage == .none) null else @tagName(stage),
-        });
     }
 
     fn publishError(self: *Daemon, code: []const u8, message: []const u8) void {
         self.lock();
         const session = self.session_id;
         self.unlock();
-        self.event_bus.publish(self.io, "operation.error", session, .{ .code = code, .message = message });
+        self.event_bus.publish(self.io, session, .{ .operation_error = .{ .code = code, .message = message } }) catch {};
     }
 
     fn recordPreSttFailure(self: *Daemon) void {
@@ -303,8 +324,8 @@ const Daemon = struct {
                 break :blk null;
             };
         }
+        self.publishStateLocked();
         self.unlock();
-        self.publishState();
         if (meter_path) |path| {
             const meter_thread = std.Thread.spawn(.{}, meterLoop, .{ self, session, path }) catch {
                 self.gpa.free(path);
@@ -324,8 +345,8 @@ const Daemon = struct {
         }
         self.state = .stopping;
         const recording_raw = self.rec_raw;
+        self.publishStateLocked();
         self.unlock();
-        self.publishState();
         return if (self.stopAndProcess(recording_raw)) "processing" else "error: could not stop recording";
     }
 
@@ -334,20 +355,24 @@ const Daemon = struct {
         switch (self.state) {
             .recording => {
                 self.state = .stopping;
+                const session = self.session_id;
                 const stream_session = self.stream_session;
                 self.stream_session = null;
+                self.publishStateLocked();
                 self.unlock();
-                self.publishState();
                 self.rec.cancel(self.gpa, self.io);
                 if (stream_session) |stream| stream.cancel();
                 self.lock();
                 self.state = .idle;
+                self.publishStateLocked();
                 self.unlock();
-                self.publishState();
-                self.event_bus.publish(self.io, "session.completed", self.session_id, .{
+                self.event_bus.publish(self.io, session, .{ .session_completed = .{
                     .ok = false,
+                    .phase = .pre_stt,
                     .reason = "cancelled",
-                });
+                    .stt_attempted = false,
+                    .latency_ms = 0,
+                } }) catch {};
                 self.inform("SayAll", "Recording cancelled");
                 return "stopped";
             },
@@ -381,9 +406,9 @@ const Daemon = struct {
             const stream_session = self.stream_session;
             self.stream_session = null;
             self.state = .idle;
+            self.publishStateLocked();
             self.unlock();
             if (stream_session) |stream| stream.cancel();
-            self.publishState();
             self.recordPreSttFailure();
             self.publishError("recorder_stop_failed", "Recording failed to stop");
             self.inform("SayAll", "Recording failed");
@@ -405,16 +430,17 @@ const Daemon = struct {
         self.lock();
         self.state = .processing;
         self.stage = .validating;
+        self.publishStateLocked();
         self.unlock();
-        self.publishState();
         const t = std.Thread.spawn(.{}, pipelineMain, .{ self, job }) catch {
             if (stream_session) |stream| stream.cancel();
             Io.Dir.deleteFileAbsolute(self.io, job.path) catch {};
             self.gpa.free(job.path);
             self.lock();
             self.state = .idle;
+            self.stage = .none;
+            self.publishStateLocked();
             self.unlock();
-            self.publishState();
             self.recordPreSttFailure();
             self.publishError("pipeline_start_failed", "Could not start processing");
             return false;
@@ -423,6 +449,16 @@ const Daemon = struct {
         return true;
     }
 };
+
+fn protocolStage(stage: Stage) ?protocol.ProcessingStage {
+    return switch (stage) {
+        .none => null,
+        .validating => .validating,
+        .transcribing => .transcribing,
+        .cleaning => .cleaning,
+        .delivering => .delivering,
+    };
+}
 
 fn watchdogLoop(d: *Daemon) void {
     while (true) {
@@ -434,9 +470,10 @@ fn watchdogLoop(d: *Daemon) void {
             if (elapsed_ms >= max_ms) {
                 d.state = .stopping;
                 const raw = d.rec_raw;
+                const session = d.session_id;
+                d.publishStateLocked();
                 d.unlock();
-                d.publishState();
-                d.event_bus.publish(d.io, "recording.limit_reached", d.session_id, .{});
+                d.event_bus.publish(d.io, session, .{ .recording_limit_reached = .{} }) catch {};
                 d.inform("SayAll", "Maximum recording length reached");
                 _ = d.stopAndProcess(raw);
                 continue;
@@ -473,12 +510,12 @@ fn meterLoop(d: *Daemon, session_id: u64, path: []u8) void {
             // across concurrent short writes.
             offset += aligned_len;
             if (recorder_mod.analyzePcmS16(samples[0..aligned_len])) |levels| {
-                d.event_bus.publish(d.io, "audio.level", session_id, .{
+                d.event_bus.publish(d.io, session_id, .{ .audio_level = .{
                     .rms = @min(1.0, levels.rms / 32768.0),
                     .peak = @min(1.0, @as(f64, @floatFromInt(levels.peak)) / 32768.0),
                     .clipping = levels.peak >= 32760,
                     .window_ms = 100,
-                });
+                } }) catch {};
             } else |_| {}
         }
         std.Io.sleep(d.io, .fromMilliseconds(50), .awake) catch return;
@@ -489,7 +526,7 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
     const gpa = d.gpa;
     const io = d.io;
     var completed = false;
-    var completion_phase: []const u8 = "pre_stt";
+    var completion_phase: protocol.SessionPhase = .pre_stt;
     var completion_reason: ?[]const u8 = null;
     var stt_attempted = false;
     var stt_latency_ms: u64 = 0;
@@ -501,15 +538,15 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
         d.lock();
         d.state = .idle;
         d.stage = .none;
+        d.publishStateLocked();
         d.unlock();
-        d.publishState();
-        d.event_bus.publish(io, "session.completed", job.session_id, .{
+        d.event_bus.publish(io, job.session_id, .{ .session_completed = .{
             .ok = completed,
             .phase = completion_phase,
             .reason = completion_reason,
             .stt_attempted = stt_attempted,
             .latency_ms = stt_latency_ms,
-        });
+        } }) catch {};
     }
 
     const t_start = d.nowMs();
@@ -559,7 +596,7 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
     defer gpa.free(wav);
 
     d.setStage(.transcribing);
-    completion_phase = "stt";
+    completion_phase = .stt;
     stt_attempted = true;
     var maybe_transcript: ?[]u8 = null;
     if (stream_session) |stream| {
@@ -637,7 +674,7 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
     }
 
     var final: []const u8 = transcript;
-    completion_phase = "post_stt";
+    completion_phase = .post_stt;
     var cleaned: ?[]u8 = null;
     defer if (cleaned) |c| gpa.free(c);
 
@@ -671,6 +708,54 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
     };
     completed = true;
     completion_reason = null;
-    d.event_bus.publish(io, "output.completed", job.session_id, .{ .method = d.cfg.output.method });
+    d.event_bus.publish(io, job.session_id, .{ .output_completed = .{ .method = d.cfg.output.method } }) catch {};
     d.log("total pipeline {d}ms", .{d.nowMs() - t_start});
+}
+
+test "subscription barrier snapshots state before the next event" {
+    var cfg: config.Config = .{};
+    var d: Daemon = .{
+        .gpa = std.testing.allocator,
+        .io = std.testing.io,
+        .cfg = &cfg,
+        .scratch_dir = "/tmp",
+        .metrics_store = null,
+        .event_bus = events.EventBus.init(std.testing.allocator),
+    };
+    defer d.event_bus.deinit();
+
+    d.lock();
+    d.state = .recording;
+    d.session_id = 11;
+    d.rec_started_ms = d.nowMs();
+    d.publishStateLocked();
+    d.unlock();
+
+    const barrier = d.subscriptionBarrier();
+    try std.testing.expectEqual(protocol.State.recording, barrier.state.state);
+    try std.testing.expectEqual(@as(u64, 11), barrier.state.session_id);
+    try std.testing.expectEqual(@as(u64, 2), barrier.next_seq);
+
+    d.lock();
+    d.state = .processing;
+    d.stage = .validating;
+    d.publishStateLocked();
+    d.unlock();
+
+    var cursor = barrier.next_seq;
+    var storage: [protocol.max_frame_len]u8 = undefined;
+    const frame = switch (d.event_bus.read(std.testing.io, &cursor, &storage)) {
+        .event => |frame| frame,
+        else => return error.MissingPostBarrierEvent,
+    };
+    const parsed = try std.json.parseFromSlice(
+        protocol.EventFrame(protocol.StateChanged),
+        std.testing.allocator,
+        frame,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+    try std.testing.expectEqual(barrier.next_seq, parsed.value.seq);
+    try std.testing.expectEqual(protocol.State.processing, parsed.value.data.state);
+    try std.testing.expectEqual(protocol.ProcessingStage.validating, parsed.value.data.stage.?);
 }

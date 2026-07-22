@@ -25,7 +25,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const protocol_fixtures = b.createModule(.{
+        .root_source_file = b.path("tests/protocol_v1_fixtures.zig"),
+    });
     mod.addOptions("build_options", build_options);
+    mod.addImport("protocol_fixtures", protocol_fixtures);
     const websocket_dep = b.dependency("websocket", .{
         .target = target,
         .optimize = optimize,

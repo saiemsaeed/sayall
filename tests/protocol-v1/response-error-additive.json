@@ -1,0 +1,1 @@
+{"v":1,"type":"response","id":4,"ok":false,"error":{"code":"invalid_state","message":"busy: daemon is not idle","future_detail":"ignored"},"retryable":false}

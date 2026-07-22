@@ -1,0 +1,1 @@
+{"v":1,"type":"response","id":1,"ok":true,"result":{"protocol_version":1,"platform":"linux","live_levels":true,"text_injection":true,"clipboard_fallback":true,"stats":true,"streaming_stt":true,"future_capability":true},"server_build":"future"}

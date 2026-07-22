@@ -1,0 +1,1 @@
+{"v":1,"type":"response","id":3,"ok":true,"result":{"state":{"state":"recording","stage":null,"session_id":8,"elapsed_ms":1250,"cleanup":false,"future_state":"ignored"},"next_seq":19,"future_barrier":"ignored"},"server_build":"future"}
