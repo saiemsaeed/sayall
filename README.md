@@ -302,8 +302,9 @@ wlroots compositors, and KDE Wayland. It displays:
 - short success and error states.
 
 It automatically reconnects after either process restarts. The wire protocol
-is documented in `docs/protocol-v1.md` and is intended for the future Swift
-macOS UI as well.
+is documented in [`docs/protocol-v1.md`](docs/protocol-v1.md). Its current
+scope and the native-platform ownership boundaries are defined by the
+[`0.1.4 platform support ADR`](docs/adr-platform-ownership-and-support.md).
 
 ## Provider Choices (and why)
 
