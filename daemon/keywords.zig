@@ -155,18 +155,6 @@ pub const Store = struct {
     }
 };
 
-pub fn path(gpa: Allocator, env: *const std.process.Environ.Map) !?[]const u8 {
-    if (env.get("XDG_CONFIG_HOME")) |dir| {
-        if (dir.len == 0 or dir[0] != '/') return error.InvalidConfigHome;
-        return try std.fmt.allocPrint(gpa, "{s}/sayall/keywords.json", .{dir});
-    }
-    if (env.get("HOME")) |home| {
-        if (home.len == 0 or home[0] != '/') return error.InvalidConfigHome;
-        return try std.fmt.allocPrint(gpa, "{s}/.config/sayall/keywords.json", .{home});
-    }
-    return null;
-}
-
 pub fn validate(values: []const []const u8) ValidationError!void {
     if (values.len > max_count) return error.TooManyKeywords;
 
@@ -207,23 +195,6 @@ fn exactIndex(values: []const []const u8, wanted: []const u8) ?usize {
         if (std.mem.eql(u8, value, wanted)) return index;
     }
     return null;
-}
-
-test "keyword path follows XDG precedence and requires absolute roots" {
-    var env = std.process.Environ.Map.init(std.testing.allocator);
-    defer env.deinit();
-    try env.put("HOME", "/tmp/home");
-    const home_path = (try path(std.testing.allocator, &env)).?;
-    defer std.testing.allocator.free(home_path);
-    try std.testing.expectEqualStrings("/tmp/home/.config/sayall/keywords.json", home_path);
-
-    try env.put("XDG_CONFIG_HOME", "/tmp/xdg");
-    const xdg_path = (try path(std.testing.allocator, &env)).?;
-    defer std.testing.allocator.free(xdg_path);
-    try std.testing.expectEqualStrings("/tmp/xdg/sayall/keywords.json", xdg_path);
-
-    try env.put("XDG_CONFIG_HOME", "relative");
-    try std.testing.expectError(error.InvalidConfigHome, path(std.testing.allocator, &env));
 }
 
 test "validation preserves exact Unicode and rejects invalid values" {

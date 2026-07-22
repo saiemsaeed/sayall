@@ -6,6 +6,7 @@ const config = @import("config.zig");
 const keywords = @import("keywords.zig");
 const ipc = @import("ipc.zig");
 const metrics = @import("metrics.zig");
+const paths = @import("paths.zig");
 const daemon = @import("daemon.zig");
 const events = @import("events.zig");
 const recorder = @import("recorder.zig");
@@ -59,9 +60,9 @@ fn run(init: std.process.Init) !u8 {
             std.debug.print("sayall: warning: no LLM API key (GROQ_API_KEY) — cleanup pass disabled\n", .{});
             cfg.llm.enabled = false;
         }
-        const sock = try config.socketPath(arena, env);
-        const metrics_path = try config.metricsPath(arena, env);
-        try daemon.run(gpa, io, &cfg, sock, metrics_path);
+        const runtime = try paths.Runtime.discover(arena, env);
+        const metrics_path = try paths.PersistentState.metrics(arena, env);
+        try daemon.run(gpa, io, &cfg, runtime, metrics_path);
         return 0;
     }
 
@@ -106,8 +107,8 @@ fn run(init: std.process.Init) !u8 {
 
     if (std.mem.eql(u8, cmd, "update")) {
         if (argv.len != 2) return invalidArguments("update");
-        const sock = try config.socketPath(arena, env);
-        if (ipc.sendCommand(arena, io, sock, "status")) |state| {
+        const runtime = try paths.Runtime.discover(arena, env);
+        if (ipc.sendCommand(arena, io, runtime.endpoint, "status")) |state| {
             if (!updateAllowed(state)) {
                 std.debug.print("sayall: cannot update while the daemon is {s}; wait for it to become idle\n", .{state});
                 return 1;
@@ -161,9 +162,9 @@ fn run(init: std.process.Init) !u8 {
         if ((!is_toggle and argv.len != 2) or (is_toggle and argv.len > 3)) return invalidArguments(cmd);
         const raw = is_toggle and argv.len == 3 and std.mem.eql(u8, std.mem.span(argv[2]), "--raw");
         if (is_toggle and argv.len == 3 and !raw) return invalidArguments("toggle");
-        const sock = try config.socketPath(arena, env);
+        const runtime = try paths.Runtime.discover(arena, env);
         const wire: []const u8 = if (raw) "toggle raw" else cmd;
-        const reply = ipc.sendCommand(arena, io, sock, wire) catch |err| {
+        const reply = ipc.sendCommand(arena, io, runtime.endpoint, wire) catch |err| {
             std.debug.print("sayall: cannot reach daemon ({s}) — is 'sayall daemon' running?\n", .{@errorName(err)});
             return 1;
         };
@@ -201,7 +202,7 @@ fn run(init: std.process.Init) !u8 {
         }) catch "?";
         try printLine(io, info_line);
 
-        const metrics_path = try config.metricsPath(arena, env);
+        const metrics_path = try paths.PersistentState.metrics(arena, env);
         const metrics_store: ?metrics.Store = if (cfg.metrics.enabled)
             metrics.Store.init(metrics_path, cfg.metrics.history_max_entries)
         else
@@ -232,7 +233,7 @@ fn run(init: std.process.Init) !u8 {
         const as_json = argv.len == 3 and std.mem.eql(u8, std.mem.span(argv[2]), "--json");
         if (argv.len == 3 and !as_json) return invalidArguments("stats");
         const cfg = try config.load(arena, io, env);
-        const metrics_path = try config.metricsPath(arena, env);
+        const metrics_path = try paths.PersistentState.metrics(arena, env);
         const store = metrics.Store.init(metrics_path, cfg.metrics.history_max_entries);
         const summary = try store.summary(gpa, io);
         if (as_json) {
@@ -249,14 +250,13 @@ fn run(init: std.process.Init) !u8 {
         const requested_source: ?[]const u8 = if (argv.len == 3) std.mem.span(argv[2]) else null;
         const cfg = try config.load(arena, io, env);
         const source = requested_source orelse cfg.recording.source;
-        const sock = try config.socketPath(arena, env);
-        const scratch_dir = std.fs.path.dirname(sock) orelse "/tmp";
+        const runtime = try paths.Runtime.discover(arena, env);
         var mic_recorder: recorder.Recorder = .{};
         try printLine(io, try std.fmt.allocPrint(arena, "Source: {s}", .{
             if (source.len == 0) "OS default" else source,
         }));
         try printLine(io, "Speak normally for 3 seconds...");
-        try mic_recorder.start(gpa, io, scratch_dir, source);
+        try mic_recorder.start(gpa, io, runtime.scratch_dir, source);
         std.Io.sleep(io, .fromSeconds(3), .awake) catch {};
         const recording = try mic_recorder.stop(io);
         defer {
@@ -286,7 +286,7 @@ fn flag(value: []const u8, long: []const u8, short: []const u8) bool {
 }
 
 fn keywordCommand(arena: std.mem.Allocator, io: Io, env: *const std.process.Environ.Map, raw_args: []const [*:0]const u8) !u8 {
-    const keywords_path = try keywords.path(arena, env) orelse {
+    const keywords_path = try paths.Config.keywords(arena, env) orelse {
         std.debug.print("sayall: keyword storage requires XDG_CONFIG_HOME or HOME\n", .{});
         return 1;
     };
@@ -630,7 +630,7 @@ fn doctor(arena: std.mem.Allocator, io: Io, env: *const std.process.Environ.Map)
     }
 
     var loaded_config: ?config.Config = null;
-    const cfg_path = try config.configPath(arena, env);
+    const cfg_path = try paths.Config.file(arena, env);
     if (cfg_path) |path| {
         if (Io.Dir.cwd().statFile(io, path, .{})) |stat| {
             try diagnostic(arena, io, "ok", "Configuration", path);
@@ -707,12 +707,12 @@ fn doctor(arena: std.mem.Allocator, io: Io, env: *const std.process.Environ.Map)
         try diagnostic(arena, io, "fail", "HUD service", "start with: systemctl --user enable --now sayall-hud");
     }
 
-    const sock = try config.socketPath(arena, env);
-    if (ipc.sendCommand(arena, io, sock, "status")) |reply| {
+    const runtime = try paths.Runtime.discover(arena, env);
+    if (ipc.sendCommand(arena, io, runtime.endpoint, "status")) |reply| {
         try diagnostic(arena, io, "ok", "Daemon", reply);
     } else |err| {
         failures += 1;
-        try diagnostic(arena, io, "fail", "Daemon", try std.fmt.allocPrint(arena, "cannot reach {s} ({s})", .{ sock, @errorName(err) }));
+        try diagnostic(arena, io, "fail", "Daemon", try std.fmt.allocPrint(arena, "cannot reach {s} ({s})", .{ runtime.endpoint.path, @errorName(err) }));
     }
 
     try printLine(io, try std.fmt.allocPrint(arena, "Result: {d} failure(s), {d} warning(s)", .{ failures, warnings }));

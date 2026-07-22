@@ -1,9 +1,27 @@
 # SayAll Control Protocol v1
 
 SayAll v1 is bounded newline-delimited JSON (NDJSON) over the private Unix
-domain socket at `$XDG_RUNTIME_DIR/sayall.sock` on Linux. One connection carries
-one request. The exception is `subscribe`: after its response, the connection
-stays open for event frames.
+domain socket. One connection carries one request. The exception is `subscribe`:
+after its response, the connection stays open for event frames.
+
+The Zig daemon and CLI discover the Linux endpoint in this order:
+
+1. `SAYALL_SOCKET`, when it is an absolute, normalized, filesystem Unix-socket
+   path suitable for `sun_path`. This override is intended for development and
+   tests.
+2. `$XDG_RUNTIME_DIR/sayall.sock`.
+3. `/tmp/sayall-<effective-user-id>.sock` when `XDG_RUNTIME_DIR` is absent.
+
+Private runtime/override parents are required to have no group or other mode
+bits. The `/tmp` fallback instead requires the standard writable sticky
+directory. The daemon creates the socket with mode `0600`; clients reject
+non-sockets and sockets with group or other permissions. The scratch recording
+directory is resolved separately (`XDG_RUNTIME_DIR`, then `/tmp`), so changing
+`SAYALL_SOCKET` does not relocate recordings.
+
+The Linux Rust HUD continues to mirror the two production defaults; sharing
+the override/discovery implementation with it is tracked separately. No macOS
+or Windows production endpoint default is selected by protocol v1.
 
 Legacy plaintext commands remain valid on the same socket:
 

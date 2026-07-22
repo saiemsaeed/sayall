@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const keywords = @import("keywords.zig");
+const paths = @import("paths.zig");
 
 pub const SttConfig = struct {
     provider: []const u8 = "deepgram",
@@ -60,7 +61,7 @@ pub const ValidationError = error{InvalidConfig};
 /// environment overrides. All strings are owned by `gpa` (use an arena).
 pub fn load(gpa: Allocator, io: Io, env: *const std.process.Environ.Map) !Config {
     var cfg: Config = .{};
-    if (try configPath(gpa, env)) |path| {
+    if (try paths.Config.file(gpa, env)) |path| {
         const bytes = Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1024 * 1024)) catch |err| switch (err) {
             error.FileNotFound => null,
             else => return err,
@@ -83,7 +84,7 @@ pub fn load(gpa: Allocator, io: Io, env: *const std.process.Environ.Map) !Config
         if (v.len > 0 and v[0] != '0') cfg.verbose = true;
     }
 
-    if (try keywords.path(gpa, env)) |keywords_path| {
+    if (try paths.Config.keywords(gpa, env)) |keywords_path| {
         const store = keywords.Store.init(keywords_path);
         if (try store.load(gpa, io)) |stored| {
             cfg.stt.keyterms = stored;
@@ -112,7 +113,7 @@ const LegacyConfig = struct {
 /// Reads only legacy stt.keyterms for the keyword CLI. This intentionally
 /// avoids loading, resolving, or printing API credentials and unrelated config.
 pub fn loadLegacyKeyterms(gpa: Allocator, io: Io, env: *const std.process.Environ.Map) ![]const []const u8 {
-    const config_path = try configPath(gpa, env) orelse return &.{};
+    const config_path = try paths.Config.file(gpa, env) orelse return &.{};
     const bytes = Io.Dir.cwd().readFileAlloc(io, config_path, gpa, .limited(1024 * 1024)) catch |err| switch (err) {
         error.FileNotFound => return &.{},
         else => return err,
@@ -171,42 +172,12 @@ fn invalid(message: []const u8) ValidationError {
     return error.InvalidConfig;
 }
 
-pub fn configPath(gpa: Allocator, env: *const std.process.Environ.Map) !?[]const u8 {
-    if (env.get("XDG_CONFIG_HOME")) |dir| {
-        return try std.fmt.allocPrint(gpa, "{s}/sayall/config.json", .{dir});
-    }
-    if (env.get("HOME")) |home| {
-        return try std.fmt.allocPrint(gpa, "{s}/.config/sayall/config.json", .{home});
-    }
-    return null;
-}
-
 fn resolveEnvRef(env: *const std.process.Environ.Map, value: []const u8) []const u8 {
     if (value.len > 1 and value[0] == '$') {
         // Unresolved reference → empty, which downstream treats as "missing".
         return env.get(value[1..]) orelse "";
     }
     return value;
-}
-
-/// Path of the unix socket. The scratch WAV file lives next to it.
-pub fn socketPath(gpa: Allocator, env: *const std.process.Environ.Map) ![]u8 {
-    if (env.get("XDG_RUNTIME_DIR")) |dir| {
-        return std.fmt.allocPrint(gpa, "{s}/sayall.sock", .{dir});
-    }
-    return std.fmt.allocPrint(gpa, "/tmp/sayall-{d}.sock", .{std.os.linux.getuid()});
-}
-
-pub fn metricsPath(gpa: Allocator, env: *const std.process.Environ.Map) ![]u8 {
-    if (env.get("XDG_STATE_HOME")) |dir| {
-        if (dir.len == 0 or dir[0] != '/') return error.InvalidStateHome;
-        return std.fmt.allocPrint(gpa, "{s}/sayall/metrics-v2.json", .{dir});
-    }
-    if (env.get("HOME")) |home| {
-        if (home.len == 0 or home[0] != '/') return error.InvalidStateHome;
-        return std.fmt.allocPrint(gpa, "{s}/.local/state/sayall/metrics-v2.json", .{home});
-    }
-    return error.StateHomeUnavailable;
 }
 
 test "defaults are sensible" {

@@ -6,6 +6,8 @@ const config = @import("config.zig");
 const events = @import("events.zig");
 const ipc = @import("ipc.zig");
 const metrics = @import("metrics.zig");
+const paths = @import("paths.zig");
+const platform = @import("platform.zig");
 const protocol = @import("protocol.zig");
 const recorder_mod = @import("recorder.zig");
 const deepgram_stream = @import("stt/deepgram_stream.zig");
@@ -24,11 +26,16 @@ const PipelineJob = struct {
     stream: ?*deepgram_stream.Session,
 };
 
-pub fn run(gpa: Allocator, io: Io, cfg: *config.Config, socket_path: []const u8, metrics_path: []const u8) !void {
-    const lock_path = try std.fmt.allocPrint(gpa, "{s}.lock", .{socket_path});
+pub fn run(gpa: Allocator, io: Io, cfg: *config.Config, runtime: paths.Runtime, metrics_path: []const u8) !void {
+    try runtime.endpoint.validateParent(io);
+    const lock_path = try std.fmt.allocPrint(gpa, "{s}.lock", .{runtime.endpoint.path});
     defer gpa.free(lock_path);
-    const lock_file = try Io.Dir.createFileAbsolute(io, lock_path, .{ .truncate = false });
+    const lock_file = try Io.Dir.createFileAbsolute(io, lock_path, .{
+        .truncate = false,
+        .permissions = @enumFromInt(0o600),
+    });
     defer lock_file.close(io);
+    try lock_file.setPermissions(io, @enumFromInt(0o600));
     if (!try lock_file.tryLock(io, .exclusive)) return error.AlreadyRunning;
     defer lock_file.unlock(io);
 
@@ -47,16 +54,16 @@ pub fn run(gpa: Allocator, io: Io, cfg: *config.Config, socket_path: []const u8,
         .gpa = gpa,
         .io = io,
         .cfg = cfg,
-        .scratch_dir = std.fs.path.dirname(socket_path) orelse "/tmp",
+        .scratch_dir = runtime.scratch_dir,
         .metrics_store = metrics_store,
         .event_bus = events.EventBus.init(gpa),
     };
     defer d.event_bus.deinit();
 
-    var server = try ipc.listen(io, socket_path);
+    var server = try ipc.listen(io, runtime.endpoint);
     defer server.deinit(io);
-    defer Io.Dir.deleteFileAbsolute(io, socket_path) catch {};
-    d.log("listening on {s}", .{socket_path});
+    defer Io.Dir.deleteFileAbsolute(io, runtime.endpoint.path) catch {};
+    d.log("listening on {s}", .{runtime.endpoint.path});
 
     const watchdog_thread = try std.Thread.spawn(.{}, watchdogLoop, .{&d});
     watchdog_thread.detach();
@@ -144,13 +151,14 @@ const Daemon = struct {
         const request = parsed.value;
 
         if (std.mem.eql(u8, request.method, "get_capabilities")) {
+            const capabilities = platform.capabilities;
             protocol.writeResponse(stream, self.io, request.id, protocol.Capabilities{
-                .platform = "linux",
-                .live_levels = true,
-                .text_injection = true,
-                .clipboard_fallback = true,
-                .stats = self.metrics_store != null and self.cfg.metrics.expose_api,
-                .streaming_stt = self.cfg.stt.streaming,
+                .platform = capabilities.name,
+                .live_levels = capabilities.live_levels.isImplemented(),
+                .text_injection = capabilities.text_injection.isImplemented(),
+                .clipboard_fallback = capabilities.clipboard_fallback.isImplemented(),
+                .stats = capabilities.stats.isImplemented() and self.metrics_store != null and self.cfg.metrics.expose_api,
+                .streaming_stt = capabilities.streaming_stt.isImplemented() and self.cfg.stt.streaming,
             }) catch {};
             return;
         }
