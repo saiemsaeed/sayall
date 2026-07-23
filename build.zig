@@ -19,6 +19,7 @@ pub fn build(b: *std.Build) void {
 
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
+    build_options.addOption(bool, "e2e_scripted_stt", false);
 
     const mod = b.createModule(.{
         .root_source_file = b.path("daemon/main.zig"),
@@ -87,6 +88,26 @@ pub fn build(b: *std.Build) void {
         const shortcut_cli_tests = b.addSystemCommand(&.{ "sh", b.pathFromRoot("tests/shortcut-cli.sh") });
         shortcut_cli_tests.addArtifactArg(exe);
         test_step.dependOn(&shortcut_cli_tests.step);
+
+        const e2e_build_options = b.addOptions();
+        e2e_build_options.addOption([]const u8, "version", version);
+        e2e_build_options.addOption(bool, "e2e_scripted_stt", true);
+        const e2e_mod = b.createModule(.{
+            .root_source_file = b.path("daemon/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        e2e_mod.addOptions("build_options", e2e_build_options);
+        e2e_mod.addImport("protocol_fixtures", protocol_fixtures);
+        e2e_mod.addImport("websocket", websocket_dep.module("websocket"));
+        const e2e_exe = b.addExecutable(.{
+            .name = "sayall-e2e",
+            .root_module = e2e_mod,
+        });
+        const daemon_e2e_tests = b.addSystemCommand(&.{ "sh", b.pathFromRoot("tests/daemon-e2e.sh") });
+        daemon_e2e_tests.addArtifactArg(e2e_exe);
+        const e2e_step = b.step("test-e2e", "Run hermetic Linux daemon end-to-end tests");
+        e2e_step.dependOn(&daemon_e2e_tests.step);
     }
 
     addCoreReadinessCheck(b, optimize, .{
@@ -112,6 +133,9 @@ fn addCoreReadinessCheck(
         .target = target,
         .optimize = optimize,
     });
+    const readiness_options = b.addOptions();
+    readiness_options.addOption(bool, "e2e_scripted_stt", false);
+    readiness_module.addOptions("build_options", readiness_options);
     readiness_module.addImport("protocol_fixtures", b.createModule(.{
         .root_source_file = b.path("tests/protocol_v1_fixtures.zig"),
     }));

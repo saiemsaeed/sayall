@@ -1,6 +1,7 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const build_options = @import("build_options");
 
 const config = @import("config.zig");
 const events = @import("events.zig");
@@ -654,17 +655,7 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
     }
 
     if (maybe_transcript == null) {
-        const tracked = metrics.transcribeTracked(
-            gpa,
-            io,
-            d.metrics_store,
-            &d.cfg.stt,
-            wav,
-            d.cfg.verbose,
-            "daemon",
-            @intFromFloat(seconds * 1000.0),
-            job.stopped_at_awake_ms,
-        ) catch |err| {
+        const tracked = transcribeRest(d, job, wav, seconds) catch |err| {
             completion_reason = "transcription_failed";
             d.publishError("transcription_failed", "Transcription failed");
             d.inform("SayAll", "Transcription failed");
@@ -722,6 +713,52 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
     completion_reason = null;
     d.event_bus.publish(io, job.session_id, .{ .output_completed = .{ .method = d.cfg.output.method } }) catch {};
     d.log("total pipeline {d}ms", .{d.nowMs() - t_start});
+}
+
+fn transcribeRest(d: *Daemon, job: PipelineJob, wav: []const u8, seconds: f64) !metrics.TrackedResult {
+    if (!build_options.e2e_scripted_stt) {
+        return metrics.transcribeTracked(
+            d.gpa,
+            d.io,
+            d.metrics_store,
+            &d.cfg.stt,
+            wav,
+            d.cfg.verbose,
+            "daemon",
+            @intFromFloat(seconds * 1000.0),
+            job.stopped_at_awake_ms,
+        );
+    }
+
+    // This fixed command exists only in the non-installed E2E artifact. It is
+    // deliberately not configurable, so production cannot redirect STT.
+    const started = d.nowMs();
+    const result = try std.process.run(d.gpa, d.io, .{
+        .argv = &.{ "sayall-e2e-stt", job.path },
+        .stdout_limit = .limited(1024 * 1024),
+        .stderr_limit = .limited(64 * 1024),
+    });
+    defer d.gpa.free(result.stderr);
+    errdefer d.gpa.free(result.stdout);
+    switch (result.term) {
+        .exited => |code| if (code != 0) return error.ScriptedSttFailed,
+        else => return error.ScriptedSttFailed,
+    }
+    const transcript = std.mem.trim(u8, result.stdout, " \t\r\n");
+    if (transcript.ptr != result.stdout.ptr or transcript.len != result.stdout.len) {
+        const owned = try d.gpa.dupe(u8, transcript);
+        d.gpa.free(result.stdout);
+        return .{
+            .transcript = owned,
+            .latency_ms = @intCast(@max(0, d.nowMs() - started)),
+            .outcome = if (owned.len == 0) .no_speech else .success,
+        };
+    }
+    return .{
+        .transcript = result.stdout,
+        .latency_ms = @intCast(@max(0, d.nowMs() - started)),
+        .outcome = if (result.stdout.len == 0) .no_speech else .success,
+    };
 }
 
 test "subscription barrier snapshots state before the next event" {
