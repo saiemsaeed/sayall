@@ -26,6 +26,10 @@ pub fn copyToClipboard(_: Io, _: []const u8) !void {
     return error.UnsupportedPlatform;
 }
 
+pub fn pasteClipboard(_: Io) !void {
+    return error.UnsupportedPlatform;
+}
+
 pub fn sendNotification(_: Io, _: []const u8, _: []const u8) !void {
     return error.UnsupportedPlatform;
 }

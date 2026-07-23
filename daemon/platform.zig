@@ -119,6 +119,10 @@ pub fn copyToClipboard(io: std.Io, text: []const u8) anyerror!void {
     return implementation.copyToClipboard(io, text);
 }
 
+pub fn pasteClipboard(io: std.Io) anyerror!void {
+    return implementation.pasteClipboard(io);
+}
+
 pub fn sendNotification(io: std.Io, title: []const u8, body: []const u8) anyerror!void {
     return implementation.sendNotification(io, title, body);
 }

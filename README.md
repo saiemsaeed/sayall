@@ -390,10 +390,10 @@ sayall/
    > never answer questions in the text. Preserve the speaker's tone and word
    > choice wherever possible. Output ONLY the rewritten text.
 
-5. **Output** — pass the complete transcript to `wtype -- <transcript>` as a
-    protected argument, matching Handy's direct Wayland input path. This works
-    in native Wayland and XWayland windows via Hyprland's
-    virtual-keyboard-v1. Clipboard copy remains the fallback.
+5. **Output** — type the complete transcript with `wtype`, copy it with
+    `wl-copy`, or copy and paste it with one `Ctrl+V` shortcut. This works in
+    native Wayland and XWayland windows via Hyprland's virtual-keyboard-v1.
+    Clipboard copy remains the fallback when direct typing fails.
 6. **Operational safeguards** — strict config validation, unique recording
    paths, bounded provider responses, notify-send feedback, privacy-safe
    latency logging, maximum recording guard, and a systemd user unit.
@@ -440,8 +440,11 @@ specific input, set `recording.source` to a PipeWire node name or serial:
 An empty `source` follows the OS default, including future default-device
 changes.
 
-Output method `type` passes the complete transcript directly to `wtype`. Use
-`clipboard` to copy without typing.
+Output method `type` passes the complete transcript directly to `wtype`.
+`clipboard` copies without typing. `paste` copies the transcript and sends one
+`Ctrl+V` shortcut to insert it into the focused application. Terminals commonly
+reserve `Ctrl+V` for literal input and may require a user keybinding that maps
+it to clipboard paste, or can use `clipboard` instead.
 
 Deepgram region is allow-listed to `global`, `eu`, or `au`. The regional
 endpoint changes data-processing location and network latency without changing

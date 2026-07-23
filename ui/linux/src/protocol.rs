@@ -180,6 +180,7 @@ pub struct RecordingLimitReached {
 enum OutputMethod {
     Type,
     Clipboard,
+    Paste,
 }
 
 #[derive(Debug, Deserialize)]

@@ -232,7 +232,7 @@ client branching; `message` is display text.
 {"v":1,"type":"event","seq":47,"event":"output.completed","session_id":3,"data":{"method":"type"}}
 ```
 
-`method` is currently `type` or `clipboard`.
+`method` is currently `type`, `clipboard`, or `paste`.
 
 ### `session.completed`
 

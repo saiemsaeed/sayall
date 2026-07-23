@@ -286,7 +286,7 @@ test "shared golden request and envelopes remain v1 compatible" {
         } else if (std.mem.eql(u8, envelope.value.event, eventName(.output_completed))) {
             const parsed = try parseGolden(EventFrame(OutputCompleted), line);
             defer parsed.deinit();
-            try std.testing.expectEqualStrings("type", parsed.value.data.method);
+            try std.testing.expectEqualStrings("paste", parsed.value.data.method);
         } else if (std.mem.eql(u8, envelope.value.event, eventName(.session_completed))) {
             const parsed = try parseGolden(EventFrame(SessionCompleted), line);
             defer parsed.deinit();

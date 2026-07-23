@@ -18,6 +18,7 @@ fn expectUnsupported(comptime runtime: type) !void {
     );
     try std.testing.expectError(error.UnsupportedPlatform, runtime.typeText(std.testing.io, "text"));
     try std.testing.expectError(error.UnsupportedPlatform, runtime.copyToClipboard(std.testing.io, "text"));
+    try std.testing.expectError(error.UnsupportedPlatform, runtime.pasteClipboard(std.testing.io));
     try std.testing.expectError(
         error.UnsupportedPlatform,
         runtime.sendNotification(std.testing.io, "title", "body"),
