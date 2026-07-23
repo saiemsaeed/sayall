@@ -3,5 +3,5 @@
 {"v":1,"type":"event","seq":21,"event":"processing.stage_changed","session_id":8,"data":{"stage":"validating","progress":0.1},"server_time":3}
 {"v":1,"type":"event","seq":22,"event":"recording.limit_reached","session_id":8,"data":{"future_reason":"duration"},"server_time":4}
 {"v":1,"type":"event","seq":23,"event":"operation.error","session_id":8,"data":{"code":"transcription_failed","message":"Transcription failed","retryable":true},"server_time":5}
-{"v":1,"type":"event","seq":24,"event":"output.completed","session_id":8,"data":{"method":"type","characters":12},"server_time":6}
+{"v":1,"type":"event","seq":24,"event":"output.completed","session_id":8,"data":{"method":"paste","characters":12},"server_time":6}
 {"v":1,"type":"event","seq":25,"event":"session.completed","session_id":8,"data":{"ok":true,"phase":"post_stt","reason":null,"stt_attempted":true,"latency_ms":340,"future_timing":1},"server_time":7}

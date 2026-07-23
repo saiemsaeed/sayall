@@ -256,8 +256,8 @@ fn freeConfig(gpa: Allocator, cfg: config.SttConfig) void {
 fn listenPath(gpa: Allocator, cfg: *const config.SttConfig) ![]u8 {
     const base_path = try std.fmt.allocPrint(
         gpa,
-        "/v1/listen?model={s}&language={s}&encoding=linear16&sample_rate=16000&channels=1&smart_format=true&punctuate=true&interim_results=true&endpointing=300",
-        .{ cfg.model, cfg.language },
+        "/v1/listen?model={s}&language={s}&encoding=linear16&sample_rate=16000&channels=1&{s}&interim_results=true&endpointing=300",
+        .{ cfg.model, cfg.language, deepgram.formatting_params },
     );
     defer gpa.free(base_path);
     return deepgram.addKeyterms(gpa, base_path, cfg.keyterms);
@@ -346,10 +346,13 @@ fn processMessage(gpa: Allocator, transcript: *std.ArrayList(u8), message: webso
     if (!std.mem.eql(u8, event.type, "Results") or !event.is_final) return;
     const channel = event.channel orelse return;
     if (channel.alternatives.len == 0) return;
-    const segment = std.mem.trim(u8, channel.alternatives[0].transcript, " \t\r\n");
+    const segment = std.mem.trim(u8, channel.alternatives[0].transcript, " \t");
     if (segment.len == 0) return;
-    if (transcript.items.len + segment.len + @intFromBool(transcript.items.len > 0) > 1024 * 1024) return error.TranscriptTooLarge;
-    if (transcript.items.len > 0) try transcript.append(gpa, ' ');
+    const needs_separator = transcript.items.len > 0 and
+        !std.ascii.isWhitespace(transcript.items[transcript.items.len - 1]) and
+        !std.ascii.isWhitespace(segment[0]);
+    if (transcript.items.len + segment.len + @intFromBool(needs_separator) > 1024 * 1024) return error.TranscriptTooLarge;
+    if (needs_separator) try transcript.append(gpa, ' ');
     try transcript.appendSlice(gpa, segment);
 }
 
@@ -393,6 +396,11 @@ test "streaming path uses effective keyterms" {
     cfg.keyterms = &.{ "SayAll", "Model Context Protocol", "München" };
     const path = try listenPath(std.testing.allocator, &cfg);
     defer std.testing.allocator.free(path);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        path,
+        "&smart_format=true&punctuate=true&dictation=true&numerals=true&measurements=true&",
+    ) != null);
     try std.testing.expect(std.mem.endsWith(
         u8,
         path,
@@ -417,4 +425,21 @@ test "stream session configuration owns all caller-backed values" {
     try std.testing.expectEqualStrings("secret", owned.api_key);
     try std.testing.expectEqualStrings("global", owned.region);
     try std.testing.expectEqualStrings("SayAll", owned.keyterms[0]);
+}
+
+test "streaming preserves dictated newlines between final segments" {
+    var transcript: std.ArrayList(u8) = .empty;
+    defer transcript.deinit(std.testing.allocator);
+    var metadata = false;
+    var first = "{\"type\":\"Results\",\"is_final\":true,\"channel\":{\"alternatives\":[{\"transcript\":\"first line\\n\"}]}}".*;
+    var second = "{\"type\":\"Results\",\"is_final\":true,\"channel\":{\"alternatives\":[{\"transcript\":\"second line\"}]}}".*;
+    try processMessage(std.testing.allocator, &transcript, .{
+        .type = .text,
+        .data = &first,
+    }, &metadata);
+    try processMessage(std.testing.allocator, &transcript, .{
+        .type = .text,
+        .data = &second,
+    }, &metadata);
+    try std.testing.expectEqualStrings("first line\nsecond line", transcript.items);
 }

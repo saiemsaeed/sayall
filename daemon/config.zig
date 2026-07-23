@@ -10,9 +10,9 @@ pub const SttConfig = provider_config.SttConfig;
 pub const LlmConfig = provider_config.LlmConfig;
 
 pub const OutputConfig = struct {
-    /// "type" (wtype) or "clipboard" (wl-copy).
+    /// "type" (wtype), "clipboard" (wl-copy), or "paste" (wl-copy + Ctrl+V).
     method: []const u8 = "type",
-    trailing_space: bool = false,
+    trailing_space: bool = true,
 };
 
 pub const RecordingConfig = struct {
@@ -127,8 +127,10 @@ pub fn validate(cfg: *const Config) ValidationError!void {
         return invalid("stt.keyterms requires a Nova-3 model");
     keywords.validate(cfg.stt.keyterms) catch
         return invalid("stt.keyterms must be unique UTF-8 entries of 1-256 bytes, without controls (100 entries and 4096 bytes total maximum)");
-    if (!std.mem.eql(u8, cfg.output.method, "type") and !std.mem.eql(u8, cfg.output.method, "clipboard"))
-        return invalid("output.method must be 'type' or 'clipboard'");
+    if (!std.mem.eql(u8, cfg.output.method, "type") and
+        !std.mem.eql(u8, cfg.output.method, "clipboard") and
+        !std.mem.eql(u8, cfg.output.method, "paste"))
+        return invalid("output.method must be 'type', 'clipboard', or 'paste'");
     if (cfg.recording.max_seconds == 0 or cfg.recording.max_seconds > 3600)
         return invalid("recording.max_seconds must be between 1 and 3600");
     if (cfg.recording.min_ms > cfg.recording.max_seconds * 1000)
@@ -171,6 +173,7 @@ test "defaults are sensible" {
     try std.testing.expectEqualStrings("global", cfg.stt.region);
     try std.testing.expect(cfg.llm.enabled);
     try std.testing.expectEqualStrings("type", cfg.output.method);
+    try std.testing.expect(cfg.output.trailing_space);
     try std.testing.expectEqual(@as(u32, 300), cfg.recording.max_seconds);
 }
 
@@ -178,6 +181,12 @@ test "validation rejects unknown output methods" {
     var cfg: Config = .{};
     cfg.output.method = "typo";
     try std.testing.expectError(error.InvalidConfig, validate(&cfg));
+}
+
+test "validation accepts paste output method" {
+    var cfg: Config = .{};
+    cfg.output.method = "paste";
+    try validate(&cfg);
 }
 
 test "validation accepts phrases and rejects invalid keyterms" {

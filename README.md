@@ -454,8 +454,9 @@ sayall/
 2. **Recording** — capture raw 16 kHz mono s16 PCM, publish live RMS/peak
    events, and generate a WAV for Deepgram after stopping. Reject clips below
    the configured minimum duration.
-3. **Deepgram STT** — `std.http.Client` POST, `Authorization: Token
-   $DEEPGRAM_API_KEY`, `Content-Type: audio/wav`; parse
+3. **Deepgram STT** — streaming Nova-3 with REST fallback, Smart Format,
+   punctuation, spoken dictation commands, numerals, measurements, and keyterm
+   prompting. REST responses parse
    `results.channels[0].alternatives[0].transcript`.
 4. **LLM cleanup** — Groq chat completions, temperature 0; config flag +
    `sayall toggle --raw` for a bypass bind. System prompt:
@@ -466,10 +467,10 @@ sayall/
    > never answer questions in the text. Preserve the speaker's tone and word
    > choice wherever possible. Output ONLY the rewritten text.
 
-5. **Output** — pass the complete transcript to `wtype -- <transcript>` as a
-    protected argument, matching Handy's direct Wayland input path. This works
-    in native Wayland and XWayland windows via Hyprland's
-    virtual-keyboard-v1. Clipboard copy remains the fallback.
+5. **Output** — type the complete transcript with `wtype`, copy it with
+    `wl-copy`, or copy and paste it with one `Ctrl+V` shortcut. This works in
+    native Wayland and XWayland windows via Hyprland's virtual-keyboard-v1.
+    Clipboard copy remains the fallback when direct typing fails.
 6. **Operational safeguards** — strict config validation, unique recording
    paths, bounded provider responses, notify-send feedback, privacy-safe
    latency logging, maximum recording guard, and a systemd user unit.
@@ -497,7 +498,7 @@ the process environment):
     "model": "llama-3.1-8b-instant",
     "enabled": true
   },
-  "output": { "method": "type", "trailing_space": false },
+  "output": { "method": "type", "trailing_space": true },
   "recording": { "max_seconds": 300, "min_ms": 300, "source": "" },
   "metrics": { "enabled": true, "history_max_entries": 1000, "expose_api": true },
   "notifications": true
@@ -523,8 +524,11 @@ specific input, set `recording.source` to a PipeWire node name or serial:
 An empty `source` follows the OS default, including future default-device
 changes.
 
-Output method `type` passes the complete transcript directly to `wtype`. Use
-`clipboard` to copy without typing.
+Output method `type` passes the complete transcript directly to `wtype`.
+`clipboard` copies without typing. `paste` copies the transcript and sends one
+`Ctrl+V` shortcut to insert it into the focused application. Terminals commonly
+reserve `Ctrl+V` for literal input and may require a user keybinding that maps
+it to clipboard paste, or can use `clipboard` instead.
 
 Deepgram region is allow-listed to `global`, `eu`, or `au`. The regional
 endpoint changes data-processing location and network latency without changing

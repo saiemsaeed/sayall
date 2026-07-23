@@ -88,6 +88,7 @@ test "selected runtime and product operations remain explicitly unsupported" {
 
     try std.testing.expectEqual(platform.Implementation.unsupported, platform.capabilities.runtime_integration);
     try std.testing.expectError(error.UnsupportedPlatform, platform.copyToClipboard(std.testing.io, "text"));
+    try std.testing.expectError(error.UnsupportedPlatform, platform.pasteClipboard(std.testing.io));
     try std.testing.expectError(error.UnsupportedPlatform, platform.metricsFile(std.testing.allocator, &env));
 
     try std.testing.expectError(error.UnsupportedPlatform, unsupported_product.restart(std.testing.io));

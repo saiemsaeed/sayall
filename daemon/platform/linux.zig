@@ -91,6 +91,10 @@ pub fn copyToClipboard(io: Io, text: []const u8) !void {
     try feedStdin(io, &.{"wl-copy"}, text, error.ClipboardFailed);
 }
 
+pub fn pasteClipboard(io: Io) !void {
+    try run(io, &.{ "wtype", "-M", "ctrl", "-k", "v", "-m", "ctrl" }, error.PasteFailed);
+}
+
 /// Linux notifications remain best-effort so notification availability never
 /// changes the speech pipeline result.
 pub fn sendNotification(io: Io, title: []const u8, body: []const u8) !void {

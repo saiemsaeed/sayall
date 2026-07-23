@@ -5,6 +5,7 @@ const unsupported = @import("unsupported.zig");
 pub const Recorder = unsupported.Recorder;
 pub const typeText = unsupported.typeText;
 pub const copyToClipboard = unsupported.copyToClipboard;
+pub const pasteClipboard = unsupported.pasteClipboard;
 pub const sendNotification = unsupported.sendNotification;
 pub const configFile = unsupported.configFile;
 pub const keywordsFile = unsupported.keywordsFile;

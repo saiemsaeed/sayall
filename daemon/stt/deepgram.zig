@@ -3,6 +3,8 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const config = @import("../provider_config.zig");
 
+pub const formatting_params = "smart_format=true&punctuate=true&dictation=true&numerals=true&measurements=true";
+
 pub const TranscribeError = error{
     MissingApiKey,
     Unauthorized,
@@ -32,8 +34,8 @@ pub fn transcribe(gpa: Allocator, io: Io, cfg: *const config.SttConfig, wav: []c
 
     const base_url = std.fmt.allocPrint(
         gpa,
-        "{s}?model={s}&smart_format=true&punctuate=true&language={s}",
-        .{ restBaseUrl(cfg.region), cfg.model, cfg.language },
+        "{s}?model={s}&language={s}&{s}",
+        .{ restBaseUrl(cfg.region), cfg.model, cfg.language, formatting_params },
     ) catch return error.OutOfMemory;
     defer gpa.free(base_url);
     const url = addKeyterms(gpa, base_url, cfg.keyterms) catch return error.OutOfMemory;
