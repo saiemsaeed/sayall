@@ -29,7 +29,7 @@ pub const LlmConfig = struct {
 pub const OutputConfig = struct {
     /// "type" (wtype), "clipboard" (wl-copy), or "paste" (wl-copy + Ctrl+V).
     method: []const u8 = "type",
-    trailing_space: bool = false,
+    trailing_space: bool = true,
 };
 
 pub const RecordingConfig = struct {
@@ -190,6 +190,7 @@ test "defaults are sensible" {
     try std.testing.expectEqualStrings("global", cfg.stt.region);
     try std.testing.expect(cfg.llm.enabled);
     try std.testing.expectEqualStrings("type", cfg.output.method);
+    try std.testing.expect(cfg.output.trailing_space);
     try std.testing.expectEqual(@as(u32, 300), cfg.recording.max_seconds);
 }
 

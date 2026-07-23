@@ -378,8 +378,9 @@ sayall/
 2. **Recording** — capture raw 16 kHz mono s16 PCM, publish live RMS/peak
    events, and generate a WAV for Deepgram after stopping. Reject clips below
    the configured minimum duration.
-3. **Deepgram STT** — `std.http.Client` POST, `Authorization: Token
-   $DEEPGRAM_API_KEY`, `Content-Type: audio/wav`; parse
+3. **Deepgram STT** — streaming Nova-3 with REST fallback, Smart Format,
+   punctuation, spoken dictation commands, numerals, measurements, and keyterm
+   prompting. REST responses parse
    `results.channels[0].alternatives[0].transcript`.
 4. **LLM cleanup** — Groq chat completions, temperature 0; config flag +
    `sayall toggle --raw` for a bypass bind. System prompt:
@@ -419,7 +420,7 @@ sayall/
     "model": "llama-3.1-8b-instant",
     "enabled": true
   },
-  "output": { "method": "type", "trailing_space": false },
+  "output": { "method": "type", "trailing_space": true },
   "recording": { "max_seconds": 300, "min_ms": 300, "source": "" },
   "metrics": { "enabled": true, "history_max_entries": 1000, "expose_api": true },
   "notifications": true
