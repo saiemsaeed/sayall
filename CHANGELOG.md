@@ -3,6 +3,40 @@
 All notable user-visible changes to SayAll are documented in this file. SayAll
 follows [Semantic Versioning](https://semver.org/).
 
+## [0.1.6] - 2026-07-23
+
+Release preparation: implementation and automated readiness are complete, but
+publication remains gated on external signing/notarization prerequisites and
+physical Apple Silicon qualification.
+
+### Added
+
+- Native Apple Silicon menu-bar application for macOS 15.0 or later, packaged
+  as a directly distributed ZIP with an isolated per-recording Zig helper.
+- Native microphone permission/capture, shared config-file provider credentials,
+  fixed global Control+/ toggle with menu fallback, Accessibility-authorized paste,
+  and clipboard fallback.
+- Developer ID signing, Hardened Runtime, notarization, stapling, verification,
+  checksum, and macOS CI/release packaging automation.
+
+### Changed
+
+- The macOS app owns lifecycle, menu/status UI, config loading, permissions, capture, focus,
+  insertion, temporary files, and packaging; Zig owns validated WAV processing,
+  Deepgram streaming with REST fallback, and optional Groq cleanup through bounded versioned JSON
+  on inherited stdin/stdout.
+- Release output can combine the macOS arm64 ZIP with Linux and source assets
+  in one `SHA256SUMS`; Linux AUR/install/update behavior is unchanged.
+
+### Known limitations
+
+- macOS support is arm64 and macOS 15.0+ only; there is no Intel, universal,
+  Rosetta, App Store, DMG/PKG, Homebrew, or automatic-update claim.
+- Secure/inaccessible fields and apps rejecting Accessibility insertion fall
+  back to the clipboard; shortcut conflicts require the menu action.
+- Cloud access is required, only the default input is supported, recordings are
+  capped at five minutes, and physical-device qualification is still pending.
+
 ## [0.1.5] - 2026-07-23
 
 ### Changed
@@ -93,6 +127,7 @@ Initial release, tested and supported on x86-64 Arch Linux with Omarchy.
 - Persistent privacy-safe transcription metrics and microphone diagnostics.
 - systemd user services and Hyprland hotkey integration.
 
+[0.1.6]: https://github.com/saiemsaeed/sayall/compare/v0.1.5...HEAD
 [0.1.5]: https://github.com/saiemsaeed/sayall/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/saiemsaeed/sayall/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/saiemsaeed/sayall/compare/v0.1.2...v0.1.3

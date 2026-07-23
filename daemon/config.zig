@@ -4,27 +4,10 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const keywords = @import("keywords.zig");
 const paths = @import("paths.zig");
+const provider_config = @import("provider_config.zig");
 
-pub const SttConfig = struct {
-    provider: []const u8 = "deepgram",
-    api_key: []const u8 = "",
-    model: []const u8 = "nova-3",
-    language: []const u8 = "en",
-    /// Global Deepgram recognition hints, also preserved by LLM cleanup.
-    keyterms: []const []const u8 = &.{},
-    /// "global", "eu", or "au". Hosts are allow-listed in the provider.
-    region: []const u8 = "global",
-    streaming: bool = true,
-    stream_finalize_timeout_ms: u32 = 2000,
-};
-
-pub const LlmConfig = struct {
-    provider: []const u8 = "groq",
-    api_key: []const u8 = "",
-    model: []const u8 = "llama-3.1-8b-instant",
-    base_url: []const u8 = "https://api.groq.com/openai/v1/chat/completions",
-    enabled: bool = true,
-};
+pub const SttConfig = provider_config.SttConfig;
+pub const LlmConfig = provider_config.LlmConfig;
 
 pub const OutputConfig = struct {
     /// "type" (wtype) or "clipboard" (wl-copy).

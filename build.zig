@@ -42,6 +42,33 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
+    const process_module = b.createModule(.{
+        .root_source_file = b.path("daemon/process_main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    process_module.addOptions("build_options", build_options);
+    process_module.addImport("websocket", websocket_dep.module("websocket"));
+    const process_exe = b.addExecutable(.{ .name = "sayall-process", .root_module = process_module });
+    const install_process = b.addInstallArtifact(process_exe, .{});
+    const process_step = b.step("process", "Build the per-recording streaming and batch helper");
+    process_step.dependOn(&install_process.step);
+    const batch_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("daemon/batch.zig"),
+        .target = target,
+        .optimize = optimize,
+    }) });
+    const batch_step = b.step("test-batch", "Compile and test the platform-free batch operation");
+    if (target.query.isNative()) batch_step.dependOn(&b.addRunArtifact(batch_tests).step) else batch_step.dependOn(&batch_tests.step);
+    const stream_tests_module = b.createModule(.{
+        .root_source_file = b.path("daemon/stream_batch.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    stream_tests_module.addImport("websocket", websocket_dep.module("websocket"));
+    const stream_tests = b.addTest(.{ .root_module = stream_tests_module });
+    if (target.query.isNative()) batch_step.dependOn(&b.addRunArtifact(stream_tests).step) else batch_step.dependOn(&stream_tests.step);
+
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cmd.addArgs(args);

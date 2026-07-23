@@ -1,9 +1,8 @@
 # SayAll
 
-A WisprFlow-style voice dictation daemon for Linux, written in Zig.
-Toggle a hotkey, speak, toggle again, and text is typed into your focused
-window. When Groq cleanup is configured, filler words and false starts are
-removed before output.
+A voice-dictation product for Linux and Apple Silicon macOS. Toggle a hotkey,
+speak, toggle again, and text is inserted into your focused window. When Groq
+cleanup is configured, filler words and false starts are removed before output.
 
 - **STT:** Deepgram Nova-3 (cloud streaming with REST fallback)
 - **Cleanup:** LLM pass (Groq `llama-3.1-8b-instant`) — removes filler words,
@@ -17,19 +16,72 @@ removed before output.
 
 ## Platform support
 
-| Platform / target | 0.1.5 status |
+| Platform / target | 0.1.6 status |
 | --- | --- |
-| x86-64 Arch Linux with Omarchy (Wayland/Hyprland) | Supported and tested; the only app/runtime/package and binary release target |
-| Darwin (`aarch64-macos` compile target) | Core compile readiness only; no app, runtime, package, or installable output |
+| x86-64 Arch Linux with Omarchy (Wayland/Hyprland) | Supported and tested; daemon/CLI/HUD and AUR or archive distribution |
+| Apple Silicon (`arm64`), macOS 15.0 or later | Native menu-bar product implemented; direct ZIP distribution. Publication support remains gated on the pending physical-device and external signing/notarization qualification in [the macOS checklist](docs/macos-release-qualification.md) |
 | Windows (`x86_64-windows` compile target) | Core compile readiness only; no app, runtime, package, or installable output |
 
-Other Linux systems may work but are not tested or supported. Darwin and
-Windows readiness does not constitute product or runtime support. The accepted
-[`0.1.4 platform ownership and support ADR`](docs/adr-platform-ownership-and-support.md)
-defines these boundaries; the current Linux control and HUD compatibility API
-is the [`protocol-v1 contract`](docs/protocol-v1.md).
+Other Linux systems may work but are not tested or supported. The macOS product
+does not claim Intel, universal-binary, or Rosetta support. Windows readiness
+does not constitute product or runtime support. The accepted
+[`0.1.6 macOS architecture ADR`](docs/adr-macos-0.1.6.md) selects the macOS
+topology; the current Linux control and HUD compatibility API remains the
+Linux-only [`protocol-v1 contract`](docs/protocol-v1.md).
 
 ## Getting Started
+
+### Install on Apple Silicon macOS
+
+SayAll for macOS is `SayAll.app`, a native menu-bar application for arm64 Macs
+running macOS 15.0 or later. It is distributed directly as
+`sayall-VERSION-macos-arm64.zip`, not through the App Store. After downloading
+the ZIP and `SHA256SUMS` from the same release, verify and install it:
+
+```sh
+archive=sayall-VERSION-macos-arm64.zip
+awk -v file="$archive" '$2 == file' SHA256SUMS | shasum -a 256 -c -
+unzip "$archive"
+# Drag SayAll.app to /Applications in Finder.
+open /Applications/SayAll.app
+```
+
+macOS reads the same `~/.config/sayall/config.json` provider configuration as
+Linux. Put the Deepgram key in `stt.api_key`; optionally put a Groq key in
+`llm.api_key` and set `llm.enabled` to `true`. Protect the plaintext file with
+`chmod 600 ~/.config/sayall/config.json`; see [Configuration](#configuration)
+for the full schema. On the first dictation, grant Microphone and Accessibility
+when macOS requests them; SayAll detects the Accessibility grant without an app
+restart. Accessibility affects automatic paste only and never blocks recording.
+Press **Control+/** to start recording, speak, then press it again to stop and
+transcribe. The same actions are available from the menu bar if that fixed
+global shortcut conflicts with another app. SayAll attempts
+an Accessibility-authorized Command+V at the currently focused cursor and
+leaves the text on the clipboard as a manual fallback.
+
+The default input device is used. Recordings shorter than 300 ms are rejected
+and recording stops at five minutes. Deepgram and a network connection are
+required; when enabled, cleanup also sends the transcript to Groq. A cleanup
+failure still delivers the raw transcript and shows a warning.
+
+#### Update or uninstall on macOS
+
+Updates are manual: quit SayAll, download and checksum-verify the new ZIP,
+unzip it, replace `/Applications/SayAll.app`, relaunch, and confirm the version
+in the app. There is no auto-updater.
+
+To uninstall, quit SayAll and move `/Applications/SayAll.app` to Trash. The
+shared config is retained so Linux or a later installation can continue using
+it. If it is no longer needed, remove it manually:
+
+```sh
+rm ~/.config/sayall/config.json
+rmdir ~/.config/sayall  # succeeds only when otherwise empty
+```
+
+Removing the config is irreversible and is not required merely to replace or
+update the app. Temporary Application Support recordings are removed on every
+terminal path and startup.
 
 ### Install on Arch Linux or Omarchy
 
@@ -162,7 +214,7 @@ checkout rather than copying over an AUR-managed installation:
 
 ```sh
 zig build test
-zig build check-darwin-core   # compile-only; no macOS product or artifact
+zig build check-darwin-core   # portable-core check; does not build SayAll.app
 zig build check-windows-core  # compile-only; no Windows product or artifact
 zig build -Doptimize=ReleaseFast
 cargo test --locked --manifest-path ui/linux/Cargo.toml
@@ -180,12 +232,9 @@ Restart the packaged installation afterwards with
 
 Print the installed release version with `sayall --version`.
 
-The Darwin and Windows commands are contributor readiness checks only. They
-compile portable core seams against explicit unsupported-platform modules.
-Their foreign test binaries are compilation outputs only: the build does not
-run or install them, and the packaging script does not include them. They are
-not apps, runtimes, packages, or supported products. Linux x86-64 remains the
-only binary release artifact target.
+The Darwin core command is only a portable-core compilation check and is not
+the native macOS product build. The Windows command is likewise a contributor
+readiness check, not an app, runtime, package, or supported product.
 
 After changing `~/.config/sayall/config.json`, restart the systemd user service
 to load the new configuration:
@@ -286,6 +335,33 @@ Keep `~/.config/sayall/config.json` if you may reinstall and want to retain
 provider settings.
 
 ## Architecture
+
+### macOS
+
+The stable bundle identifier is `pro.saiem.sayall`. Swift/AppKit owns the menu
+bar UI, lifecycle, config loading, native microphone/TCC,
+Control+/ Carbon hotkey and menu fallback, Accessibility-authorized paste and
+clipboard fallback, temporary audio, and packaging. It invokes the bundled
+`sayall-process` helper once per recording. The Zig helper streams private raw
+PCM to Deepgram during capture, validates the completed PCM S16LE mono 16 kHz
+WAV, falls back to REST when streaming fails, and optionally runs Groq cleanup.
+
+The app and helper exchange bounded, versioned JSON over inherited stdin and
+stdout. API keys are never passed in argv or environment variables and are not
+logged. Canonical WAV and streaming PCM paths are private; post-stop processing
+has a 45-second app-side timeout. Raw audio is deleted after every terminal path, with startup
+scavenging for interrupted runs. There is no daemon, socket, Linux protocol
+v1, CLI, launchd service, login item, or transcript history on
+macOS. See the [macOS architecture ADR](docs/adr-macos-0.1.6.md).
+
+Provider settings use the same `$XDG_CONFIG_HOME/sayall/config.json` or
+`~/.config/sayall/config.json` schema as Linux. The app reloads it before each
+recording. Environment overrides work when the app is launched from a shell;
+Finder launches do not inherit interactive shell-file variables. Audio is streamed
+to Deepgram during recording and, only when `llm.enabled` is true and a Groq key is present, the
+transcript is sent to Groq. SayAll collects no telemetry.
+
+### Linux
 
 ```
 Hyprland bind ──exec──▶ sayall toggle ──unix socket──▶ sayall daemon
@@ -400,7 +476,9 @@ sayall/
 
 ## Configuration
 
-`~/.config/sayall/config.json` (keys overridable by env):
+`$XDG_CONFIG_HOME/sayall/config.json`, falling back to
+`~/.config/sayall/config.json` (shared by Linux and macOS; keys overridable by
+the process environment):
 
 ```json
 {
@@ -425,6 +503,11 @@ sayall/
   "notifications": true
 }
 ```
+
+For a Finder-launched macOS app, put literal API keys in this mode-`0600` file.
+References such as `"$DEEPGRAM_API_KEY"` resolve only when that variable is in
+SayAll's process environment—for example when launching the executable from a
+shell that exports it. Shell startup files are not read by Finder-launched apps.
 
 By default SayAll lets PipeWire select `@DEFAULT_AUDIO_SOURCE@`. To pin a
 specific input, set `recording.source` to a PipeWire node name or serial:
@@ -458,9 +541,10 @@ entries, and lists over 4096 bytes. Deepgram also enforces its request token
 limit.
 
 For compatibility, if the keyword file is absent and an older config contains
-`stt.keyterms`, SayAll validates and atomically imports that list on first load.
-Legacy exact duplicates are collapsed without reordering: the first spelling,
-case, and spacing is retained. The keyword file is authoritative after
+`stt.keyterms`, Linux SayAll validates and atomically imports that list on first load;
+the macOS app consumes the validated legacy list without modifying configuration.
+On Linux, legacy exact duplicates are collapsed without reordering: the first
+spelling, case, and spacing is retained. The keyword file is authoritative after
 migration; the old field is not rewritten and can be removed from `config.json`
 after verifying `sayall keywords list`. Streaming, REST fallback, and LLM
 cleanup all consume this same effective keyword list while preserving spelling,
@@ -543,9 +627,14 @@ satisfied.
 
 ## Limitations
 
-- **Support scope** — the [0.1.4 platform matrix](#platform-support) is limited
-  to x86-64 Arch Linux running Omarchy. Other Wayland environments may work
-  but are currently community-supported.
+- **Support scope** — Linux support is limited to x86-64 Arch Linux running
+  Omarchy. macOS is Apple Silicon arm64 on macOS 15.0 or later, with physical
+  publication qualification still pending. Other environments may work but
+  are not supported.
+- **macOS insertion** — secure or noneditable fields and apps that reject
+  synthetic Command+V use clipboard fallback. A Control+/ conflict uses
+  the menu action instead. macOS supports only the default input, cloud
+  providers/network are required, and recordings are limited to five minutes.
 - **REST network deadlines** — provider responses are memory-bounded, but an
   explicit end-to-end REST cancellation deadline is still roadmap work.
 - **Wayland input** — direct output requires a compositor implementing the
@@ -562,10 +651,11 @@ tests remain roadmap work.
 
 ## Versioning and releases
 
-SayAll follows [Semantic Versioning](https://semver.org/). The daemon, CLI, and
-HUD are released together under one product version. Protocol versions are
-independent: SayAll 0.1.5 continues to use the documented
-[`protocol-v1 contract`](docs/protocol-v1.md).
+SayAll follows [Semantic Versioning](https://semver.org/). The Linux daemon,
+CLI, and HUD and the macOS app/helper are released under one product version.
+Protocol versions are independent: SayAll 0.1.6 continues to use the documented
+[`protocol-v1 contract`](docs/protocol-v1.md) for Linux only; the macOS helper
+contract is separate.
 
 During the pre-1.0 period, patch releases remain backward-compatible whenever
 possible. A minor release may make a documented breaking change to

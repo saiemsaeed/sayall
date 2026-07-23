@@ -259,6 +259,9 @@ fn countCharacters(text: []const u8) u64 {
 fn reasonForError(err: deepgram.TranscribeError) []const u8 {
     return switch (err) {
         error.MissingApiKey => "missing_api_key",
+        error.Unauthorized => "unauthorized",
+        error.RateLimited => "rate_limited",
+        error.ServerError => "server_error",
         error.RequestFailed => "transport",
         error.BadStatus => "http_status",
         error.BadResponse => "invalid_response",

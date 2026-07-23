@@ -1,6 +1,6 @@
 .{
     .name = .sayall,
-    .version = "0.1.5",
+    .version = "0.1.6",
     .dependencies = .{
         .websocket = .{
             .url = "git+https://github.com/karlseguin/websocket.zig.git#b70e733bc0d0ba0a98ff5fe5ef64d3017c85f369",

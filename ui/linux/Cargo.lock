@@ -557,7 +557,7 @@ dependencies = [
 
 [[package]]
 name = "sayall-hud"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "gtk4",
  "gtk4-layer-shell",

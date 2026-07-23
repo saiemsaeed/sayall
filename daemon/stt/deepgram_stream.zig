@@ -25,8 +25,9 @@ pub const Result = union(enum) {
 pub const Session = struct {
     gpa: Allocator,
     io: Io,
-    cfg: *const config.SttConfig,
+    cfg: config.SttConfig,
     path: []u8,
+    max_audio_bytes: ?u64,
     started_ms: i64,
     finish_requested: std.atomic.Value(bool) = .init(false),
     cancel_requested: std.atomic.Value(bool) = .init(false),
@@ -36,13 +37,20 @@ pub const Session = struct {
     result: ?Result = null,
 
     pub fn start(gpa: Allocator, io: Io, cfg: *const config.SttConfig, path: []const u8) !*Session {
+        return startBounded(gpa, io, cfg, path, null);
+    }
+
+    pub fn startBounded(gpa: Allocator, io: Io, cfg: *const config.SttConfig, path: []const u8, max_audio_bytes: ?u64) !*Session {
         const self = try gpa.create(Session);
         errdefer gpa.destroy(self);
+        const owned_cfg = try cloneConfig(gpa, cfg);
+        errdefer freeConfig(gpa, owned_cfg);
         self.* = .{
             .gpa = gpa,
             .io = io,
-            .cfg = cfg,
+            .cfg = owned_cfg,
             .path = try gpa.dupe(u8, path),
+            .max_audio_bytes = max_audio_bytes,
             .started_ms = std.Io.Clock.now(.awake, io).toMilliseconds(),
         };
         errdefer gpa.free(self.path);
@@ -96,6 +104,7 @@ pub const Session = struct {
     }
 
     fn destroy(self: *Session) void {
+        freeConfig(self.gpa, self.cfg);
         self.gpa.free(self.path);
         self.gpa.destroy(self);
     }
@@ -125,7 +134,7 @@ pub const Session = struct {
         defer client.deinit();
         if (self.cancel_requested.load(.acquire)) return error.Cancelled;
 
-        const path = try listenPath(self.gpa, self.cfg);
+        const path = try listenPath(self.gpa, &self.cfg);
         defer self.gpa.free(path);
         const headers = try std.fmt.allocPrint(self.gpa, "Host: {s}\r\nAuthorization: Token {s}\r\n", .{
             streamHost(self.cfg.region),
@@ -148,7 +157,12 @@ pub const Session = struct {
         while (true) {
             if (self.cancel_requested.load(.acquire)) return error.Cancelled;
             var chunk: [3200]u8 = undefined;
-            const buffers = [_][]u8{chunk[0..]};
+            const remaining = if (self.max_audio_bytes) |maximum| maximum -| offset else chunk.len;
+            if (remaining == 0) {
+                if (!self.finish_requested.load(.acquire)) return error.AudioTooLarge;
+                break;
+            }
+            const buffers = [_][]u8{chunk[0..@min(chunk.len, remaining)]};
             const read_len = file.readPositional(self.io, &buffers, offset) catch return error.RecordingReadFailed;
             const aligned_len = read_len - (read_len % 2);
             if (aligned_len > 0) {
@@ -198,6 +212,47 @@ pub const Session = struct {
     }
 };
 
+fn cloneConfig(gpa: Allocator, source: *const config.SttConfig) !config.SttConfig {
+    const provider = try gpa.dupe(u8, source.provider);
+    errdefer gpa.free(provider);
+    const api_key = try gpa.dupe(u8, source.api_key);
+    errdefer gpa.free(api_key);
+    const model = try gpa.dupe(u8, source.model);
+    errdefer gpa.free(model);
+    const language = try gpa.dupe(u8, source.language);
+    errdefer gpa.free(language);
+    const region = try gpa.dupe(u8, source.region);
+    errdefer gpa.free(region);
+    const keyterms = try gpa.alloc([]const u8, source.keyterms.len);
+    errdefer gpa.free(keyterms);
+    var initialized: usize = 0;
+    errdefer for (keyterms[0..initialized]) |keyterm| gpa.free(keyterm);
+    for (source.keyterms, 0..) |keyterm, index| {
+        keyterms[index] = try gpa.dupe(u8, keyterm);
+        initialized += 1;
+    }
+    return .{
+        .provider = provider,
+        .api_key = api_key,
+        .model = model,
+        .language = language,
+        .keyterms = keyterms,
+        .region = region,
+        .streaming = source.streaming,
+        .stream_finalize_timeout_ms = source.stream_finalize_timeout_ms,
+    };
+}
+
+fn freeConfig(gpa: Allocator, cfg: config.SttConfig) void {
+    gpa.free(cfg.provider);
+    gpa.free(cfg.api_key);
+    gpa.free(cfg.model);
+    gpa.free(cfg.language);
+    for (cfg.keyterms) |keyterm| gpa.free(keyterm);
+    gpa.free(cfg.keyterms);
+    gpa.free(cfg.region);
+}
+
 fn listenPath(gpa: Allocator, cfg: *const config.SttConfig) ![]u8 {
     const base_path = try std.fmt.allocPrint(
         gpa,
@@ -229,7 +284,17 @@ fn freeResult(gpa: Allocator, result: Result) void {
 fn openRecording(self: *Session) !Io.File {
     var attempt: usize = 0;
     while (attempt < 80) : (attempt += 1) {
-        if (Io.Dir.openFileAbsolute(self.io, self.path, .{})) |file| return file else |_| {}
+        if (Io.Dir.cwd().openFile(self.io, self.path, .{ .allow_directory = false, .follow_symlinks = false })) |file| {
+            const stat = file.stat(self.io) catch {
+                file.close(self.io);
+                return error.RecordingStatFailed;
+            };
+            if (stat.kind != .file) {
+                file.close(self.io);
+                return error.InvalidRecording;
+            }
+            return file;
+        } else |_| {}
         if (self.cancel_requested.load(.acquire)) return error.Cancelled;
         std.Io.sleep(self.io, .fromMilliseconds(25), .awake) catch return error.Cancelled;
     }
@@ -283,6 +348,7 @@ fn processMessage(gpa: Allocator, transcript: *std.ArrayList(u8), message: webso
     if (channel.alternatives.len == 0) return;
     const segment = std.mem.trim(u8, channel.alternatives[0].transcript, " \t\r\n");
     if (segment.len == 0) return;
+    if (transcript.items.len + segment.len + @intFromBool(transcript.items.len > 0) > 1024 * 1024) return error.TranscriptTooLarge;
     if (transcript.items.len > 0) try transcript.append(gpa, ' ');
     try transcript.appendSlice(gpa, segment);
 }
@@ -332,4 +398,23 @@ test "streaming path uses effective keyterms" {
         path,
         "&keyterm=SayAll&keyterm=Model%20Context%20Protocol&keyterm=M%C3%BCnchen",
     ));
+}
+
+test "stream session configuration owns all caller-backed values" {
+    var api_key = "secret".*;
+    var region = "global".*;
+    var keyterm = "SayAll".*;
+    const source: config.SttConfig = .{
+        .api_key = &api_key,
+        .region = &region,
+        .keyterms = &.{&keyterm},
+    };
+    const owned = try cloneConfig(std.testing.allocator, &source);
+    defer freeConfig(std.testing.allocator, owned);
+    @memset(&api_key, 'x');
+    @memset(&region, 'x');
+    @memset(&keyterm, 'x');
+    try std.testing.expectEqualStrings("secret", owned.api_key);
+    try std.testing.expectEqualStrings("global", owned.region);
+    try std.testing.expectEqualStrings("SayAll", owned.keyterms[0]);
 }

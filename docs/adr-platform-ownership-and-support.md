@@ -4,6 +4,10 @@
 - **Applies to:** SayAll 0.1.4
 - **Date:** 2026-07-22
 
+> The accepted [0.1.6 macOS architecture ADR](adr-macos-0.1.6.md) supersedes
+> only this record's macOS composition/topology deferral. Linux and Windows
+> ownership and support decisions remain in force.
+
 ## Context
 
 SayAll is currently a Linux product: a Zig daemon and CLI are integrated with

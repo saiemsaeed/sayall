@@ -9,25 +9,62 @@ script rejects a mismatch among all four files.
 Protocol versions are independent of the product version. Do not increment
 the control protocol merely for an application release.
 
-## Supported release target
+## Supported release targets and publication gates
 
 | Platform / target | Release status |
 | --- | --- |
-| x86-64 Arch Linux with Omarchy (Wayland/Hyprland) | Supported and tested; the only app/runtime/package and binary artifact target |
-| Darwin (`aarch64-macos` compile target) | Core compile readiness only; no app, runtime, package, or installable output |
+| x86-64 Arch Linux with Omarchy (Wayland/Hyprland) | Supported and tested; Linux archive and AUR packages |
+| Apple Silicon arm64, macOS 15.0+ | Native ZIP product implemented; publication requires external signing/notarization and completed physical qualification |
 | Windows (`x86_64-windows` compile target) | Core compile readiness only; no app, runtime, package, or installable output |
 
 Release binaries may work on related Linux Wayland systems, but that is not
-part of the 0.1.5 compatibility promise. The Darwin and Windows checks compile
-foreign test binaries without running or installing them. They are not release
-artifacts and do not extend the supported platform matrix. See the accepted
-[`0.1.4 platform ownership and support ADR`](adr-platform-ownership-and-support.md)
-and the current Linux HUD/control [`protocol-v1 compatibility contract`](protocol-v1.md).
+part of the compatibility promise. The Darwin core check is distinct from the
+native macOS app build. The Windows check is not a release artifact. See the
+accepted [0.1.6 macOS ADR](adr-macos-0.1.6.md), the
+[macOS qualification gate](macos-release-qualification.md), and the Linux-only
+HUD/control [`protocol-v1 compatibility contract`](protocol-v1.md).
+
+## macOS release credentials and qualification
+
+Normal CI runs on macOS 15 arm64, tests, and ad-hoc assembles a clearly named
+`-unsigned` ZIP without release credentials. That artifact is evidence of
+automated readiness only and must not be published as the supported download.
+
+`scripts/package-macos-release.sh` builds with a macOS 15 deployment target and
+produces the tested, ad-hoc-signed CI candidate. The protected Release workflow
+downloads that exact candidate, then—without running repository build or test
+code while credentials are present—signs the nested helper and app with
+Developer ID and Hardened Runtime, notarizes, staples, verifies, and emits
+`sayall-VERSION-macos-arm64.zip` plus `SHA256SUMS.macos`. A second protected
+promotion gate binds the approved SHA-256 before combining macOS, Linux, and
+source entries into one published `SHA256SUMS`.
+
+The protected GitHub environment is `macos-release`. Configure variables:
+
+- `APPLE_TEAM_ID`
+- `MACOS_016_QUALIFIED` (set only after the physical 0.1.6 gate is approved)
+- `MACOS_016_APPROVED_SHA256` (the exact signed candidate approved by that
+  gate; the publish job rejects any other ZIP)
+
+Configure secrets:
+
+- `APPLE_DEVELOPER_ID_CERTIFICATE_BASE64`
+- `APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD`
+- `APPLE_DEVELOPER_ID_APPLICATION`
+- `APPLE_NOTARY_KEY_BASE64`
+- `APPLE_NOTARY_KEY_ID`
+- `APPLE_NOTARY_ISSUER_ID`
+
+Before enabling `MACOS_016_QUALIFIED`, execute and retain every signing command
+and physical matrix row in [the qualification checklist](macos-release-qualification.md).
+These external prerequisites and physical checks have not been performed in
+this workspace. A green build, test, or unsigned assembly does not satisfy the
+support-publication gate.
 
 ## Prepare a release
 
 1. Start `release/<version>` from the tested `main` commit, for example
-   `git switch -c release/0.1.5`. Only release branches can publish; pushes to
+   `git switch -c release/0.1.6`. Only release branches can publish; pushes to
    `main` never create a release.
 2. On the release branch, replace the versioned changelog section's
    `Unreleased` marker with the publication date and change its comparison
@@ -47,14 +84,20 @@ and the current Linux HUD/control [`protocol-v1 compatibility contract`](protoco
 6. Install the Linux x86-64 archive in a clean x86-64 Arch Linux environment
    running Omarchy and complete a manual recording, transcription, HUD,
    typing, restart, and uninstall smoke test.
-7. Commit the release preparation, merge that preparation into `main`, and push
+7. On macOS 15 arm64, confirm the normal CI tests and ad-hoc unsigned assembly.
+8. Commit the release preparation, merge that preparation into `main`, and push
    `main` first. The secret-capable AUR workflow runs from the default branch
    and requires its AUR templates and preparation script to match the release
    commit. Pushing `main` runs CI but cannot publish a release.
-8. Push `release/<version>`. The release workflow repeats all checks, creates
-   the immutable `v<version>` tag at that exact commit, and publishes the
-   GitHub Release with binary and source archives plus their checksums. A
-   separate default-branch workflow then publishes all three AUR repositories
+9. Push `release/<version>` to trigger the release workflow. Approve its
+   protected signing/notarization job, download the exact `macos-assets`
+   artifact, and complete the artifact commands and physical matrix in the
+   macOS checklist. Record its SHA-256 and set the qualification variables only
+   after an approver accepts that exact candidate, then approve the separate
+   publish job. Repository build/test code never runs with release credentials
+   available. The publish job creates the immutable `v<version>` tag at that
+   exact commit and publishes the macOS ZIP, Linux/source archives, and combined
+   checksums. A default-branch workflow then publishes all three AUR repositories
    from those immutable assets. Keep the release branch until AUR publication
    succeeds; it may then be deleted.
 
