@@ -30,8 +30,8 @@ fi
 mkdir -p "$output"
 cp -a "$root/packaging/aur/." "$output/"
 
-bin_pkgbuild="$output/sayall/PKGBUILD"
-source_pkgbuild="$output/sayall-src/PKGBUILD"
+bin_pkgbuild="$output/sayall-bin/PKGBUILD"
+source_pkgbuild="$output/sayall/PKGBUILD"
 dependency_sha=$(sed -n "/^sha256sums=(/,/^)/ s/^  '\([0-9a-f]\{64\}\)'$/\1/p" \
     "$source_pkgbuild" | sed -n '2p')
 if [[ -z $dependency_sha ]]; then
@@ -66,7 +66,7 @@ if [[ ${#source_checksums[@]} -ne 2 || \
     exit 1
 fi
 
-for package in sayall-src sayall sayall-git; do
+for package in sayall-bin sayall sayall-git; do
     (
         cd "$output/$package"
         makepkg --printsrcinfo > .SRCINFO

@@ -17,7 +17,7 @@ removed before output.
 
 ## Platform support
 
-| Platform / target | 0.1.4 status |
+| Platform / target | 0.1.5 status |
 | --- | --- |
 | x86-64 Arch Linux with Omarchy (Wayland/Hyprland) | Supported and tested; the only app/runtime/package and binary release target |
 | Darwin (`aarch64-macos` compile target) | Core compile readiness only; no app, runtime, package, or installable output |
@@ -33,19 +33,19 @@ is the [`protocol-v1 contract`](docs/protocol-v1.md).
 
 ### Install on Arch Linux or Omarchy
 
-The prebuilt AUR package is the recommended installation for supported users:
+The stable AUR package builds the release from source:
 
 ```sh
 yay -S sayall
 ```
 
-Two source-based variants are also available. Install only one variant at a
-time:
+Prebuilt and development variants are also available. Install only one variant
+at a time:
 
 | Package | Use case |
 | --- | --- |
-| `sayall` | Official release binaries; recommended for most users |
-| `sayall-src` | Build the latest stable release from source |
+| `sayall` | Build the latest stable release from source |
+| `sayall-bin` | Install official prebuilt release binaries |
 | `sayall-git` | Build the latest `main` commit from source |
 
 Configure API keys, keeping the file private:
@@ -105,7 +105,7 @@ sayall --version
 sayall doctor
 ```
 
-`sayall update` detects whether `sayall`, `sayall-src`, or `sayall-git` owns
+`sayall update` detects whether `sayall`, `sayall-bin`, or `sayall-git` owns
 the installation, asks `yay` to update that same package, and only restarts the
 services after the package operation succeeds. It deliberately uses the AUR
 package rather than overwriting `/usr/bin` directly, preserving package
@@ -113,9 +113,10 @@ ownership, dependency handling, checksums, and clean uninstallation. To avoid
 losing audio, it refuses to update while the daemon is recording or processing
 a clip. After a successful package operation it restarts both services and
 re-applies the saved custom, default, or disabled shortcut state. The retired
-`sayall-bin` name remains recognized only for migration: `sayall update`
-explicitly targets the replacement `sayall` package and explains the rename
-before invoking `yay`.
+`sayall-src` name remains recognized by the 0.1.5 and later CLI as a migration
+fallback. Installations still running the 0.1.4 `sayall-src` CLI must use the
+explicit one-time `yay -S sayall` command below; that older CLI cannot redirect
+itself to a package name introduced by a later release.
 
 #### Migrate from the earlier AUR package names
 
@@ -123,16 +124,13 @@ The package transition does not own or remove
 `~/.config/sayall/config.json`. Review the AUR helper's conflict-removal prompt
 and switch packages in one operation; do not uninstall the old package first.
 
-- Existing `sayall` source users who want the recommended prebuilt package can
-  run `yay -S sayall`. The package name stays the same, and the transition's
-  `pkgrel` bump ensures the new recipe is offered even at the same upstream
-  version.
-- Existing `sayall` source users who want to keep building stable tags should
-  run `yay -S sayall-src`. This replaces `sayall` with the renamed source
-  package.
-- Existing `sayall-bin` users must run `yay -S sayall`. The new package declares
-  that it replaces and provides the retired binary name, but AUR helpers cannot
-  safely infer an installed-package rename from the public AUR merge alone.
+- Existing `sayall` users will move to the stable source build on upgrade. To
+  keep using official prebuilt artifacts instead, run `yay -S sayall-bin`.
+- Existing `sayall-bin` users continue to receive prebuilt artifacts under the
+  same package name.
+- Existing `sayall-src` users should run `yay -S sayall`. The canonical package
+  replaces the retired source-suffixed name, but an AUR merge does not rename
+  packages already installed on users' machines.
 
 After any switch, run `sayall setup`, `sayall doctor`, and a short dictation
 smoke test. Locally installed units in `~/.config/systemd/user` override the
@@ -272,7 +270,7 @@ services and remove the package variant:
 ```sh
 sayall shortcut disable
 systemctl --user disable --now sayall sayall-hud
-yay -Rns sayall # or sayall-src / sayall-git
+yay -Rns sayall # or sayall-bin / sayall-git
 ```
 
 If disable reports that the shortcut is an external manual binding, remove
@@ -566,7 +564,7 @@ tests remain roadmap work.
 
 SayAll follows [Semantic Versioning](https://semver.org/). The daemon, CLI, and
 HUD are released together under one product version. Protocol versions are
-independent: SayAll 0.1.4 continues to use the documented
+independent: SayAll 0.1.5 continues to use the documented
 [`protocol-v1 contract`](docs/protocol-v1.md).
 
 During the pre-1.0 period, patch releases remain backward-compatible whenever

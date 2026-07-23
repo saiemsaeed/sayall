@@ -68,6 +68,16 @@ jobs:
             "https://api.github.com/repos/${{ github.repository }}/commits/v$version")
           test "$(printf '%s' "$tag_commit" | jq -r .sha)" = "$HEAD_SHA"
 
+          # This secret-capable workflow intentionally runs from the protected
+          # default branch. Refuse to combine immutable release assets with AUR
+          # recipes from a different revision, including on manual retries.
+          git fetch --no-tags --depth=1 origin "$HEAD_SHA"
+          git diff --exit-code "$HEAD_SHA" -- \
+            scripts/prepare-aur-release.sh \
+            packaging/aur/sayall \
+            packaging/aur/sayall-bin \
+            packaging/aur/sayall-git
+
           release_url="https://github.com/${{ github.repository }}/releases/download/v$version"
           checksums=$(curl --fail --silent --show-error --location "$release_url/SHA256SUMS")
           binary_sha=$(printf '%s\n' "$checksums" |
@@ -93,20 +103,14 @@ jobs:
           test -n "$EXPECTED_MAINTAINER"
 
           # Refuse to mutate any existing package owned by another AUR account.
-          # sayall-src may be absent before the first transition release; the
-          # authenticated first push creates it for EXPECTED_MAINTAINER.
-          for package in sayall-src sayall sayall-git; do
+          for package in sayall-bin sayall sayall-git; do
             package_info=$(curl --fail --silent --show-error --get \
               --data-urlencode "arg[]=$package" \
               'https://aur.archlinux.org/rpc/v5/info')
             result_count=$(printf '%s' "$package_info" | jq -r .resultcount)
             if [[ $result_count == 0 ]]; then
-              if [[ $package != sayall-src ]]; then
-                echo "required AUR package does not exist: $package" >&2
-                exit 1
-              fi
-              echo "$package will be created by its first authenticated push"
-              continue
+              echo "required AUR package does not exist: $package" >&2
+              exit 1
             fi
             maintainer=$(printf '%s' "$package_info" | jq -r '.results[0].Maintainer // ""')
             if [[ $maintainer != "$EXPECTED_MAINTAINER" ]]; then
@@ -141,7 +145,7 @@ jobs:
           printf 'GIT_SSH_COMMAND=%s\n' "$GIT_SSH_COMMAND" >> "$GITHUB_ENV"
           # Clone every target before the first push. This catches access or
           # ownership failures before a retry-safe, ordered publication starts.
-          for package in sayall-src sayall sayall-git; do
+          for package in sayall-bin sayall sayall-git; do
             git clone "ssh://aur@aur.archlinux.org/$package.git" \
               "$RUNNER_TEMP/aur-$package"
           done
@@ -150,9 +154,10 @@ jobs:
           set -euo pipefail
           git config --global user.name 'SayAll Release Bot'
           git config --global user.email 'saiem.saeed7@gmail.com'
-          # Publish the new stable-source name first. On retry, repositories
-          # whose generated files already match are left untouched.
-          for package in sayall-src sayall sayall-git; do
+          # Publish the prebuilt alternative before changing the canonical
+          # package to a source build. On retry, matching repositories are
+          # left untouched.
+          for package in sayall-bin sayall sayall-git; do
             repo="$RUNNER_TEMP/aur-$package"
             cp "$RUNNER_TEMP/aur-work/packages/$package/PKGBUILD" \
               "$RUNNER_TEMP/aur-work/packages/$package/.SRCINFO" \

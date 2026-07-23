@@ -127,7 +127,7 @@ fn installedPackage(arena: Allocator, io: Io) !?contract.UpdatePlan {
 }
 
 fn packageIdentity(installed: []const u8) ?contract.UpdatePlan {
-    if (std.mem.eql(u8, installed, "sayall-bin")) return .{
+    if (std.mem.eql(u8, installed, "sayall-src")) return .{
         .installed = installed,
         .update_target = "sayall",
         .legacy_migration = true,
@@ -144,9 +144,9 @@ fn packageIdentity(installed: []const u8) ?contract.UpdatePlan {
 
 const aur_package_candidates = [_][]const u8{
     "sayall",
-    "sayall-src",
-    "sayall-git",
     "sayall-bin",
+    "sayall-git",
+    "sayall-src",
 };
 
 fn commandExists(arena: Allocator, io: Io, command: []const u8) !bool {
@@ -176,9 +176,9 @@ test "package identities preserve current variants and legacy migration" {
         migration: bool,
     }{
         .{ .name = "sayall", .target = "sayall", .migration = false },
-        .{ .name = "sayall-src", .target = "sayall-src", .migration = false },
+        .{ .name = "sayall-bin", .target = "sayall-bin", .migration = false },
         .{ .name = "sayall-git", .target = "sayall-git", .migration = false },
-        .{ .name = "sayall-bin", .target = "sayall", .migration = true },
+        .{ .name = "sayall-src", .target = "sayall", .migration = true },
     };
     for (expected) |item| {
         const identity = packageIdentity(item.name).?;

@@ -114,7 +114,7 @@ fn run(init: std.process.Init) !u8 {
         const preparation = product.prepareUpdate(arena, io) catch |err| return productError("update", err);
         const package = switch (preparation) {
             .package_missing => {
-                std.debug.print("sayall: update requires an installed AUR package (sayall, sayall-src, or sayall-git; legacy sayall-bin is also recognized)\n", .{});
+                std.debug.print("sayall: update requires an installed AUR package (sayall, sayall-bin, or sayall-git; legacy sayall-src is also recognized)\n", .{});
                 return 1;
             },
             .yay_missing => {
@@ -124,7 +124,7 @@ fn run(init: std.process.Init) !u8 {
             .ready => |plan| plan,
         };
         if (package.legacy_migration) {
-            try printLine(io, "Migrating legacy sayall-bin installation to the current sayall package with yay...");
+            try printLine(io, try std.fmt.allocPrint(arena, "Migrating legacy {s} installation to {s} with yay...", .{ package.installed, package.update_target }));
         } else {
             try printLine(io, try std.fmt.allocPrint(arena, "Checking/updating {s} with yay...", .{package.installed}));
         }
