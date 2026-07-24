@@ -5,7 +5,7 @@ use gtk::glib;
 use gtk::prelude::*;
 use gtk::{Application, ApplicationWindow, DrawingArea};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
-use protocol::{EventKind, ProcessingStage, ProtocolEvent, State, StateSnapshot};
+use protocol::{EventKind, OutputMethod, ProtocolEvent, State, StateSnapshot};
 use serde_json::json;
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -20,7 +20,46 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const APP_ID: &str = "dev.sayall.Hud";
-const BAR_COUNT: usize = 18;
+const BAR_COUNT: usize = 14;
+const HUD_WIDTH: i32 = 244;
+const HUD_HEIGHT: i32 = 48;
+const PROCESSING_BAR_COUNT: usize = 10;
+
+#[derive(Clone, Copy)]
+struct Palette {
+    shell: (f64, f64, f64, f64),
+    border: (f64, f64, f64, f64),
+    text: (f64, f64, f64, f64),
+    wave: (f64, f64, f64),
+    dot: (f64, f64, f64),
+    processing: (f64, f64, f64),
+    success: (f64, f64, f64),
+    error: (f64, f64, f64),
+}
+
+const PALETTES: [Palette; 2] = [
+    Palette {
+        shell: (14.0 / 255.0, 15.0 / 255.0, 19.0 / 255.0, 0.94),
+        border: (1.0, 1.0, 1.0, 0.10),
+        text: (1.0, 1.0, 1.0, 0.82),
+        wave: (250.0 / 255.0, 87.0 / 255.0, 122.0 / 255.0),
+        dot: (1.0, 64.0 / 255.0, 82.0 / 255.0),
+        processing: (76.0 / 255.0, 214.0 / 255.0, 209.0 / 255.0),
+        success: (107.0 / 255.0, 235.0 / 255.0, 158.0 / 255.0),
+        error: (1.0, 115.0 / 255.0, 115.0 / 255.0),
+    },
+    Palette {
+        shell: (1.0, 1.0, 1.0, 1.0),
+        border: (14.0 / 255.0, 15.0 / 255.0, 19.0 / 255.0, 0.12),
+        text: (52.0 / 255.0, 64.0 / 255.0, 84.0 / 255.0, 1.0),
+        wave: (217.0 / 255.0, 45.0 / 255.0, 94.0 / 255.0),
+        dot: (225.0 / 255.0, 29.0 / 255.0, 72.0 / 255.0),
+        processing: (8.0 / 255.0, 127.0 / 255.0, 140.0 / 255.0),
+        success: (6.0 / 255.0, 118.0 / 255.0, 71.0 / 255.0),
+        error: (217.0 / 255.0, 45.0 / 255.0, 32.0 / 255.0),
+    },
+];
+const DARK: Palette = PALETTES[0];
 
 #[derive(Debug)]
 enum UiMessage {
@@ -41,12 +80,14 @@ enum HudState {
 
 struct Model {
     state: HudState,
-    stage: String,
     history: VecDeque<f64>,
     displayed: [f64; BAR_COUNT],
     recording_started: Option<Instant>,
+    processing_started: Option<Instant>,
     hide_at: Option<Instant>,
     clipping_until: Option<Instant>,
+    output_method: Option<OutputMethod>,
+    show_timer: bool,
     error: String,
 }
 
@@ -54,12 +95,14 @@ impl Default for Model {
     fn default() -> Self {
         Self {
             state: HudState::Idle,
-            stage: String::new(),
             history: VecDeque::from(vec![0.0; BAR_COUNT]),
             displayed: [0.0; BAR_COUNT],
             recording_started: None,
+            processing_started: None,
             hide_at: None,
             clipping_until: None,
+            output_method: None,
+            show_timer: true,
             error: String::new(),
         }
     }
@@ -77,23 +120,23 @@ impl Model {
                     self.clipping_until = Some(Instant::now() + Duration::from_millis(350));
                 }
             }
-            EventKind::ProcessingStageChanged(data) => {
-                self.stage = data.stage.0.map_or("", ProcessingStage::as_str).to_owned();
-            }
-            EventKind::OperationError(error) => {
+            EventKind::ProcessingStageChanged => {}
+            EventKind::OperationError(message) => {
                 self.state = HudState::Error;
-                self.error = error.message;
+                self.error = message;
                 self.hide_at = Some(Instant::now() + Duration::from_secs(3));
             }
-            EventKind::SessionCompleted(data) => {
-                if data.ok {
+            EventKind::OutputCompleted(method) => self.output_method = Some(method),
+            EventKind::SessionCompleted(ok) => {
+                if ok && self.output_method == Some(OutputMethod::Clipboard) {
                     self.state = HudState::Success;
                     self.hide_at = Some(Instant::now() + Duration::from_millis(700));
+                } else if ok {
+                    self.state = HudState::Idle;
+                    self.hide_at = None;
                 }
             }
-            EventKind::RecordingLimitReached(_)
-            | EventKind::OutputCompleted(_)
-            | EventKind::Unknown { .. } => {}
+            EventKind::RecordingLimitReached | EventKind::Unknown => {}
         }
     }
 
@@ -105,6 +148,13 @@ impl Model {
             State::Stopping => HudState::Stopping,
             State::Processing => HudState::Processing,
         };
+        self.show_timer = snapshot.show_timer;
+        if next == HudState::Idle
+            && matches!(previous, HudState::Stopping | HudState::Processing)
+            && self.output_method == Some(OutputMethod::Clipboard)
+        {
+            return;
+        }
         if next == HudState::Idle
             && matches!(previous, HudState::Success | HudState::Error)
             && self
@@ -114,18 +164,20 @@ impl Model {
             return;
         }
         self.state = next;
-        self.stage = snapshot
-            .stage
-            .0
-            .map_or("", ProcessingStage::as_str)
-            .to_owned();
         if self.state == HudState::Recording && previous != HudState::Recording {
-            self.recording_started = Some(Instant::now());
+            self.recording_started =
+                Instant::now().checked_sub(Duration::from_millis(snapshot.elapsed_ms));
             for value in &mut self.history {
                 *value = 0.0;
             }
             self.displayed.fill(0.0);
             self.hide_at = None;
+            self.output_method = None;
+        }
+        if matches!(self.state, HudState::Stopping | HudState::Processing)
+            && !matches!(previous, HudState::Stopping | HudState::Processing)
+        {
+            self.processing_started = Some(Instant::now());
         }
         if self.state == HudState::Idle && !matches!(previous, HudState::Success | HudState::Error)
         {
@@ -165,8 +217,8 @@ fn build_ui(app: &Application) {
         .title("SayAll")
         .decorated(false)
         .resizable(false)
-        .default_width(280)
-        .default_height(64)
+        .default_width(HUD_WIDTH)
+        .default_height(HUD_HEIGHT)
         .build();
 
     let css = gtk::CssProvider::new();
@@ -186,8 +238,8 @@ fn build_ui(app: &Application) {
     window.set_exclusive_zone(-1);
 
     let drawing = DrawingArea::builder()
-        .width_request(280)
-        .height_request(64)
+        .width_request(HUD_WIDTH)
+        .height_request(HUD_HEIGHT)
         .can_target(false)
         .build();
     window.set_child(Some(&drawing));
@@ -318,52 +370,48 @@ fn draw_hud(cr: &cairo::Context, width: i32, height: i32, model: &Model) {
     let width = f64::from(width);
     let height = f64::from(height);
     rounded_rect(cr, 0.5, 0.5, width - 1.0, height - 1.0, height / 2.0);
-    cr.set_source_rgba(0.055, 0.06, 0.075, 0.94);
+    set_rgba(cr, DARK.shell);
     let _ = cr.fill_preserve();
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.10);
+    set_rgba(cr, DARK.border);
     cr.set_line_width(1.0);
     let _ = cr.stroke();
 
     match model.state {
         HudState::Recording => draw_recording(cr, width, height, model),
-        HudState::Success => {
-            draw_center_text(cr, width, height, "✓  Dictation complete", 0.42, 0.92, 0.62)
-        }
-        HudState::Error => draw_center_text(cr, width, height, &model.error, 1.0, 0.45, 0.45),
-        HudState::Stopping => draw_center_text(cr, width, height, "Finishing…", 0.92, 0.92, 0.96),
-        HudState::Processing => {
-            let label = match model.stage.as_str() {
-                "transcribing" => "Transcribing…",
-                "cleaning" => "Cleaning up…",
-                "delivering" => "Typing…",
-                _ => "Processing…",
-            };
-            draw_center_text(cr, width, height, label, 0.92, 0.92, 0.96);
-        }
+        HudState::Stopping | HudState::Processing => draw_processing(cr, width, height, model),
+        HudState::Success => draw_success(cr, width, height),
+        HudState::Error => draw_center_text(cr, width, height, &model.error, DARK.error),
         HudState::Idle => {}
     }
 }
 
 fn draw_recording(cr: &cairo::Context, width: f64, height: f64, model: &Model) {
-    cr.arc(25.0, height / 2.0, 5.0, 0.0, std::f64::consts::TAU);
-    cr.set_source_rgb(1.0, 0.25, 0.32);
+    const REFERENCE_HEIGHTS: [f64; BAR_COUNT] = [
+        5.0, 9.0, 14.0, 20.0, 12.0, 24.0, 17.0, 22.0, 10.0, 16.0, 24.0, 14.0, 8.0, 5.0,
+    ];
+    let content_width = 8.0 + 16.0 + 138.0 + if model.show_timer { 16.0 + 34.0 } else { 0.0 };
+    let content_x = (width - content_width) / 2.0;
+
+    cr.arc(
+        content_x + 4.0,
+        height / 2.0,
+        4.0,
+        0.0,
+        std::f64::consts::TAU,
+    );
+    set_rgb(cr, DARK.dot);
     let _ = cr.fill();
 
     let clipping = model
         .clipping_until
         .is_some_and(|deadline| deadline > Instant::now());
-    let (r, g, b) = if clipping {
-        (1.0, 0.63, 0.22)
-    } else {
-        (0.98, 0.34, 0.48)
-    };
-    let start_x = 48.0;
-    let visualizer_width = width - 112.0;
-    let gap = 3.0;
-    let bar_width = (visualizer_width - gap * (BAR_COUNT as f64 - 1.0)) / BAR_COUNT as f64;
+    let color = if clipping { DARK.error } else { DARK.wave };
+    let start_x = content_x + 24.0;
+    let visualizer_width = 138.0;
+    let bar_width = 4.5;
+    let gap = (visualizer_width - bar_width * BAR_COUNT as f64) / (BAR_COUNT - 1) as f64;
     for (index, level) in model.displayed.iter().enumerate() {
-        let shaped = (level * (0.72 + 0.28 * ((index as f64 * 1.7).sin().abs()))).clamp(0.0, 1.0);
-        let bar_height = 5.0 + shaped * 31.0;
+        let bar_height = 5.0 + level.clamp(0.0, 1.0) * (REFERENCE_HEIGHTS[index] - 5.0);
         let x = start_x + index as f64 * (bar_width + gap);
         rounded_rect(
             cr,
@@ -373,19 +421,79 @@ fn draw_recording(cr: &cairo::Context, width: f64, height: f64, model: &Model) {
             bar_height,
             bar_width / 2.0,
         );
-        cr.set_source_rgb(r, g, b);
+        set_rgb(cr, color);
         let _ = cr.fill();
     }
 
-    let elapsed = model
-        .recording_started
-        .map_or(0, |started| started.elapsed().as_secs());
-    let label = format!("{:02}:{:02}", elapsed / 60, elapsed % 60);
-    cr.set_source_rgba(0.92, 0.92, 0.96, 0.82);
-    cr.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Bold);
-    cr.set_font_size(12.0);
-    cr.move_to(width - 51.0, height / 2.0 + 4.0);
-    let _ = cr.show_text(&label);
+    if model.show_timer {
+        let elapsed = model
+            .recording_started
+            .map_or(0, |started| started.elapsed().as_secs());
+        let label = format!("{:02}:{:02}", elapsed / 60, elapsed % 60);
+        select_bold_font(cr, 12.0);
+        set_rgba(cr, DARK.text);
+        let timer_x = start_x + visualizer_width + 16.0;
+        draw_tracked_text_right_aligned(cr, &label, timer_x, 34.0, height / 2.0 + 4.0, 0.2);
+    }
+}
+
+fn draw_processing(cr: &cairo::Context, width: f64, height: f64, model: &Model) {
+    const REFERENCE_HEIGHTS: [f64; PROCESSING_BAR_COUNT] =
+        [6.0, 10.0, 16.0, 22.0, 14.0, 8.0, 18.0, 24.0, 14.0, 8.0];
+    let bar_width = 4.5;
+    let gap = 5.0;
+    let waveform_width =
+        PROCESSING_BAR_COUNT as f64 * bar_width + (PROCESSING_BAR_COUNT - 1) as f64 * gap;
+    let start_x = (width - waveform_width) / 2.0;
+    let elapsed_ms = model
+        .processing_started
+        .map_or(0, |started| started.elapsed().as_millis() as u64);
+
+    for (index, reference_height) in REFERENCE_HEIGHTS.iter().enumerate() {
+        let phase_ms = (elapsed_ms + index as u64 * 120) % 2000;
+        let activity = if phase_ms < 1600 {
+            (std::f64::consts::PI * phase_ms as f64 / 1600.0).sin()
+        } else {
+            0.0
+        };
+        let bar_height = 4.0 + activity * (reference_height - 4.0);
+        rounded_rect(
+            cr,
+            start_x + index as f64 * (bar_width + gap),
+            (height - bar_height) / 2.0,
+            bar_width,
+            bar_height,
+            2.0,
+        );
+        set_rgb(cr, DARK.processing);
+        let _ = cr.fill();
+    }
+}
+
+fn draw_success(cr: &cairo::Context, width: f64, height: f64) {
+    const LABEL: &str = "Copied to clipboard";
+    select_bold_font(cr, 13.0);
+    let text_width = cr
+        .text_extents(LABEL)
+        .map_or(0.0, |extents| extents.x_advance());
+    let gap = cr
+        .text_extents("  ")
+        .map_or(8.0, |extents| extents.x_advance());
+    let check_width = 11.0;
+    let start_x = (width - check_width - gap - text_width) / 2.0;
+    let center_y = height / 2.0;
+
+    cr.move_to(start_x, center_y);
+    cr.line_to(start_x + 3.5, center_y + 3.5);
+    cr.line_to(start_x + check_width, center_y - 4.0);
+    cr.set_line_cap(cairo::LineCap::Round);
+    cr.set_line_join(cairo::LineJoin::Round);
+    cr.set_line_width(1.8);
+    set_rgb(cr, DARK.success);
+    let _ = cr.stroke();
+
+    cr.move_to(start_x + check_width + gap, center_y + 4.5);
+    let _ = cr.show_text(LABEL);
 }
 
 fn draw_center_text(
@@ -393,17 +501,64 @@ fn draw_center_text(
     width: f64,
     height: f64,
     text: &str,
-    r: f64,
-    g: f64,
-    b: f64,
+    color: (f64, f64, f64),
 ) {
-    cr.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Bold);
+    cr.select_font_face(
+        "Noto Sans",
+        cairo::FontSlant::Normal,
+        cairo::FontWeight::Bold,
+    );
     cr.set_font_size(if text.len() > 30 { 11.0 } else { 13.0 });
-    cr.set_source_rgb(r, g, b);
+    set_rgb(cr, color);
     let extents = cr.text_extents(text).ok();
-    let text_width = extents.as_ref().map_or(0.0, cairo::TextExtents::width);
+    let text_width = extents.as_ref().map_or(0.0, cairo::TextExtents::x_advance);
     cr.move_to((width - text_width) / 2.0, height / 2.0 + 4.5);
     let _ = cr.show_text(text);
+}
+
+fn select_bold_font(cr: &cairo::Context, size: f64) {
+    cr.select_font_face(
+        "Noto Sans",
+        cairo::FontSlant::Normal,
+        cairo::FontWeight::Bold,
+    );
+    cr.set_font_size(size);
+}
+
+fn draw_tracked_text_right_aligned(
+    cr: &cairo::Context,
+    text: &str,
+    box_x: f64,
+    box_width: f64,
+    baseline: f64,
+    tracking: f64,
+) {
+    let glyphs: Vec<String> = text
+        .chars()
+        .map(|character| character.to_string())
+        .collect();
+    let advances: Vec<f64> = glyphs
+        .iter()
+        .map(|glyph| {
+            cr.text_extents(glyph)
+                .map_or(0.0, |extents| extents.x_advance())
+        })
+        .collect();
+    let width = advances.iter().sum::<f64>() + tracking * glyphs.len().saturating_sub(1) as f64;
+    let mut x = box_x + box_width - width;
+    for (glyph, advance) in glyphs.iter().zip(advances) {
+        cr.move_to(x, baseline);
+        let _ = cr.show_text(glyph);
+        x += advance + tracking;
+    }
+}
+
+fn set_rgb(cr: &cairo::Context, color: (f64, f64, f64)) {
+    cr.set_source_rgb(color.0, color.1, color.2);
+}
+
+fn set_rgba(cr: &cairo::Context, color: (f64, f64, f64, f64)) {
+    cr.set_source_rgba(color.0, color.1, color.2, color.3);
 }
 
 fn rounded_rect(cr: &cairo::Context, x: f64, y: f64, width: f64, height: f64, radius: f64) {
@@ -477,6 +632,57 @@ mod tests {
         );
         model.apply_event(level);
         assert!(model.history.back().copied().unwrap_or_default() > 0.3);
+    }
+
+    #[test]
+    fn recording_honors_timeless_snapshot_configuration() {
+        let mut model = Model::default();
+        let mut decoder = decoder_with_idle_snapshot();
+        let state = decode_event(
+            &mut decoder,
+            br#"{"v":1,"type":"event","seq":1,"event":"state.changed","session_id":1,"data":{"state":"recording","stage":null,"session_id":1,"elapsed_ms":1250,"cleanup":true,"show_timer":false}}"#,
+        );
+        model.apply_event(state);
+        assert_eq!(model.state, HudState::Recording);
+        assert!(!model.show_timer);
+        assert!(model.recording_started.unwrap().elapsed() >= Duration::from_millis(1250));
+    }
+
+    #[test]
+    fn success_is_exclusive_to_clipboard_output() {
+        for (method, expected) in [
+            ("clipboard", HudState::Success),
+            ("type", HudState::Idle),
+            ("paste", HudState::Idle),
+        ] {
+            let mut model = Model {
+                state: HudState::Processing,
+                ..Model::default()
+            };
+            let mut decoder = decoder_with_idle_snapshot();
+            let output = format!(
+                r#"{{"v":1,"type":"event","seq":1,"event":"output.completed","session_id":1,"data":{{"method":"{method}"}}}}"#
+            );
+            model.apply_event(decode_event(&mut decoder, output.as_bytes()));
+            model.apply_event(decode_event(
+                &mut decoder,
+                br#"{"v":1,"type":"event","seq":2,"event":"state.changed","session_id":1,"data":{"state":"idle","stage":null,"session_id":1,"elapsed_ms":0,"cleanup":true,"show_timer":true}}"#,
+            ));
+            assert_eq!(
+                model.state,
+                if method == "clipboard" {
+                    HudState::Processing
+                } else {
+                    HudState::Idle
+                },
+                "intermediate output method {method}"
+            );
+            model.apply_event(decode_event(
+                &mut decoder,
+                br#"{"v":1,"type":"event","seq":3,"event":"session.completed","session_id":1,"data":{"ok":true,"phase":"post_stt","reason":null,"stt_attempted":true,"latency_ms":10}}"#,
+            ));
+            assert_eq!(model.state, expected, "output method {method}");
+        }
     }
 
     #[test]

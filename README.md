@@ -501,9 +501,14 @@ the process environment):
   "output": { "method": "type", "trailing_space": true },
   "recording": { "max_seconds": 300, "min_ms": 300, "source": "" },
   "metrics": { "enabled": true, "history_max_entries": 1000, "expose_api": true },
+  "hud": { "show_timer": true },
   "notifications": true
 }
 ```
+
+`hud.show_timer` defaults to `true` and displays recording duration as `mm:ss`.
+Set it to `false` for the centered recording layout without a timer or reserved
+timer space.
 
 For a Finder-launched macOS app, put literal API keys in this mode-`0600` file.
 References such as `"$DEEPGRAM_API_KEY"` resolve only when that variable is in

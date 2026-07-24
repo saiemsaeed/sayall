@@ -28,12 +28,17 @@ pub const MetricsConfig = struct {
     expose_api: bool = true,
 };
 
+pub const HudConfig = struct {
+    show_timer: bool = true,
+};
+
 pub const Config = struct {
     stt: SttConfig = .{},
     llm: LlmConfig = .{},
     output: OutputConfig = .{},
     recording: RecordingConfig = .{},
     metrics: MetricsConfig = .{},
+    hud: HudConfig = .{},
     notifications: bool = true,
     verbose: bool = false,
 };
@@ -175,6 +180,15 @@ test "defaults are sensible" {
     try std.testing.expectEqualStrings("type", cfg.output.method);
     try std.testing.expect(cfg.output.trailing_space);
     try std.testing.expectEqual(@as(u32, 300), cfg.recording.max_seconds);
+    try std.testing.expect(cfg.hud.show_timer);
+}
+
+test "HUD timer can be disabled" {
+    const parsed = try std.json.parseFromSlice(Config, std.testing.allocator,
+        \\{"hud":{"show_timer":false}}
+    , .{});
+    defer parsed.deinit();
+    try std.testing.expect(!parsed.value.hud.show_timer);
 }
 
 test "validation rejects unknown output methods" {

@@ -241,6 +241,7 @@ const Daemon = struct {
             .session_id = self.session_id,
             .elapsed_ms = if (self.state == .recording) @max(0, self.nowMs() - self.rec_started_ms) else 0,
             .cleanup = !self.rec_raw,
+            .show_timer = self.cfg.hud.show_timer,
         };
     }
 
@@ -377,7 +378,6 @@ const Daemon = struct {
                 self.lock();
                 self.state = .idle;
                 self.publishStateLocked();
-                self.unlock();
                 self.event_bus.publish(self.io, session, .{ .session_completed = .{
                     .ok = false,
                     .phase = .pre_stt,
@@ -385,6 +385,7 @@ const Daemon = struct {
                     .stt_attempted = false,
                     .latency_ms = 0,
                 } }) catch {};
+                self.unlock();
                 self.inform("SayAll", "Recording cancelled");
                 return "stopped";
             },
@@ -551,7 +552,6 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
         d.state = .idle;
         d.stage = .none;
         d.publishStateLocked();
-        d.unlock();
         d.event_bus.publish(io, job.session_id, .{ .session_completed = .{
             .ok = completed,
             .phase = completion_phase,
@@ -559,6 +559,7 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
             .stt_attempted = stt_attempted,
             .latency_ms = stt_latency_ms,
         } }) catch {};
+        d.unlock();
     }
 
     const t_start = d.nowMs();

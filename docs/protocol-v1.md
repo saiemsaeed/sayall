@@ -86,7 +86,7 @@ missing/wrongly typed required fields produce `invalid_request` with `id: 0`.
 A state snapshot is:
 
 ```json
-{"state":"recording","stage":null,"session_id":2,"elapsed_ms":842,"cleanup":true}
+{"state":"recording","stage":null,"session_id":2,"elapsed_ms":842,"cleanup":true,"show_timer":true}
 ```
 
 - `state`: `idle`, `recording`, `stopping`, or `processing`
@@ -94,6 +94,8 @@ A state snapshot is:
 - `session_id`: unsigned 64-bit ID; increments when recording starts
 - `elapsed_ms`: non-negative recording elapsed time, otherwise `0`
 - `cleanup`: whether LLM cleanup is requested for this session
+- `show_timer`: whether the HUD displays elapsed recording time; additive and
+  optional for older v1 servers, with clients defaulting it to `true`
 
 ## Methods
 
