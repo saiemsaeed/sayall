@@ -1,65 +1,19 @@
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
-use std::collections::HashMap;
 use std::io::{self, BufRead};
 
 pub const MAX_FRAME_LEN: usize = 64 * 1024;
 
-type ExtraFields = HashMap<String, Value>;
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
 enum WireEnvelope {
-    #[serde(rename = "response")]
-    Response(ResponseEnvelope),
-    #[serde(rename = "event")]
-    Event(EventEnvelope),
+    Response(Map<String, Value>),
+    Event {
+        seq: u64,
+        name: String,
+        data: Map<String, Value>,
+    },
 }
 
-#[derive(Debug, Deserialize)]
-struct ResponseEnvelope {
-    v: u16,
-    id: u64,
-    ok: bool,
-    #[serde(default)]
-    result: Option<SubscribeResult>,
-    #[serde(default)]
-    error: Option<ErrorEnvelope>,
-    #[serde(flatten)]
-    extra: ExtraFields,
-}
-
-#[derive(Debug, Deserialize)]
-struct SubscribeResult {
-    state: StateSnapshot,
-    next_seq: u64,
-    #[serde(flatten)]
-    extra: ExtraFields,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ErrorEnvelope {
-    #[allow(dead_code)]
-    pub code: String,
-    pub message: String,
-    #[serde(flatten)]
-    #[allow(dead_code)]
-    pub extra: ExtraFields,
-}
-
-#[derive(Debug, Deserialize)]
-struct EventEnvelope {
-    v: u16,
-    seq: u64,
-    event: String,
-    session_id: u64,
-    data: Map<String, Value>,
-    #[serde(flatten)]
-    extra: ExtraFields,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
     Idle,
@@ -68,7 +22,7 @@ pub enum State {
     Processing,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcessingStage {
     Validating,
@@ -77,99 +31,43 @@ pub enum ProcessingStage {
     Delivering,
 }
 
-/// A nullable field that remains required in its containing JSON object.
-#[derive(Debug, Deserialize)]
-pub struct Nullable<T>(pub Option<T>);
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct StateSnapshot {
     pub state: State,
-    pub stage: Nullable<ProcessingStage>,
-    #[allow(dead_code)]
-    pub session_id: u64,
     pub elapsed_ms: u64,
-    #[allow(dead_code)]
-    pub cleanup: bool,
-    #[serde(default = "default_show_timer")]
     pub show_timer: bool,
-    #[serde(flatten)]
-    #[allow(dead_code)]
-    pub extra: ExtraFields,
-}
-
-fn default_show_timer() -> bool {
-    true
 }
 
 #[derive(Debug)]
 pub struct SubscriptionSnapshot {
     pub state: StateSnapshot,
-    #[allow(dead_code)]
-    pub next_seq: u64,
-    #[allow(dead_code)]
-    response_extra: ExtraFields,
-    #[allow(dead_code)]
-    result_extra: ExtraFields,
 }
 
 #[derive(Debug)]
 pub struct ProtocolEvent {
-    #[allow(dead_code)]
-    pub seq: u64,
-    #[allow(dead_code)]
-    pub session_id: u64,
     pub kind: EventKind,
-    #[allow(dead_code)]
-    pub extra: ExtraFields,
 }
 
 #[derive(Debug)]
 pub enum EventKind {
     StateChanged(StateSnapshot),
     AudioLevel(AudioLevel),
-    ProcessingStageChanged(ProcessingStageChanged),
-    #[allow(dead_code)]
-    RecordingLimitReached(RecordingLimitReached),
-    OperationError(ErrorEnvelope),
-    #[allow(dead_code)]
-    OutputCompleted(OutputCompleted),
-    SessionCompleted(SessionCompleted),
-    Unknown {
-        #[allow(dead_code)]
-        name: String,
-        #[allow(dead_code)]
-        data: Map<String, Value>,
-    },
+    ProcessingStageChanged,
+    RecordingLimitReached,
+    OperationError(String),
+    OutputCompleted(OutputMethod),
+    SessionCompleted(bool),
+    Unknown,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct AudioLevel {
     pub rms: f64,
     pub peak: f64,
     pub clipping: bool,
-    #[allow(dead_code)]
-    pub window_ms: u64,
-    #[serde(flatten)]
-    #[allow(dead_code)]
-    pub extra: ExtraFields,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct ProcessingStageChanged {
-    pub stage: Nullable<ProcessingStage>,
-    #[serde(flatten)]
-    #[allow(dead_code)]
-    pub extra: ExtraFields,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct RecordingLimitReached {
-    #[serde(flatten)]
-    #[allow(dead_code)]
-    pub extra: ExtraFields,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputMethod {
     Type,
@@ -177,36 +75,12 @@ pub enum OutputMethod {
     Paste,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct OutputCompleted {
-    pub method: OutputMethod,
-    #[serde(flatten)]
-    #[allow(dead_code)]
-    extra: ExtraFields,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum SessionPhase {
     PreStt,
     Stt,
     PostStt,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SessionCompleted {
-    pub ok: bool,
-    #[allow(dead_code)]
-    phase: SessionPhase,
-    #[allow(dead_code)]
-    reason: Nullable<String>,
-    #[allow(dead_code)]
-    stt_attempted: bool,
-    #[allow(dead_code)]
-    latency_ms: u64,
-    #[serde(flatten)]
-    #[allow(dead_code)]
-    extra: ExtraFields,
 }
 
 #[derive(Debug)]
@@ -229,57 +103,83 @@ impl SubscriptionDecoder {
     }
 
     pub fn decode(&mut self, frame: &[u8]) -> io::Result<SubscriptionMessage> {
-        let envelope: WireEnvelope = serde_json::from_slice(frame)
+        let parsed: UniqueValue = serde_json::from_slice(frame)
             .map_err(|error| invalid_data(format!("malformed protocol envelope: {error}")))?;
+        let UniqueValue(Value::Object(mut envelope)) = parsed else {
+            return Err(invalid_data("protocol envelope must be an object"));
+        };
+        validate_version(take_required(&mut envelope, "v", "protocol envelope")?)?;
+        let envelope_type: String = take_required(&mut envelope, "type", "protocol envelope")?;
+        let envelope = match envelope_type.as_str() {
+            "response" => WireEnvelope::Response(envelope),
+            "event" => {
+                let seq = take_required(&mut envelope, "seq", "event")?;
+                let name = take_required(&mut envelope, "event", "event")?;
+                take_required::<u64>(&mut envelope, "session_id", "event")?;
+                let data = take_required(&mut envelope, "data", "event")?;
+                WireEnvelope::Event { seq, name, data }
+            }
+            other => {
+                return Err(invalid_data(format!(
+                    "unknown protocol envelope type {other}"
+                )));
+            }
+        };
 
         match (self.expected_seq, envelope) {
             (None, WireEnvelope::Response(response)) => self.install_snapshot(response),
-            (None, WireEnvelope::Event(_)) => {
+            (None, WireEnvelope::Event { .. }) => {
                 Err(invalid_data("event arrived before subscription response"))
             }
             (Some(_), WireEnvelope::Response(response)) => {
                 self.validate_terminal_response(response)
             }
-            (Some(expected), WireEnvelope::Event(event)) => self.decode_event(expected, event),
+            (Some(expected), WireEnvelope::Event { seq, name, data }) => {
+                self.decode_event(expected, seq, name, data)
+            }
         }
     }
 
-    fn install_snapshot(&mut self, response: ResponseEnvelope) -> io::Result<SubscriptionMessage> {
-        validate_version(response.v)?;
-        self.validate_response_id(response.id)?;
-        if !response.ok {
-            validate_error_response(&response)?;
+    fn install_snapshot(
+        &mut self,
+        mut response: Map<String, Value>,
+    ) -> io::Result<SubscriptionMessage> {
+        let id = take_required(&mut response, "id", "response")?;
+        self.validate_response_id(id)?;
+        let ok: bool = take_required(&mut response, "ok", "response")?;
+        let result = decode_optional_subscribe_result(&mut response)?;
+        let error = decode_optional_error(&mut response)?;
+        if !ok {
+            validate_error_response(result, error)?;
             return Err(invalid_data("subscription request failed"));
         }
-        if response.error.is_some() {
+        if error.is_some() {
             return Err(invalid_data("successful response contained error"));
         }
-        let result = response
-            .result
-            .ok_or_else(|| invalid_data("successful response missing result"))?;
-        self.expected_seq = Some(result.next_seq);
+        let (state, next_seq) =
+            result.ok_or_else(|| invalid_data("successful response missing result"))?;
+        self.expected_seq = Some(next_seq);
         Ok(SubscriptionMessage::Snapshot(SubscriptionSnapshot {
-            state: result.state,
-            next_seq: result.next_seq,
-            response_extra: response.extra,
-            result_extra: result.extra,
+            state,
         }))
     }
 
     fn validate_terminal_response(
         &self,
-        response: ResponseEnvelope,
+        mut response: Map<String, Value>,
     ) -> io::Result<SubscriptionMessage> {
-        validate_version(response.v)?;
-        self.validate_response_id(response.id)?;
-        if response.ok {
-            if response.result.is_none() || response.error.is_some() {
+        let id = take_required(&mut response, "id", "response")?;
+        self.validate_response_id(id)?;
+        let ok: bool = take_required(&mut response, "ok", "response")?;
+        let result = decode_optional_subscribe_result(&mut response)?;
+        let error = decode_optional_error(&mut response)?;
+        if ok {
+            if result.is_none() || error.is_some() {
                 return Err(invalid_data("malformed successful response"));
             }
             return Err(invalid_data("unexpected response on event stream"));
         }
-        validate_error_response(&response)?;
-        let code = &response.error.as_ref().expect("validated error").code;
+        let code = validate_error_response(result, error)?;
         if code == "event_gap" {
             return Err(invalid_data("server reported event gap"));
         }
@@ -296,28 +196,23 @@ impl SubscriptionDecoder {
     fn decode_event(
         &mut self,
         expected: u64,
-        event: EventEnvelope,
+        seq: u64,
+        event_name: String,
+        data: Map<String, Value>,
     ) -> io::Result<SubscriptionMessage> {
-        validate_version(event.v)?;
-        if event.seq != expected {
+        if seq != expected {
             return Err(invalid_data(format!(
-                "non-consecutive event sequence: expected {expected}, got {}",
-                event.seq
+                "non-consecutive event sequence: expected {expected}, got {seq}"
             )));
         }
 
-        let kind = decode_event_data(event.event, event.data)?;
+        let kind = decode_event_data(event_name, data)?;
         self.expected_seq = Some(
             expected
                 .checked_add(1)
                 .ok_or_else(|| invalid_data("event sequence overflow"))?,
         );
-        Ok(SubscriptionMessage::Event(ProtocolEvent {
-            seq: event.seq,
-            session_id: event.session_id,
-            kind,
-            extra: event.extra,
-        }))
+        Ok(SubscriptionMessage::Event(ProtocolEvent { kind }))
     }
 }
 
@@ -330,46 +225,220 @@ fn validate_version(version: u16) -> io::Result<()> {
     Ok(())
 }
 
-fn validate_error_response(response: &ResponseEnvelope) -> io::Result<()> {
-    if response.result.is_some() || response.error.is_none() {
+fn validate_error_response(
+    result: Option<(StateSnapshot, u64)>,
+    error: Option<(String, String)>,
+) -> io::Result<String> {
+    if result.is_some() || error.is_none() {
         return Err(invalid_data("malformed error response"));
     }
-    Ok(())
+    let (code, _) = error.expect("validated error");
+    Ok(code)
 }
 
-fn decode_event_data(event: String, data: Map<String, Value>) -> io::Result<EventKind> {
-    let value = Value::Object(data);
+fn decode_optional_subscribe_result(
+    response: &mut Map<String, Value>,
+) -> io::Result<Option<(StateSnapshot, u64)>> {
+    let Some(mut result) = take_optional_object(response, "result", "response")? else {
+        return Ok(None);
+    };
+    let state = decode_state_snapshot(take_required(&mut result, "state", "subscribe result")?)?;
+    let next_seq = take_required(&mut result, "next_seq", "subscribe result")?;
+    Ok(Some((state, next_seq)))
+}
 
+fn decode_optional_error(
+    response: &mut Map<String, Value>,
+) -> io::Result<Option<(String, String)>> {
+    let Some(mut error) = take_optional_object(response, "error", "response")? else {
+        return Ok(None);
+    };
+    let code = take_required(&mut error, "code", "error")?;
+    let message = take_required(&mut error, "message", "error")?;
+    Ok(Some((code, message)))
+}
+
+fn decode_event_data(event: String, mut data: Map<String, Value>) -> io::Result<EventKind> {
     match event.as_str() {
-        "state.changed" => decode_payload(&event, value).map(EventKind::StateChanged),
+        "state.changed" => decode_state_snapshot(data).map(EventKind::StateChanged),
         "audio.level" => {
-            let level: AudioLevel = decode_payload(&event, value)?;
+            let level = AudioLevel {
+                rms: take_required(&mut data, "rms", &event)?,
+                peak: take_required(&mut data, "peak", &event)?,
+                clipping: take_required(&mut data, "clipping", &event)?,
+            };
+            take_required::<u64>(&mut data, "window_ms", &event)?;
             if !(0.0..=1.0).contains(&level.rms) || !(0.0..=1.0).contains(&level.peak) {
                 return Err(invalid_data("audio.level values must be in [0,1]"));
             }
             Ok(EventKind::AudioLevel(level))
         }
         "processing.stage_changed" => {
-            decode_payload(&event, value).map(EventKind::ProcessingStageChanged)
+            take_required::<Option<ProcessingStage>>(&mut data, "stage", &event)?;
+            Ok(EventKind::ProcessingStageChanged)
         }
-        "recording.limit_reached" => {
-            decode_payload(&event, value).map(EventKind::RecordingLimitReached)
+        "recording.limit_reached" => Ok(EventKind::RecordingLimitReached),
+        "operation.error" => {
+            take_required::<String>(&mut data, "code", &event)?;
+            take_required(&mut data, "message", &event).map(EventKind::OperationError)
         }
-        "operation.error" => decode_payload(&event, value).map(EventKind::OperationError),
-        "output.completed" => decode_payload(&event, value).map(EventKind::OutputCompleted),
-        "session.completed" => decode_payload(&event, value).map(EventKind::SessionCompleted),
-        _ => {
-            let Value::Object(data) = value else {
-                unreachable!("event data starts as an object")
-            };
-            Ok(EventKind::Unknown { name: event, data })
+        "output.completed" => {
+            take_required(&mut data, "method", &event).map(EventKind::OutputCompleted)
         }
+        "session.completed" => {
+            let ok = take_required(&mut data, "ok", &event)?;
+            take_required::<SessionPhase>(&mut data, "phase", &event)?;
+            take_required::<Option<String>>(&mut data, "reason", &event)?;
+            take_required::<bool>(&mut data, "stt_attempted", &event)?;
+            take_required::<u64>(&mut data, "latency_ms", &event)?;
+            Ok(EventKind::SessionCompleted(ok))
+        }
+        _ => Ok(EventKind::Unknown),
     }
 }
 
-fn decode_payload<T: DeserializeOwned>(event: &str, value: Value) -> io::Result<T> {
+fn decode_state_snapshot(mut data: Map<String, Value>) -> io::Result<StateSnapshot> {
+    let snapshot = StateSnapshot {
+        state: take_required(&mut data, "state", "state snapshot")?,
+        elapsed_ms: take_required(&mut data, "elapsed_ms", "state snapshot")?,
+        show_timer: take_optional(&mut data, "show_timer", "state snapshot")?.unwrap_or(true),
+    };
+    take_required::<Option<ProcessingStage>>(&mut data, "stage", "state snapshot")?;
+    take_required::<u64>(&mut data, "session_id", "state snapshot")?;
+    take_required::<bool>(&mut data, "cleanup", "state snapshot")?;
+    Ok(snapshot)
+}
+
+fn take_required<T: DeserializeOwned>(
+    object: &mut Map<String, Value>,
+    field: &str,
+    context: &str,
+) -> io::Result<T> {
+    let value = object
+        .remove(field)
+        .ok_or_else(|| invalid_data(format!("{context} missing required field {field}")))?;
     serde_json::from_value(value)
-        .map_err(|error| invalid_data(format!("invalid {event} payload: {error}")))
+        .map_err(|error| invalid_data(format!("invalid {context} field {field}: {error}")))
+}
+
+fn take_optional<T: DeserializeOwned>(
+    object: &mut Map<String, Value>,
+    field: &str,
+    context: &str,
+) -> io::Result<Option<T>> {
+    object
+        .remove(field)
+        .map(|value| {
+            serde_json::from_value(value)
+                .map_err(|error| invalid_data(format!("invalid {context} field {field}: {error}")))
+        })
+        .transpose()
+}
+
+fn take_optional_object(
+    object: &mut Map<String, Value>,
+    field: &str,
+    context: &str,
+) -> io::Result<Option<Map<String, Value>>> {
+    let Some(value) = object.remove(field) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    serde_json::from_value(value)
+        .map(Some)
+        .map_err(|error| invalid_data(format!("invalid {context} field {field}: {error}")))
+}
+
+/// A JSON value whose object keys are unique at every nesting level.
+/// Serde's derived structs reject duplicate known fields; validating uniqueness
+/// before mapping preserves that strict wire behavior without retaining fields.
+struct UniqueValue(Value);
+
+impl<'de> serde::Deserialize<'de> for UniqueValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(UniqueValueVisitor)
+    }
+}
+
+struct UniqueValueVisitor;
+
+impl<'de> serde::de::Visitor<'de> for UniqueValueVisitor {
+    type Value = UniqueValue;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a JSON value with unique object keys")
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(UniqueValue(Value::Bool(value)))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(UniqueValue(Value::Number(value.into())))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(UniqueValue(Value::Number(value.into())))
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        serde_json::Number::from_f64(value)
+            .map(Value::Number)
+            .map(UniqueValue)
+            .ok_or_else(|| E::custom("non-finite JSON number"))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+        Ok(UniqueValue(Value::String(value.to_owned())))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(UniqueValue(Value::String(value)))
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(UniqueValue(Value::Null))
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(UniqueValue(Value::Null))
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        let mut values = Vec::new();
+        while let Some(UniqueValue(value)) = sequence.next_element()? {
+            values.push(value);
+        }
+        Ok(UniqueValue(Value::Array(values)))
+    }
+
+    fn visit_map<A>(self, mut entries: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        let mut object = Map::new();
+        while let Some(key) = entries.next_key::<String>()? {
+            if object.contains_key(&key) {
+                return Err(serde::de::Error::custom(format!(
+                    "duplicate object field {key}"
+                )));
+            }
+            let UniqueValue(value) = entries.next_value()?;
+            object.insert(key, value);
+        }
+        Ok(UniqueValue(Value::Object(object)))
+    }
 }
 
 fn invalid_data(message: impl Into<String>) -> io::Error {
@@ -436,32 +505,46 @@ mod tests {
             panic!("expected snapshot")
         };
         assert_eq!(snapshot.state.state, State::Recording);
+        assert_eq!(snapshot.state.elapsed_ms, 1250);
         assert!(snapshot.state.show_timer);
-        assert_eq!(snapshot.next_seq, 19);
-        assert!(snapshot.state.extra.contains_key("future_state"));
-        assert!(snapshot.result_extra.contains_key("future_barrier"));
-        assert!(snapshot.response_extra.contains_key("server_build"));
         decoder
     }
 
     #[test]
-    fn shared_snapshot_and_known_event_fixtures_are_typed_and_additive() {
+    fn shared_snapshot_and_known_event_fixtures_map_to_hud_events() {
         let mut decoder = subscribed_decoder();
-        let mut count = 0;
+        let mut kinds = Vec::new();
         for line in KNOWN_EVENTS.lines() {
             let SubscriptionMessage::Event(event) = decoder.decode(line.as_bytes()).unwrap() else {
                 panic!("expected event")
             };
-            if let EventKind::AudioLevel(level) = &event.kind {
-                assert!(level.extra.contains_key("channels"));
-            }
-            count += 1;
+            kinds.push(match event.kind {
+                EventKind::StateChanged(_) => "state",
+                EventKind::AudioLevel(_) => "audio",
+                EventKind::ProcessingStageChanged => "stage",
+                EventKind::RecordingLimitReached => "limit",
+                EventKind::OperationError(message) if message == "Transcription failed" => "error",
+                EventKind::OutputCompleted(OutputMethod::Paste) => "output",
+                EventKind::SessionCompleted(true) => "completed",
+                other => panic!("unexpected mapped event: {other:?}"),
+            });
         }
-        assert_eq!(count, 7);
+        assert_eq!(
+            kinds,
+            [
+                "state",
+                "audio",
+                "stage",
+                "limit",
+                "error",
+                "output",
+                "completed"
+            ]
+        );
     }
 
     #[test]
-    fn shared_unknown_event_fixture_consumes_sequence_and_retains_data() {
+    fn additive_unknown_fields_and_events_are_discarded_after_mapping() {
         let mut decoder = subscribed_decoder();
         for line in KNOWN_EVENTS.lines() {
             decoder.decode(line.as_bytes()).unwrap();
@@ -470,12 +553,7 @@ mod tests {
         else {
             panic!("expected event")
         };
-        let EventKind::Unknown { name, data } = event.kind else {
-            panic!("expected unknown event")
-        };
-        assert_eq!(name, "future.progress");
-        assert!(data.contains_key("nested"));
-        assert!(event.extra.contains_key("server_time"));
+        assert!(matches!(event.kind, EventKind::Unknown));
 
         let next = br#"{"v":1,"type":"event","seq":27,"event":"recording.limit_reached","session_id":8,"data":{}}"#;
         decoder.decode(next).unwrap();
@@ -493,16 +571,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_error_fixture_is_typed_additive_and_terminal() {
-        let envelope: WireEnvelope = serde_json::from_str(ERROR_RESPONSE).unwrap();
-        let WireEnvelope::Response(response) = envelope else {
-            panic!("expected response")
-        };
-        let error = response.error.as_ref().unwrap();
-        assert_eq!(error.code, "invalid_state");
-        assert!(error.extra.contains_key("future_detail"));
-        assert!(response.extra.contains_key("retryable"));
-
+    fn shared_additive_error_fixture_is_validated_and_terminal() {
         let mut decoder = SubscriptionDecoder::new(4);
         assert!(decoder.decode(ERROR_RESPONSE.as_bytes()).is_err());
     }
@@ -534,6 +603,104 @@ mod tests {
         let mut decoder = subscribed_decoder();
         let invalid_level = br#"{"v":1,"type":"event","seq":19,"event":"audio.level","session_id":8,"data":{"rms":1.1,"peak":0.2,"clipping":false,"window_ms":100}}"#;
         assert!(decoder.decode(invalid_level).is_err());
+    }
+
+    #[test]
+    fn required_wire_only_fields_are_validated_before_mapping() {
+        for missing in ["stage", "session_id", "cleanup"] {
+            let snapshot = r#"{"v":1,"type":"response","id":3,"ok":true,"result":{"state":{"state":"idle","stage":null,"session_id":1,"elapsed_ms":0,"cleanup":true},"next_seq":19}}"#;
+            let mut value: Value = serde_json::from_str(snapshot).unwrap();
+            value["result"]["state"]
+                .as_object_mut()
+                .unwrap()
+                .remove(missing);
+            assert!(
+                SubscriptionDecoder::new(3)
+                    .decode(value.to_string().as_bytes())
+                    .is_err(),
+                "missing snapshot field {missing}"
+            );
+        }
+
+        for (event, missing) in [
+            (
+                r#"{"v":1,"type":"event","seq":19,"event":"audio.level","session_id":8,"data":{"rms":0.1,"peak":0.2,"clipping":false,"window_ms":100}}"#,
+                "window_ms",
+            ),
+            (
+                r#"{"v":1,"type":"event","seq":19,"event":"operation.error","session_id":8,"data":{"code":"failed","message":"failed"}}"#,
+                "code",
+            ),
+            (
+                r#"{"v":1,"type":"event","seq":19,"event":"processing.stage_changed","session_id":8,"data":{"stage":"validating"}}"#,
+                "stage",
+            ),
+            (
+                r#"{"v":1,"type":"event","seq":19,"event":"session.completed","session_id":8,"data":{"ok":true,"phase":"post_stt","reason":null,"stt_attempted":true,"latency_ms":1}}"#,
+                "phase",
+            ),
+            (
+                r#"{"v":1,"type":"event","seq":19,"event":"session.completed","session_id":8,"data":{"ok":true,"phase":"post_stt","reason":null,"stt_attempted":true,"latency_ms":1}}"#,
+                "reason",
+            ),
+            (
+                r#"{"v":1,"type":"event","seq":19,"event":"session.completed","session_id":8,"data":{"ok":true,"phase":"post_stt","reason":null,"stt_attempted":true,"latency_ms":1}}"#,
+                "stt_attempted",
+            ),
+            (
+                r#"{"v":1,"type":"event","seq":19,"event":"session.completed","session_id":8,"data":{"ok":true,"phase":"post_stt","reason":null,"stt_attempted":true,"latency_ms":1}}"#,
+                "latency_ms",
+            ),
+        ] {
+            let mut value: Value = serde_json::from_str(event).unwrap();
+            value["data"].as_object_mut().unwrap().remove(missing);
+            let mut decoder = subscribed_decoder();
+            assert!(
+                decoder.decode(value.to_string().as_bytes()).is_err(),
+                "missing event field {missing}"
+            );
+        }
+
+        let missing_session_id =
+            br#"{"v":1,"type":"event","seq":19,"event":"future.event","data":{}}"#;
+        let mut decoder = subscribed_decoder();
+        assert!(decoder.decode(missing_session_id).is_err());
+
+        let missing_error_message =
+            br#"{"v":1,"type":"response","id":4,"ok":false,"error":{"code":"failed"}}"#;
+        assert!(
+            SubscriptionDecoder::new(4)
+                .decode(missing_error_message)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn duplicate_fields_and_unknown_closed_enum_values_are_rejected() {
+        let duplicate = br#"{"v":1,"type":"response","id":3,"ok":true,"result":{"state":{"state":"idle","stage":null,"session_id":1,"elapsed_ms":0,"cleanup":true},"next_seq":19,"next_seq":20}}"#;
+        assert!(SubscriptionDecoder::new(3).decode(duplicate).is_err());
+
+        for (event, field) in [
+            (
+                r#"{"v":1,"type":"event","seq":19,"event":"state.changed","session_id":8,"data":{"state":"future","stage":null,"session_id":8,"elapsed_ms":0,"cleanup":true}}"#,
+                "state",
+            ),
+            (
+                r#"{"v":1,"type":"event","seq":19,"event":"processing.stage_changed","session_id":8,"data":{"stage":"future"}}"#,
+                "processing stage",
+            ),
+            (
+                r#"{"v":1,"type":"event","seq":19,"event":"output.completed","session_id":8,"data":{"method":"future"}}"#,
+                "output method",
+            ),
+            (
+                r#"{"v":1,"type":"event","seq":19,"event":"session.completed","session_id":8,"data":{"ok":true,"phase":"future","reason":null,"stt_attempted":true,"latency_ms":1}}"#,
+                "session phase",
+            ),
+        ] {
+            let mut decoder = subscribed_decoder();
+            assert!(decoder.decode(event.as_bytes()).is_err(), "unknown {field}");
+        }
     }
 
     #[test]
