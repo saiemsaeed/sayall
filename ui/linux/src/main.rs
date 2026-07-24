@@ -120,30 +120,27 @@ impl Model {
                     self.clipping_until = Some(Instant::now() + Duration::from_millis(350));
                 }
             }
-            EventKind::ProcessingStageChanged(data) => {
-                let _stage = data.stage.0;
-            }
-            EventKind::OperationError(error) => {
+            EventKind::ProcessingStageChanged => {}
+            EventKind::OperationError(message) => {
                 self.state = HudState::Error;
-                self.error = error.message;
+                self.error = message;
                 self.hide_at = Some(Instant::now() + Duration::from_secs(3));
             }
-            EventKind::OutputCompleted(data) => self.output_method = Some(data.method),
-            EventKind::SessionCompleted(data) => {
-                if data.ok && self.output_method == Some(OutputMethod::Clipboard) {
+            EventKind::OutputCompleted(method) => self.output_method = Some(method),
+            EventKind::SessionCompleted(ok) => {
+                if ok && self.output_method == Some(OutputMethod::Clipboard) {
                     self.state = HudState::Success;
                     self.hide_at = Some(Instant::now() + Duration::from_millis(700));
-                } else if data.ok {
+                } else if ok {
                     self.state = HudState::Idle;
                     self.hide_at = None;
                 }
             }
-            EventKind::RecordingLimitReached(_) | EventKind::Unknown { .. } => {}
+            EventKind::RecordingLimitReached | EventKind::Unknown => {}
         }
     }
 
     fn apply_state(&mut self, snapshot: &StateSnapshot) {
-        let _stage = snapshot.stage.0;
         let previous = self.state;
         let next = match snapshot.state {
             State::Idle => HudState::Idle,
