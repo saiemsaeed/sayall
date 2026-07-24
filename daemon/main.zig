@@ -55,7 +55,7 @@ fn run(init: std.process.Init) !u8 {
             return 78; // EX_CONFIG; systemd is configured not to restart this.
         };
         if (verbose) cfg.verbose = true;
-        if (cfg.stt.api_key.len == 0) {
+        if (!build_options.e2e_scripted_stt and cfg.stt.api_key.len == 0) {
             std.debug.print("sayall: error: no STT API key — set DEEPGRAM_API_KEY or stt.api_key in ~/.config/sayall/config.json\n", .{});
             return 78;
         }
