@@ -93,7 +93,7 @@ jobs:
           test "$(lipo -archs "$app/Contents/Helpers/sayall-process")" = arm64
           grep -Eq 'minos 15\.0' <(vtool -show-build "$app/Contents/MacOS/SayAll")
           grep -Eq 'minos 15\.0' <(vtool -show-build "$app/Contents/Helpers/sayall-process")
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = pro.saiem.sayall
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = pro.leets.sayall
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$version"
           codesign --verify --deep --strict --verbose=2 "$app"
           cat > "$RUNNER_TEMP/SayAll.entitlements" <<'PLIST'

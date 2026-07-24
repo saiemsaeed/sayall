@@ -33,7 +33,7 @@ xcrun stapler validate qualification/SayAll.app
   in the release's combined `SHA256SUMS` (the assembly job's intermediate
   manifest is `SHA256SUMS.macos`).
 - [ ] Both binaries report arm64 only and a macOS 15.0 minimum deployment.
-- [ ] Bundle ID is `pro.saiem.sayall`; helper is bundled and not independently
+- [ ] Bundle ID is `pro.leets.sayall`; helper is bundled and not independently
   installed.
 - [ ] Helper was signed before the containing app; both use the intended
   Developer ID Application identity and Hardened Runtime.

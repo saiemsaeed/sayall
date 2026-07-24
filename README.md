@@ -338,7 +338,7 @@ provider settings.
 
 ### macOS
 
-The stable bundle identifier is `pro.saiem.sayall`. Swift/AppKit owns the menu
+The stable bundle identifier is `pro.leets.sayall`. Swift/AppKit owns the menu
 bar UI, lifecycle, config loading, native microphone/TCC,
 Control+/ Carbon hotkey and menu fallback, Accessibility-authorized paste and
 clipboard fallback, temporary audio, and packaging. It invokes the bundled

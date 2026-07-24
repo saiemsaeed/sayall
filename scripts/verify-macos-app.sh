@@ -16,7 +16,7 @@ helper="$app/Contents/Helpers/sayall-process"
 [[ -d "$app" && -x "$main" && -x "$helper" && -f "$plist" ]]
 [[ $(lipo -archs "$main") == arm64 ]]
 [[ $(lipo -archs "$helper") == arm64 ]]
-[[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist") == pro.saiem.sayall ]]
+[[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist") == pro.leets.sayall ]]
 [[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist") == "$version" ]]
 [[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist") == "$version" ]]
 [[ $(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$plist") == 15.0 ]]

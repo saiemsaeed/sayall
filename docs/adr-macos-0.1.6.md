@@ -15,7 +15,7 @@ record supersedes only that deferral; Linux protocol, composition, and support,
 and the Windows deferral, are unchanged.
 
 The first macOS product is the menu-bar `SayAll.app`, bundle identifier
-`pro.saiem.sayall`, for Apple Silicon arm64 and macOS 15.0 or later. It is a
+`pro.leets.sayall`, for Apple Silicon arm64 and macOS 15.0 or later. It is a
 direct ZIP distribution outside the App Store.
 
 ## Decision

@@ -25,7 +25,7 @@ final class StateMachineTests: XCTestCase {
 final class TextDeliveryTests: XCTestCase {
     @MainActor
     func testCopyReturnsSuccessAndWritesExactText() {
-        let pasteboard = NSPasteboard(name: NSPasteboard.Name("pro.saiem.sayall.tests.\(UUID().uuidString)"))
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("pro.leets.sayall.tests.\(UUID().uuidString)"))
         let text = "SayAll delivery test 👋\nsecond line"
 
         XCTAssertTrue(TextDelivery.copy(text, to: pasteboard))
