@@ -84,7 +84,6 @@ pub struct Nullable<T>(pub Option<T>);
 #[derive(Debug, Deserialize)]
 pub struct StateSnapshot {
     pub state: State,
-    #[allow(dead_code)]
     pub stage: Nullable<ProcessingStage>,
     #[allow(dead_code)]
     pub session_id: u64,
@@ -128,7 +127,6 @@ pub struct ProtocolEvent {
 pub enum EventKind {
     StateChanged(StateSnapshot),
     AudioLevel(AudioLevel),
-    #[allow(dead_code)]
     ProcessingStageChanged(ProcessingStageChanged),
     #[allow(dead_code)]
     RecordingLimitReached(RecordingLimitReached),
@@ -158,7 +156,6 @@ pub struct AudioLevel {
 
 #[derive(Debug, Deserialize)]
 pub struct ProcessingStageChanged {
-    #[allow(dead_code)]
     pub stage: Nullable<ProcessingStage>,
     #[serde(flatten)]
     #[allow(dead_code)]

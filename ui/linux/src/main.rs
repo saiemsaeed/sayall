@@ -37,28 +37,29 @@ struct Palette {
     error: (f64, f64, f64),
 }
 
-const DARK: Palette = Palette {
-    shell: (14.0 / 255.0, 15.0 / 255.0, 19.0 / 255.0, 0.94),
-    border: (1.0, 1.0, 1.0, 0.10),
-    text: (1.0, 1.0, 1.0, 0.82),
-    wave: (250.0 / 255.0, 87.0 / 255.0, 122.0 / 255.0),
-    dot: (1.0, 64.0 / 255.0, 82.0 / 255.0),
-    processing: (76.0 / 255.0, 214.0 / 255.0, 209.0 / 255.0),
-    success: (107.0 / 255.0, 235.0 / 255.0, 158.0 / 255.0),
-    error: (1.0, 115.0 / 255.0, 115.0 / 255.0),
-};
-
-#[allow(dead_code)]
-const LIGHT: Palette = Palette {
-    shell: (1.0, 1.0, 1.0, 1.0),
-    border: (14.0 / 255.0, 15.0 / 255.0, 19.0 / 255.0, 0.12),
-    text: (52.0 / 255.0, 64.0 / 255.0, 84.0 / 255.0, 1.0),
-    wave: (217.0 / 255.0, 45.0 / 255.0, 94.0 / 255.0),
-    dot: (225.0 / 255.0, 29.0 / 255.0, 72.0 / 255.0),
-    processing: (8.0 / 255.0, 127.0 / 255.0, 140.0 / 255.0),
-    success: (6.0 / 255.0, 118.0 / 255.0, 71.0 / 255.0),
-    error: (217.0 / 255.0, 45.0 / 255.0, 32.0 / 255.0),
-};
+const PALETTES: [Palette; 2] = [
+    Palette {
+        shell: (14.0 / 255.0, 15.0 / 255.0, 19.0 / 255.0, 0.94),
+        border: (1.0, 1.0, 1.0, 0.10),
+        text: (1.0, 1.0, 1.0, 0.82),
+        wave: (250.0 / 255.0, 87.0 / 255.0, 122.0 / 255.0),
+        dot: (1.0, 64.0 / 255.0, 82.0 / 255.0),
+        processing: (76.0 / 255.0, 214.0 / 255.0, 209.0 / 255.0),
+        success: (107.0 / 255.0, 235.0 / 255.0, 158.0 / 255.0),
+        error: (1.0, 115.0 / 255.0, 115.0 / 255.0),
+    },
+    Palette {
+        shell: (1.0, 1.0, 1.0, 1.0),
+        border: (14.0 / 255.0, 15.0 / 255.0, 19.0 / 255.0, 0.12),
+        text: (52.0 / 255.0, 64.0 / 255.0, 84.0 / 255.0, 1.0),
+        wave: (217.0 / 255.0, 45.0 / 255.0, 94.0 / 255.0),
+        dot: (225.0 / 255.0, 29.0 / 255.0, 72.0 / 255.0),
+        processing: (8.0 / 255.0, 127.0 / 255.0, 140.0 / 255.0),
+        success: (6.0 / 255.0, 118.0 / 255.0, 71.0 / 255.0),
+        error: (217.0 / 255.0, 45.0 / 255.0, 32.0 / 255.0),
+    },
+];
+const DARK: Palette = PALETTES[0];
 
 #[derive(Debug)]
 enum UiMessage {
@@ -119,7 +120,9 @@ impl Model {
                     self.clipping_until = Some(Instant::now() + Duration::from_millis(350));
                 }
             }
-            EventKind::ProcessingStageChanged(_) => {}
+            EventKind::ProcessingStageChanged(data) => {
+                let _stage = data.stage.0;
+            }
             EventKind::OperationError(error) => {
                 self.state = HudState::Error;
                 self.error = error.message;
@@ -140,6 +143,7 @@ impl Model {
     }
 
     fn apply_state(&mut self, snapshot: &StateSnapshot) {
+        let _stage = snapshot.stage.0;
         let previous = self.state;
         let next = match snapshot.state {
             State::Idle => HudState::Idle,

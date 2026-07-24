@@ -86,7 +86,8 @@ source_paths=(
     docs
 )
 tar --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner \
-    --exclude='ui/linux/target' --transform="s|^|$source_name/|" \
+    --exclude='ui/linux/target' --exclude='ui/macos/.build' \
+    --transform="s|^|$source_name/|" \
     -C "$root" -czf "$source_archive" "${source_paths[@]}"
 (cd dist && sha256sum "${name}.tar.gz" "${source_name}.tar.gz" > SHA256SUMS)
 

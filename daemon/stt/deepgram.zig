@@ -1,12 +1,15 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
-const config = @import("../config.zig");
+const config = @import("../provider_config.zig");
 
 pub const formatting_params = "smart_format=true&punctuate=true&dictation=true&numerals=true&measurements=true";
 
 pub const TranscribeError = error{
     MissingApiKey,
+    Unauthorized,
+    RateLimited,
+    ServerError,
     RequestFailed,
     BadStatus,
     BadResponse,
@@ -66,7 +69,7 @@ pub fn transcribe(gpa: Allocator, io: Io, cfg: *const config.SttConfig, wav: []c
     const response_bytes = body.buffered();
     if (result.status != .ok) {
         logVerbose(verbose, "deepgram status {d}", .{@intFromEnum(result.status)});
-        return error.BadStatus;
+        return statusError(@intFromEnum(result.status));
     }
 
     const parsed = std.json.parseFromSlice(DeepgramResponse, gpa, response_bytes, .{
@@ -84,6 +87,13 @@ pub fn transcribe(gpa: Allocator, io: Io, cfg: *const config.SttConfig, wav: []c
 
     const trimmed = std.mem.trim(u8, channels[0].alternatives[0].transcript, " \t\r\n");
     return gpa.dupe(u8, trimmed) catch return error.OutOfMemory;
+}
+
+pub fn statusError(status: u16) TranscribeError {
+    if (status == 401 or status == 403) return error.Unauthorized;
+    if (status == 429) return error.RateLimited;
+    if (status >= 500 and status <= 599) return error.ServerError;
+    return error.BadStatus;
 }
 
 pub fn restBaseUrl(region: []const u8) []const u8 {
@@ -132,6 +142,13 @@ test "regional endpoints are allow-listed" {
     try std.testing.expectEqualStrings("https://api.deepgram.com/v1/listen", restBaseUrl("global"));
     try std.testing.expectEqualStrings("https://api.eu.deepgram.com/v1/listen", restBaseUrl("eu"));
     try std.testing.expectEqualStrings("https://api.au.deepgram.com/v1/listen", restBaseUrl("au"));
+}
+
+test "HTTP statuses have stable provider errors" {
+    try std.testing.expectEqual(error.Unauthorized, statusError(401));
+    try std.testing.expectEqual(error.RateLimited, statusError(429));
+    try std.testing.expectEqual(error.ServerError, statusError(503));
+    try std.testing.expectEqual(error.BadStatus, statusError(400));
 }
 
 test "keyterms are repeated and percent encoded" {

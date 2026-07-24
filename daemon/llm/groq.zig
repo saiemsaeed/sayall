@@ -1,7 +1,7 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
-const config = @import("../config.zig");
+const config = @import("../provider_config.zig");
 
 pub const CleanupError = error{
     MissingApiKey,
