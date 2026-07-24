@@ -53,6 +53,7 @@ pub const StateSnapshot = struct {
     session_id: u64,
     elapsed_ms: i64,
     cleanup: bool,
+    show_timer: bool = true,
 };
 
 pub const Capabilities = struct {
@@ -237,6 +238,7 @@ test "shared golden request and envelopes remain v1 compatible" {
     defer state.deinit();
     try std.testing.expectEqual(State.processing, state.value.result.state);
     try std.testing.expectEqual(ProcessingStage.transcribing, state.value.result.stage.?);
+    try std.testing.expect(state.value.result.show_timer);
 
     const subscription = try parseGolden(Response(SubscribeResult), fixtures.response_subscribe_additive);
     defer subscription.deinit();

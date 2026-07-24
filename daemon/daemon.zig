@@ -241,6 +241,7 @@ const Daemon = struct {
             .session_id = self.session_id,
             .elapsed_ms = if (self.state == .recording) @max(0, self.nowMs() - self.rec_started_ms) else 0,
             .cleanup = !self.rec_raw,
+            .show_timer = self.cfg.hud.show_timer,
         };
     }
 

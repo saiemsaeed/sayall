@@ -77,17 +77,6 @@ pub enum ProcessingStage {
     Delivering,
 }
 
-impl ProcessingStage {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Validating => "validating",
-            Self::Transcribing => "transcribing",
-            Self::Cleaning => "cleaning",
-            Self::Delivering => "delivering",
-        }
-    }
-}
-
 /// A nullable field that remains required in its containing JSON object.
 #[derive(Debug, Deserialize)]
 pub struct Nullable<T>(pub Option<T>);
@@ -95,16 +84,22 @@ pub struct Nullable<T>(pub Option<T>);
 #[derive(Debug, Deserialize)]
 pub struct StateSnapshot {
     pub state: State,
+    #[allow(dead_code)]
     pub stage: Nullable<ProcessingStage>,
     #[allow(dead_code)]
     pub session_id: u64,
-    #[allow(dead_code)]
     pub elapsed_ms: u64,
     #[allow(dead_code)]
     pub cleanup: bool,
+    #[serde(default = "default_show_timer")]
+    pub show_timer: bool,
     #[serde(flatten)]
     #[allow(dead_code)]
     pub extra: ExtraFields,
+}
+
+fn default_show_timer() -> bool {
+    true
 }
 
 #[derive(Debug)]
@@ -133,6 +128,7 @@ pub struct ProtocolEvent {
 pub enum EventKind {
     StateChanged(StateSnapshot),
     AudioLevel(AudioLevel),
+    #[allow(dead_code)]
     ProcessingStageChanged(ProcessingStageChanged),
     #[allow(dead_code)]
     RecordingLimitReached(RecordingLimitReached),
@@ -162,6 +158,7 @@ pub struct AudioLevel {
 
 #[derive(Debug, Deserialize)]
 pub struct ProcessingStageChanged {
+    #[allow(dead_code)]
     pub stage: Nullable<ProcessingStage>,
     #[serde(flatten)]
     #[allow(dead_code)]
@@ -175,9 +172,9 @@ pub struct RecordingLimitReached {
     pub extra: ExtraFields,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum OutputMethod {
+pub enum OutputMethod {
     Type,
     Clipboard,
     Paste,
@@ -185,8 +182,7 @@ enum OutputMethod {
 
 #[derive(Debug, Deserialize)]
 pub struct OutputCompleted {
-    #[allow(dead_code)]
-    method: OutputMethod,
+    pub method: OutputMethod,
     #[serde(flatten)]
     #[allow(dead_code)]
     extra: ExtraFields,
@@ -443,6 +439,7 @@ mod tests {
             panic!("expected snapshot")
         };
         assert_eq!(snapshot.state.state, State::Recording);
+        assert!(snapshot.state.show_timer);
         assert_eq!(snapshot.next_seq, 19);
         assert!(snapshot.state.extra.contains_key("future_state"));
         assert!(snapshot.result_extra.contains_key("future_barrier"));
