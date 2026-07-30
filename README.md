@@ -1,6 +1,6 @@
 # SayAll
 
-A voice-dictation product for Linux and Apple Silicon macOS. Toggle a hotkey,
+A voice-dictation product for Linux. Toggle a hotkey,
 speak, toggle again, and text is inserted into your focused window. When Groq
 cleanup is configured, filler words and false starts are removed before output.
 
@@ -19,69 +19,32 @@ cleanup is configured, filler words and false starts are removed before output.
 | Platform / target | 0.1.6 status |
 | --- | --- |
 | x86-64 Arch Linux with Omarchy (Wayland/Hyprland) | Supported and tested; daemon/CLI/HUD and AUR or archive distribution |
-| Apple Silicon (`arm64`), macOS 15.0 or later | Native menu-bar product implemented; direct ZIP distribution. Publication support remains gated on the pending physical-device and external signing/notarization qualification in [the macOS checklist](docs/macos-release-qualification.md) |
+| Apple Silicon (`arm64`), macOS 15.0 or later | Development preview in source and CI only; no 0.1.6 release artifact or support claim |
 | Windows (`x86_64-windows` compile target) | Core compile readiness only; no app, runtime, package, or installable output |
 
-Other Linux systems may work but are not tested or supported. The macOS product
-does not claim Intel, universal-binary, or Rosetta support. Windows readiness
+Other Linux systems may work but are not tested or supported. The macOS preview
+must not be presented as an installable or supported product until its signing,
+notarization, and physical qualification gate passes. Windows readiness
 does not constitute product or runtime support. The accepted
 [`0.1.6 macOS architecture ADR`](docs/adr-macos-0.1.6.md) selects the macOS
 topology; the current Linux control and HUD compatibility API remains the
 Linux-only [`protocol-v1 contract`](docs/protocol-v1.md).
 
+The macOS implementation is parked for a targeted 0.1.7 release. That target
+does not override its publication gates: if signing, notarization, or the
+physical Apple Silicon qualification matrix is incomplete, it remains a
+development preview and no macOS artifact is published.
+
 ## Getting Started
 
-### Install on Apple Silicon macOS
+### Apple Silicon macOS development preview
 
-SayAll for macOS is `SayAll.app`, a native menu-bar application for arm64 Macs
-running macOS 15.0 or later. It is distributed directly as
-`sayall-VERSION-macos-arm64.zip`, not through the App Store. After downloading
-the ZIP and `SHA256SUMS` from the same release, verify and install it:
-
-```sh
-archive=sayall-VERSION-macos-arm64.zip
-awk -v file="$archive" '$2 == file' SHA256SUMS | shasum -a 256 -c -
-unzip "$archive"
-# Drag SayAll.app to /Applications in Finder.
-open /Applications/SayAll.app
-```
-
-macOS reads the same `~/.config/sayall/config.json` provider configuration as
-Linux. Put the Deepgram key in `stt.api_key`; optionally put a Groq key in
-`llm.api_key` and set `llm.enabled` to `true`. Protect the plaintext file with
-`chmod 600 ~/.config/sayall/config.json`; see [Configuration](#configuration)
-for the full schema. On the first dictation, grant Microphone and Accessibility
-when macOS requests them; SayAll detects the Accessibility grant without an app
-restart. Accessibility affects automatic paste only and never blocks recording.
-Press **Control+/** to start recording, speak, then press it again to stop and
-transcribe. The same actions are available from the menu bar if that fixed
-global shortcut conflicts with another app. SayAll attempts
-an Accessibility-authorized Command+V at the currently focused cursor and
-leaves the text on the clipboard as a manual fallback.
-
-The default input device is used. Recordings shorter than 300 ms are rejected
-and recording stops at five minutes. Deepgram and a network connection are
-required; when enabled, cleanup also sends the transcript to Groq. A cleanup
-failure still delivers the raw transcript and shows a warning.
-
-#### Update or uninstall on macOS
-
-Updates are manual: quit SayAll, download and checksum-verify the new ZIP,
-unzip it, replace `/Applications/SayAll.app`, relaunch, and confirm the version
-in the app. There is no auto-updater.
-
-To uninstall, quit SayAll and move `/Applications/SayAll.app` to Trash. The
-shared config is retained so Linux or a later installation can continue using
-it. If it is no longer needed, remove it manually:
-
-```sh
-rm ~/.config/sayall/config.json
-rmdir ~/.config/sayall  # succeeds only when otherwise empty
-```
-
-Removing the config is irreversible and is not required merely to replace or
-update the app. Temporary Application Support recordings are removed on every
-terminal path and startup.
+The source tree contains a native `SayAll.app` implementation for arm64 Macs
+running macOS 15.0 or later, and CI exercises an ad-hoc-signed build. SayAll
+0.1.6 does not publish that unsigned build, provide a macOS download, or claim
+macOS support. The preview must complete Developer ID signing, notarization,
+Gatekeeper verification, and the documented physical-device matrix before a
+targeted 0.1.7 release can add installation instructions.
 
 ### Install on Arch Linux or Omarchy
 
@@ -637,13 +600,10 @@ satisfied.
 ## Limitations
 
 - **Support scope** — Linux support is limited to x86-64 Arch Linux running
-  Omarchy. macOS is Apple Silicon arm64 on macOS 15.0 or later, with physical
-  publication qualification still pending. Other environments may work but
-  are not supported.
-- **macOS insertion** — secure or noneditable fields and apps that reject
-  synthetic Command+V use clipboard fallback. A Control+/ conflict uses
-  the menu action instead. macOS supports only the default input, cloud
-  providers/network are required, and recordings are limited to five minutes.
+  Omarchy. macOS and Windows are not supported in 0.1.6. Other environments may
+  work but are not supported.
+- **macOS preview** — source and CI readiness are not a distributable product;
+  no unsigned, unnotarized, or unqualified macOS build is published.
 - **REST network deadlines** — provider responses are memory-bounded, but an
   explicit end-to-end REST cancellation deadline is still roadmap work.
 - **Wayland input** — direct output requires a compositor implementing the
@@ -661,7 +621,8 @@ tests remain roadmap work.
 ## Versioning and releases
 
 SayAll follows [Semantic Versioning](https://semver.org/). The Linux daemon,
-CLI, and HUD and the macOS app/helper are released under one product version.
+CLI, and HUD share one product version. The macOS preview currently follows the
+source version but is not a 0.1.6 release artifact or supported product.
 Protocol versions are independent: SayAll 0.1.6 continues to use the documented
 [`protocol-v1 contract`](docs/protocol-v1.md) for Linux only; the macOS helper
 contract is separate.

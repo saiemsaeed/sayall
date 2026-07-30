@@ -3,39 +3,56 @@
 All notable user-visible changes to SayAll are documented in this file. SayAll
 follows [Semantic Versioning](https://semver.org/).
 
-## [0.1.6] - 2026-07-23
-
-Release preparation: implementation and automated readiness are complete, but
-publication remains gated on external signing/notarization prerequisites and
-physical Apple Silicon qualification.
+## [0.1.6] - 2026-07-24
 
 ### Added
 
-- Native Apple Silicon menu-bar application for macOS 15.0 or later, packaged
-  as a directly distributed ZIP with an isolated per-recording Zig helper.
-- Native microphone permission/capture, shared config-file provider credentials,
-  fixed global Control+/ toggle with menu fallback, Accessibility-authorized paste,
-  and clipboard fallback.
-- Developer ID signing, Hardened Runtime, notarization, stapling, verification,
-  checksum, and macOS CI/release packaging automation.
+- Linux `paste` output mode, which copies the completed transcript and sends a
+  single `Ctrl+V` shortcut to insert it in the focused application.
+- Optional Linux HUD recording timer controlled by `hud.show_timer`; it remains
+  enabled by default for backward compatibility.
 
 ### Changed
 
-- The macOS app owns lifecycle, menu/status UI, config loading, permissions, capture, focus,
-  insertion, temporary files, and packaging; Zig owns validated WAV processing,
-  Deepgram streaming with REST fallback, and optional Groq cleanup through bounded versioned JSON
-  on inherited stdin/stdout.
-- Release output can combine the macOS arm64 ZIP with Linux and source assets
-  in one `SHA256SUMS`; Linux AUR/install/update behavior is unchanged.
+- Redesigned the Linux HUD as a compact 244 × 48 fully rounded pill with live
+  recording amplitude, a centered timeless layout, waveform-only processing,
+  semantic clipping feedback, and the exact `Copied to clipboard` success state.
+- Copy output is the only mode that shows success; Type and Paste now dismiss
+  the HUD silently after delivery.
+- Deepgram streaming and REST transcription now enable Smart Format,
+  punctuation, spoken dictation commands, numerals, and measurements, and
+  preserve dictated newlines between finalized streaming segments.
+- `output.trailing_space` now defaults to `true`.
+- The Linux HUD protocol client now validates required protocol-v1 fields and
+  duplicate JSON keys without retaining unused wire fields, while preserving
+  additive unknown-field and unknown-event compatibility.
+
+### Fixed
+
+- Terminal state and completion events are published atomically so a delayed
+  completion from one session cannot dismiss a newly started recording.
+- Immutable AUR release recipes are verified against the requested tag before
+  publication.
+
+### Development preview
+
+- Built a native Apple Silicon menu-bar app for macOS 15.0 or later, with native
+  microphone capture and permissions, a global `Control+/` shortcut with menu
+  fallback, Accessibility-authorized paste with clipboard fallback, and an
+  isolated per-recording Zig transcription helper.
+- Added ad-hoc CI assembly plus the Developer ID signing, Hardened Runtime,
+  notarization, stapling, checksum, and physical-device qualification plan.
+  Distribution is parked for 0.1.7: 0.1.6 does not publish a macOS artifact or
+  claim macOS support, and 0.1.7 may do so only after every publication gate
+  passes.
 
 ### Known limitations
 
-- macOS support is arm64 and macOS 15.0+ only; there is no Intel, universal,
-  Rosetta, App Store, DMG/PKG, Homebrew, or automatic-update claim.
-- Secure/inaccessible fields and apps rejecting Accessibility insertion fall
-  back to the clipboard; shortcut conflicts require the menu action.
-- Cloud access is required, only the default input is supported, recordings are
-  capped at five minutes, and physical-device qualification is still pending.
+- Release support remains limited to x86-64 Arch Linux with Omarchy. The
+  macOS preview awaits Developer ID signing, notarization, and physical Apple
+  Silicon qualification before its targeted 0.1.7 supported release.
+- The Linux HUD currently uses the Dark palette. Light palette tokens are
+  implemented, but user-facing theme selection is not yet exposed.
 
 ## [0.1.5] - 2026-07-23
 
@@ -127,7 +144,7 @@ Initial release, tested and supported on x86-64 Arch Linux with Omarchy.
 - Persistent privacy-safe transcription metrics and microphone diagnostics.
 - systemd user services and Hyprland hotkey integration.
 
-[0.1.6]: https://github.com/saiemsaeed/sayall/compare/v0.1.5...HEAD
+[0.1.6]: https://github.com/saiemsaeed/sayall/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/saiemsaeed/sayall/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/saiemsaeed/sayall/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/saiemsaeed/sayall/compare/v0.1.2...v0.1.3

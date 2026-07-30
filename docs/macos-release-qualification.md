@@ -1,10 +1,12 @@
-# macOS release qualification
+# Future macOS release qualification
 
-This is the support-publication gate for SayAll 0.1.6 on Apple Silicon macOS
-15.0 or later. Automated CI establishes build and test readiness only. The
-external signing/notarization prerequisites and physical matrix have **not**
-been completed in this workspace; do not mark the macOS release published or
-supported from automation alone.
+SayAll 0.1.6 publishes Linux and source artifacts only. This checklist is the
+support-publication gate for the targeted 0.1.7 Apple Silicon macOS release on
+macOS 15.0 or later. The target is conditional: an incomplete gate parks macOS
+for a later version rather than weakening the release criteria. Automated CI
+establishes build and test readiness only.
+The external signing/notarization prerequisites and physical matrix have
+**not** been completed; do not publish or support macOS from automation alone.
 
 ## Artifact and signing checklist
 
@@ -49,7 +51,7 @@ retain logs without credentials, transcripts, or audio.
 
 | Date | Version | ZIP SHA-256 | macOS version/build | Mac model/chip | State (clean/prior) | Input device/default | Target app + field | Install/Gatekeeper | Mic/TCC | Control+/ + menu | AX/clipboard | Deepgram | Groq success/failure | 300 ms / 300 s / 45 s bounds | Update/uninstall | Result | Defects/evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| YYYY-MM-DD | 0.1.6 | `<sha256>` | `15.x (build)` | `model / M-series` | clean | built-in default | TextEdit normal field | pending | pending | pending | pending | pending | pending | pending | pending | pending | link |
+| YYYY-MM-DD | `<version>` | `<sha256>` | `15.x (build)` | `model / M-series` | clean | built-in default | TextEdit normal field | pending | pending | pending | pending | pending | pending | pending | pending | pending | link |
 
 At minimum, qualify:
 
@@ -82,8 +84,8 @@ At minimum, qualify:
 - [ ] No release-blocking defect remains open.
 - [ ] Signing/notarization evidence is attached to the immutable candidate.
 - [ ] Release approver records name, date, candidate SHA-256, and go/no-go.
-- [ ] `MACOS_016_APPROVED_SHA256` equals that exact candidate SHA-256 before
+- [ ] The release-specific approved SHA-256 equals that exact candidate before
   the protected publish job is approved.
 
-Until every publication item is checked, describe 0.1.6 as implemented and
-automatically ready, with the external/physical evidence gate pending.
+Until every publication item is checked, describe macOS as a development
+preview with no supported release artifact.

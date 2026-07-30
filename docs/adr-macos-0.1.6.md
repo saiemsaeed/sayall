@@ -3,8 +3,9 @@
 - **Status:** Accepted
 - **Applies to:** SayAll 0.1.6
 - **Date:** 2026-07-23
-- **Evidence gate:** Pending physical Apple Silicon qualification and external
-  Developer ID/notarization prerequisites
+- **Release status:** Development preview only; no 0.1.6 macOS artifact or
+  support claim. Publication is parked for a targeted 0.1.7 release and remains
+  conditional on every signing and qualification gate below.
 
 ## Context
 
@@ -14,9 +15,11 @@ product now supplies enough validated constraints to select that topology. This
 record supersedes only that deferral; Linux protocol, composition, and support,
 and the Windows deferral, are unchanged.
 
-The first macOS product is the menu-bar `SayAll.app`, bundle identifier
-`pro.leets.sayall`, for Apple Silicon arm64 and macOS 15.0 or later. It is a
-direct ZIP distribution outside the App Store.
+The preview implementation is the menu-bar `SayAll.app`, bundle identifier
+`pro.leets.sayall`, targeting Apple Silicon arm64 and macOS 15.0 or later. A
+qualified 0.1.7 release may distribute it as a direct ZIP outside the App Store.
+If its external prerequisites or physical qualification are incomplete, macOS
+remains a preview and publication moves to a later version.
 
 ## Decision
 
@@ -89,19 +92,21 @@ user has granted either permission.
 
 ### Signing and distribution
 
-The nested helper is signed first, then the app, using Developer ID Application
-identity and Hardened Runtime. The resulting app is notarized, stapled, and
-verified before `sayall-VERSION-macos-arm64.zip` and `SHA256SUMS.macos` are
-created. Direct ZIP is the only selected macOS channel.
+Before a future supported release, the nested helper must be signed first, then
+the app, using Developer ID Application identity and Hardened Runtime. The
+resulting app must be notarized, stapled, and verified before
+`sayall-VERSION-macos-arm64.zip` and its checksum are created. Direct ZIP is
+the only selected future macOS channel.
 
 Automated CI/build success demonstrates implementation readiness, not the
-support publication gate. Publication requires the external credentials and
-completed physical matrix in [the qualification checklist](macos-release-qualification.md).
+support publication gate. SayAll 0.1.6 publishes no macOS artifact. A future
+publication requires the external credentials and completed physical matrix in
+[the qualification checklist](macos-release-qualification.md).
 
 ## Explicit non-goals
 
-0.1.6 does not provide or claim a macOS daemon, CLI, launchd service, login
-item, Linux protocol-v1 socket, Intel binary,
+0.1.6 does not publish or support a macOS product, daemon, CLI, launchd service,
+login item, Linux protocol-v1 socket, Intel binary,
 universal binary, Rosetta support, auto updater, DMG, PKG, Homebrew formula, or
 App Store distribution. Multiple input selection, local/offline providers,
 telemetry, and transcript history are also out of scope.

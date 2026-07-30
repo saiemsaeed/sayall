@@ -14,7 +14,7 @@ the control protocol merely for an application release.
 | Platform / target | Release status |
 | --- | --- |
 | x86-64 Arch Linux with Omarchy (Wayland/Hyprland) | Supported and tested; Linux archive and AUR packages |
-| Apple Silicon arm64, macOS 15.0+ | Native ZIP product implemented; publication requires external signing/notarization and completed physical qualification |
+| Apple Silicon arm64, macOS 15.0+ | Development preview only; no 0.1.6 artifact or support claim |
 | Windows (`x86_64-windows` compile target) | Core compile readiness only; no app, runtime, package, or installable output |
 
 Release binaries may work on related Linux Wayland systems, but that is not
@@ -24,27 +24,24 @@ accepted [0.1.6 macOS ADR](adr-macos-0.1.6.md), the
 [macOS qualification gate](macos-release-qualification.md), and the Linux-only
 HUD/control [`protocol-v1 compatibility contract`](protocol-v1.md).
 
-## macOS release credentials and qualification
+## macOS qualification parked for 0.1.7
 
 Normal CI runs on macOS 15 arm64, tests, and ad-hoc assembles a clearly named
 `-unsigned` ZIP without release credentials. That artifact is evidence of
 automated readiness only and must not be published as the supported download.
 
 `scripts/package-macos-release.sh` builds with a macOS 15 deployment target and
-produces the tested, ad-hoc-signed CI candidate. The protected Release workflow
-downloads that exact candidate, then—without running repository build or test
-code while credentials are present—signs the nested helper and app with
-Developer ID and Hardened Runtime, notarizes, staples, verifies, and emits
-`sayall-VERSION-macos-arm64.zip` plus `SHA256SUMS.macos`. A second protected
-promotion gate binds the approved SHA-256 before combining macOS, Linux, and
-source entries into one published `SHA256SUMS`.
+produces the tested, ad-hoc-signed CI candidate. The 0.1.6 Release workflow does
+not download, sign, or publish that candidate. It publishes only the supported
+Linux binary archive, source archive, and their checksum manifest.
 
-The protected GitHub environment is `macos-release`. Configure variables:
+macOS publication is targeted for 0.1.7, but must move to a later version rather
+than bypass a missing gate. Before 0.1.7 can publish macOS, create a protected
+`macos-release` environment and configure variables:
 
 - `APPLE_TEAM_ID`
-- `MACOS_016_QUALIFIED` (set only after the physical 0.1.6 gate is approved)
-- `MACOS_016_APPROVED_SHA256` (the exact signed candidate approved by that
-  gate; the publish job rejects any other ZIP)
+- a release-specific qualification flag
+- the exact approved signed-candidate SHA-256
 
 Configure secrets:
 
@@ -55,11 +52,10 @@ Configure secrets:
 - `APPLE_NOTARY_KEY_ID`
 - `APPLE_NOTARY_ISSUER_ID`
 
-Before enabling `MACOS_016_QUALIFIED`, execute and retain every signing command
-and physical matrix row in [the qualification checklist](macos-release-qualification.md).
-These external prerequisites and physical checks have not been performed in
-this workspace. A green build, test, or unsigned assembly does not satisfy the
-support-publication gate.
+Execute and retain every signing command and physical matrix row in [the
+qualification checklist](macos-release-qualification.md). These external
+prerequisites and physical checks have not been performed. A green build, test,
+or unsigned assembly does not satisfy the future support-publication gate.
 
 ## Prepare a release
 
@@ -84,22 +80,24 @@ support-publication gate.
 6. Install the Linux x86-64 archive in a clean x86-64 Arch Linux environment
    running Omarchy and complete a manual recording, transcription, HUD,
    typing, restart, and uninstall smoke test.
-7. On macOS 15 arm64, confirm the normal CI tests and ad-hoc unsigned assembly.
+7. Confirm the normal macOS CI test and ad-hoc unsigned assembly remain green;
+   this is regression coverage only and produces no release artifact.
 8. Commit the release preparation, merge that preparation into `main`, and push
    `main` first. The secret-capable AUR workflow runs from the default branch
    and requires its AUR templates and preparation script to match the release
    commit. Pushing `main` runs CI but cannot publish a release.
-9. Push `release/<version>` to trigger the release workflow. Approve its
-   protected signing/notarization job, download the exact `macos-assets`
-   artifact, and complete the artifact commands and physical matrix in the
-   macOS checklist. Record its SHA-256 and set the qualification variables only
-   after an approver accepts that exact candidate, then approve the separate
-   publish job. Repository build/test code never runs with release credentials
-   available. The publish job creates the immutable `v<version>` tag at that
-   exact commit and publishes the macOS ZIP, Linux/source archives, and combined
-   checksums. A default-branch workflow then publishes all three AUR repositories
+9. Push `release/<version>` to trigger the release workflow. It rebuilds and
+   verifies the Linux and source archives, creates the immutable `v<version>`
+   tag at that exact commit, and publishes those two archives with one checksum
+   manifest. A default-branch workflow then publishes all three AUR repositories
    from those immutable assets. Keep the release branch until AUR publication
    succeeds; it may then be deleted.
+
+If publication fails while the GitHub release is still a draft, rerun the exact
+failed release commit; the workflow deletes and reconstructs the draft before
+publishing. If the release is already published, do not rerun or move its tag.
+Use the manual `Publish AUR` workflow with the immutable version when only AUR
+publication needs retrying.
 
 Do not move or recreate a published tag. Corrections receive a new patch
 release. Enable **immutable releases** in the GitHub repository settings before
