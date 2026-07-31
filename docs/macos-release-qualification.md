@@ -1,12 +1,11 @@
-# Future macOS release qualification
+# macOS 0.1.7 release qualification
 
 SayAll 0.1.6 publishes Linux and source artifacts only. This checklist is the
-support-publication gate for the targeted 0.1.7 Apple Silicon macOS release on
-macOS 15.0 or later. The target is conditional: an incomplete gate parks macOS
-for a later version rather than weakening the release criteria. Automated CI
-establishes build and test readiness only.
-The external signing/notarization prerequisites and physical matrix have
-**not** been completed; do not publish or support macOS from automation alone.
+support-publication gate for the 0.1.7 Apple Silicon macOS release on macOS 15.0
+or later. The target is conditional: an incomplete gate parks macOS for a later
+version rather than weakening the release criteria. Automated CI establishes
+build and test readiness only. Do not publish or support macOS until the exact
+signed and notarized candidate completes this physical matrix.
 
 ## Artifact and signing checklist
 
@@ -84,8 +83,8 @@ At minimum, qualify:
 - [ ] No release-blocking defect remains open.
 - [ ] Signing/notarization evidence is attached to the immutable candidate.
 - [ ] Release approver records name, date, candidate SHA-256, and go/no-go.
-- [ ] The release-specific approved SHA-256 equals that exact candidate before
-  the protected publish job is approved.
+- [ ] `MACOS_017_APPROVED_SHA256` equals that exact candidate and
+  `MACOS_017_QUALIFIED` is `true` before the protected publish job is approved.
 
 Until every publication item is checked, describe macOS as a development
 preview with no supported release artifact.
