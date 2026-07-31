@@ -5,13 +5,21 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [0.1.7] - Unreleased
 
+### Added
+
+- Prepared direct Apple Silicon distribution as a Developer ID-signed,
+  notarized, and stapled `sayall-0.1.7-macos-arm64.zip` for macOS 15.0 or later.
+- Added credential-isolated release promotion: CI builds and verifies the
+  unsigned candidate before a protected signing job imports credentials, and a
+  separate credential-free protected publication environment accepts only the
+  physically qualified ZIP's exact SHA-256.
+
 ### Development target
 
-- Apple Silicon macOS remains targeted for 0.1.7, but publication and support
-  remain conditional on Developer ID signing, notarization, Gatekeeper
-  verification, and the complete physical Apple Silicon qualification matrix.
-  If any gate is incomplete, macOS remains a development preview and no macOS
-  artifact is published.
+- Apple Silicon macOS publication and support remain conditional on successful
+  Developer ID signing, notarization, Gatekeeper verification, and the complete
+  physical Apple Silicon qualification matrix. If any gate is incomplete,
+  macOS remains a development preview and no macOS artifact is published.
 
 ## [0.1.6] - 2026-07-24
 
