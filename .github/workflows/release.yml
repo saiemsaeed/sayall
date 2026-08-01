@@ -288,8 +288,15 @@ jobs:
           VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
-          releases=$(gh api --paginate "repos/${{ github.repository }}/releases?per_page=100" |
-            jq -cs --arg tag "v$VERSION" '[.[][] | select(.tag_name == $tag)]')
+          releases=[]
+          for attempt in {1..10}; do
+            releases=$(gh api --paginate "repos/${{ github.repository }}/releases?per_page=100" |
+              jq -cs --arg tag "v$VERSION" '[.[][] | select(.tag_name == $tag)]')
+            count=$(jq length <<<"$releases")
+            test "$count" -le 1
+            [[ $count -eq 1 ]] && break
+            sleep 2
+          done
           test "$(jq length <<<"$releases")" -eq 1
           release=$(jq -c '.[0]' <<<"$releases")
           release_id=$(jq -r .id <<<"$release")
