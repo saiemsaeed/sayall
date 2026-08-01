@@ -21,10 +21,13 @@ shasum -a 256 -c SHA256SUMS.macos
 unzip -q sayall-VERSION-macos-arm64.zip -d qualification
 codesign --verify --deep --strict --verbose=2 qualification/SayAll.app
 codesign -dv --verbose=4 qualification/SayAll.app
+codesign -dv --verbose=4 qualification/SayAll.app/Contents/Helpers/sayall
 codesign -dv --verbose=4 qualification/SayAll.app/Contents/Helpers/sayall-process
 lipo -archs qualification/SayAll.app/Contents/MacOS/SayAll
+lipo -archs qualification/SayAll.app/Contents/Helpers/sayall
 lipo -archs qualification/SayAll.app/Contents/Helpers/sayall-process
 vtool -show-build qualification/SayAll.app/Contents/MacOS/SayAll
+vtool -show-build qualification/SayAll.app/Contents/Helpers/sayall
 vtool -show-build qualification/SayAll.app/Contents/Helpers/sayall-process
 spctl --assess --type execute --verbose=4 qualification/SayAll.app
 xcrun stapler validate qualification/SayAll.app
@@ -33,11 +36,12 @@ xcrun stapler validate qualification/SayAll.app
 - [ ] ZIP filename is `sayall-VERSION-macos-arm64.zip` and its checksum appears
   in the release's combined `SHA256SUMS` (the assembly job's intermediate
   manifest is `SHA256SUMS.macos`).
-- [ ] Both binaries report arm64 only and a macOS 15.0 minimum deployment.
+- [ ] The app, CLI, and processing helper report arm64 only and a macOS 15.0
+  minimum deployment.
 - [ ] Bundle ID is `pro.leets.sayall`; helper is bundled and not independently
   installed.
-- [ ] Helper was signed before the containing app; both use the intended
-  Developer ID Application identity and Hardened Runtime.
+- [ ] The CLI and processing helper were signed before the containing app; all
+  use the intended Developer ID Application identity and Hardened Runtime.
 - [ ] Notarization was accepted, ticket stapled, Gatekeeper assessment accepted,
   and stapler validation succeeded.
 - [ ] A clean download independently matches the published checksum.
@@ -76,6 +80,8 @@ At minimum, qualify:
   history; the plaintext shared config is mode `0600` and never logged.
 - [ ] Manual update and complete uninstall, including deliberate shared-config
   retention or removal and Application Support cleanup.
+- [ ] Menu installation of `/usr/local/bin/sayall`, `version`, `status`,
+  `toggle`, `config init`, app replacement through upgrade, and symlink removal.
 
 ## Publication decision
 

@@ -1,6 +1,6 @@
 # SayAll
 
-A voice-dictation product for Linux. Toggle a hotkey,
+A voice-dictation product for Linux and macOS. Toggle a hotkey,
 speak, toggle again, and text is inserted into your focused window. When Groq
 cleanup is configured, filler words and false starts are removed before output.
 
@@ -37,14 +37,29 @@ and no macOS artifact is published.
 
 ## Getting Started
 
-### Apple Silicon macOS development preview
+### Apple Silicon macOS
 
-The source tree contains a native `SayAll.app` implementation for arm64 Macs
-running macOS 15.0 or later. Normal CI exercises an ad-hoc-signed build that
-must never be distributed. The 0.1.7 release workflow can promote that candidate
-only after Developer ID signing, notarization, Gatekeeper verification, and the
-documented physical-device matrix pass. Installation instructions will be
-added only when that exact qualified candidate is published.
+Download the signed and notarized Apple Silicon ZIP from the GitHub release,
+move `SayAll.app` to `/Applications`, and launch it on macOS 15.0 or later.
+Normal CI also exercises an ad-hoc-signed build that must never be distributed.
+The app bundles a native terminal client. From the menu bar, choose **Install
+Command Line Tool…** and approve the macOS administrator prompt to link the
+signed helper at `/usr/local/bin/sayall`; SayAll never changes shell startup
+files or replaces an existing unrelated path.
+
+The macOS CLI intentionally exposes only:
+
+```sh
+sayall --version       # also: sayall version
+sayall status          # does not launch the app
+sayall toggle          # launches this CLI's containing SayAll.app if needed
+sayall config init     # creates ~/.config/sayall/config.json once, mode 0600
+```
+
+`config init` creates its parent with mode `0700` and leaves the Deepgram key
+empty for the user to fill. App status and toggle use a private, same-UID Unix
+socket; the menu-bar `Coordinator` remains the state owner and transcript
+delivery remains bound to the focus captured when recording starts.
 
 ### Install on Arch Linux or Omarchy
 
@@ -308,14 +323,19 @@ clipboard fallback, temporary audio, and packaging. It invokes the bundled
 `sayall-process` helper once per recording. The Zig helper streams private raw
 PCM to Deepgram during capture, validates the completed PCM S16LE mono 16 kHz
 WAV, falls back to REST when streaming fails, and optionally runs Groq cleanup.
+The signed `sayall` helper uses a separate bounded JSON request/response socket
+under a mode-0700 per-user directory for same-UID `status` and `toggle` calls.
+The app's `Coordinator` handles both methods on the main actor; a nonblocking
+process lock prevents another app instance from replacing its live endpoint.
 
 The app and helper exchange bounded, versioned JSON over inherited stdin and
 stdout. API keys are never passed in argv or environment variables and are not
 logged. Canonical WAV and streaming PCM paths are private; post-stop processing
-has a 45-second app-side timeout. Raw audio is deleted after every terminal path, with startup
-scavenging for interrupted runs. There is no daemon, socket, Linux protocol
-v1, CLI, launchd service, login item, or transcript history on
-macOS. See the [macOS architecture ADR](docs/adr-macos-0.1.6.md).
+has a 45-second app-side timeout. Raw audio is deleted after every terminal path,
+with startup scavenging for interrupted runs. There is no daemon, Linux protocol
+v1 endpoint, launchd service, login item, or transcript history on macOS. See
+the [macOS architecture ADR](docs/adr-macos-0.1.6.md) and
+[macOS CLI ADR](docs/adr-macos-cli.md).
 
 Provider settings use the same `$XDG_CONFIG_HOME/sayall/config.json` or
 `~/.config/sayall/config.json` schema as Linux. The app reloads it before each
