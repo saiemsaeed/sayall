@@ -5,6 +5,14 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Bundled a signed native macOS `sayall` terminal helper with `version`,
+  `status`, `toggle`, and one-time private `config init`, plus an explicit menu
+  action that safely guides installation at `/usr/local/bin/sayall`.
+- Added a bounded same-UID private Unix control socket for macOS status and
+  toggle requests, including exact-containing-app background launch.
+
 ### Changed
 
 - macOS reports terminal dictation and configuration errors through native

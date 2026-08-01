@@ -149,14 +149,19 @@ jobs:
           test -n "$APPLE_NOTARY_ISSUER_ID"
           version=$(tr -d '[:space:]' < VERSION)
           app="$GITHUB_WORKSPACE/unsigned/extracted/SayAll.app"
+          cli="$app/Contents/Helpers/sayall"
           helper="$app/Contents/Helpers/sayall-process"
+          codesign --force --sign "$APPLE_DEVELOPER_ID_APPLICATION" \
+            --options runtime --timestamp "$cli"
           codesign --force --sign "$APPLE_DEVELOPER_ID_APPLICATION" \
             --options runtime --timestamp "$helper"
           codesign --force --sign "$APPLE_DEVELOPER_ID_APPLICATION" \
             --options runtime --timestamp \
             --entitlements "$RUNNER_TEMP/SayAll.entitlements" "$app"
+          codesign --verify --strict --verbose=2 "$cli"
+          codesign --verify --strict --verbose=2 "$helper"
           codesign --verify --deep --strict --verbose=2 "$app"
-          for executable in "$app" "$helper"; do
+          for executable in "$app" "$cli" "$helper"; do
             details=$(codesign --display --verbose=4 "$executable" 2>&1)
             grep -Fq "TeamIdentifier=$APPLE_TEAM_ID" <<<"$details"
             grep -Eq 'flags=.*runtime' <<<"$details"
