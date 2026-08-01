@@ -1,0 +1,9 @@
+pub const worker_ready_streaming = @embedFile("contracts-0.2/worker-ready-streaming.json");
+pub const worker_result_success = @embedFile("contracts-0.2/worker-result-success.json");
+pub const worker_result_cleanup_warning = @embedFile("contracts-0.2/worker-result-cleanup-warning.json");
+pub const worker_result_no_speech = @embedFile("contracts-0.2/worker-result-no-speech.json");
+pub const worker_result_error = @embedFile("contracts-0.2/worker-result-error.json");
+pub const host_status_request = @embedFile("contracts-0.2/host-status-request.json");
+pub const host_toggle_request = @embedFile("contracts-0.2/host-toggle-request.json");
+pub const host_status_response = @embedFile("contracts-0.2/host-status-response.json");
+pub const host_busy_response = @embedFile("contracts-0.2/host-busy-response.json");

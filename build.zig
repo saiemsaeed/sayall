@@ -69,6 +69,17 @@ pub fn build(b: *std.Build) void {
     const stream_tests = b.addTest(.{ .root_module = stream_tests_module });
     if (target.query.isNative()) batch_step.dependOn(&b.addRunArtifact(stream_tests).step) else batch_step.dependOn(&stream_tests.step);
 
+    const backend_contract_tests_module = b.createModule(.{
+        .root_source_file = b.path("daemon/backend_contract_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    backend_contract_tests_module.addImport("backend_contract_fixtures", b.createModule(.{
+        .root_source_file = b.path("tests/backend_contract_fixtures.zig"),
+    }));
+    const backend_contract_tests = b.addTest(.{ .root_module = backend_contract_tests_module });
+    if (target.query.isNative()) batch_step.dependOn(&b.addRunArtifact(backend_contract_tests).step) else batch_step.dependOn(&backend_contract_tests.step);
+
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cmd.addArgs(args);
