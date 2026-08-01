@@ -12,6 +12,7 @@ final class Coordinator {
     private var maximumTimer: Timer?, operationID: UUID?
     private var streamSession: StreamingHelperSession?
     private var operationConfig: ProviderSettings?
+    private var deliveryTarget: TextDelivery.Target?
     private let configuration: ConfigurationLoader
     private let changed: () -> Void
 
@@ -32,6 +33,7 @@ final class Coordinator {
             guard operationID == nil else { return }
             let id = UUID()
             operationID = id
+            deliveryTarget = TextDelivery.captureTarget()
             beginTask = Task { await begin(id) }
         case .recording: stop()
         default: break
@@ -53,12 +55,14 @@ final class Coordinator {
         guard operationID == id else { return }
         set(terminalState, message)
         operationConfig = nil
+        deliveryTarget = nil
         operationID = nil
         reset(after: delay)
     }
     private func completeAndHide(_ id: UUID) {
         guard operationID == id else { return }
         operationConfig = nil
+        deliveryTarget = nil
         operationID = nil
         set(.idle, "Ready — Control+/ to start")
     }
@@ -175,7 +179,7 @@ final class Coordinator {
                     return
                 }
                 set(.delivering, "Delivering transcript…")
-                let delivery = TextDelivery.deliver(text)
+                let delivery = TextDelivery.deliver(text, to: deliveryTarget)
                 let warning = result.warning == "cleanup_failed" ? " Groq cleanup failed; used raw transcript." : ""
                 switch delivery {
                 case .pasteCommandPosted:
@@ -185,7 +189,7 @@ final class Coordinator {
                         finish(id, as: .success, message: "Pasted raw transcript — Groq cleanup failed", resetAfter: 3)
                     }
                 case .copied:
-                    finish(id, as: .success, message: "Copied to clipboard; grant Accessibility to paste automatically.\(warning)", resetAfter: 3)
+                    finish(id, as: .success, message: "Copied to clipboard; automatic paste was unavailable.\(warning)", resetAfter: 3)
                 case .failed:
                     finish(id, as: .error, message: "Could not copy or paste the transcript", resetAfter: 3)
                 }
@@ -204,6 +208,7 @@ final class Coordinator {
         let session = streamSession
         operationID = nil
         operationConfig = nil
+        deliveryTarget = nil
         maximumTimer?.invalidate()
         beginTask = nil; task = nil; streamSession = nil
         starting?.cancel(); work?.cancel(); capture.cancel()
