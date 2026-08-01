@@ -3,6 +3,13 @@
 All notable user-visible changes to SayAll are documented in this file. SayAll
 follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- macOS reports terminal dictation and configuration errors through native
+  notifications instead of the HUD when notification permission is available.
+
 ## [0.1.7] - 2026-08-01
 
 ### Added
