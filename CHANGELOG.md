@@ -5,6 +5,8 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-08-01
+
 ### Added
 
 - Bundled a signed native macOS `sayall` terminal helper with `version`,
@@ -183,6 +185,8 @@ Initial release, tested and supported on x86-64 Arch Linux with Omarchy.
 - Persistent privacy-safe transcription metrics and microphone diagnostics.
 - systemd user services and Hyprland hotkey integration.
 
+[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/saiemsaeed/sayall/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/saiemsaeed/sayall/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/saiemsaeed/sayall/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/saiemsaeed/sayall/compare/v0.1.4...v0.1.5

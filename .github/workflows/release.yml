@@ -212,7 +212,7 @@ jobs:
           version=$(tr -d '[:space:]' < VERSION)
           [[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
           test "$GITHUB_REF_NAME" = "release/$version"
-          test "${{ vars.MACOS_017_QUALIFIED }}" = true
+          test "${{ vars.MACOS_018_QUALIFIED }}" = true
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Download Linux and source assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -227,7 +227,7 @@ jobs:
       - name: Assemble and verify release assets
         env:
           VERSION: ${{ steps.release.outputs.version }}
-          APPROVED_MACOS_SHA256: ${{ vars.MACOS_017_APPROVED_SHA256 }}
+          APPROVED_MACOS_SHA256: ${{ vars.MACOS_018_APPROVED_SHA256 }}
         run: |
           cat dist/SHA256SUMS dist/SHA256SUMS.macos | sort -k2 > dist/SHA256SUMS.all
           mv dist/SHA256SUMS.all dist/SHA256SUMS
@@ -270,9 +270,9 @@ jobs:
             gh api --method DELETE "repos/${{ github.repository }}/releases/$(jq -r .id <<<"$release")"
           fi
           cat > "$RUNNER_TEMP/release-notes.md" <<EOF
-          SayAll $VERSION adds a signed and notarized Apple Silicon app for macOS 15.0 or later, alongside the x86-64 Arch Linux release for Omarchy.
+          SayAll $VERSION adds a native terminal client to the signed and notarized Apple Silicon app for macOS 15.0 or later, alongside the x86-64 Arch Linux release for Omarchy.
 
-          The macOS app is distributed directly as a ZIP for Apple Silicon. It does not support Intel Macs, the App Store, or automatic updates.
+          The macOS app is distributed directly as a ZIP for Apple Silicon. Its menu can install the bundled sayall client at /usr/local/bin/sayall. It does not support Intel Macs, the App Store, or automatic updates.
 
           See CHANGELOG.md for the complete user-visible changes and known limitations.
           EOF
