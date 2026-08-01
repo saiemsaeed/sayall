@@ -114,10 +114,10 @@ jobs:
           import base64, os, pathlib
           temporary = pathlib.Path(os.environ["RUNNER_TEMP"])
           temporary.joinpath("developer-id.p12").write_bytes(
-              base64.b64decode(os.environ["CERTIFICATE_BASE64"], validate=True)
+              base64.b64decode("".join(os.environ["CERTIFICATE_BASE64"].split()), validate=True)
           )
           temporary.joinpath("notary.p8").write_bytes(
-              base64.b64decode(os.environ["NOTARY_KEY_BASE64"], validate=True)
+              base64.b64decode("".join(os.environ["NOTARY_KEY_BASE64"].split()), validate=True)
           )
           PY
           chmod 600 "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/notary.p8"
