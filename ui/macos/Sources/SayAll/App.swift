@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Carbon
+import SayAllControl
 import UserNotifications
 
 @main
@@ -15,6 +16,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var shortcutAvailable = false
     private var statusGeneration = 0
     private var errorNotificationTask: Task<Void, Never>?
+    private let controlServer = ControlServer()
+    private var ownsInstance = false
+    private var cliInstaller: Process?
 
     static func main() {
         let application = NSApplication.shared
@@ -25,28 +29,99 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard ProcessInfo.processInfo.machineHardwareName == "arm64" else { NSApp.terminate(nil); return }
-        NSApp.setActivationPolicy(.accessory); AudioCapture.removeStaleFiles()
-        errorNotifier.prepare()
+        NSApp.setActivationPolicy(.accessory)
         coordinator = Coordinator(
             configuration: ConfigurationLoader(),
             changed: { [weak self] in self?.refreshStatus() }
         )
+        do { try controlServer.start { [weak self] method in
+            self?.coordinator.handleControl(method) ?? ControlResponse(ok: false, state: "unavailable", error: "app unavailable")
+        } } catch {
+            NSApp.terminate(nil)
+            return
+        }
+        ownsInstance = true
+        AudioCapture.removeStaleFiles()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "SayAll")
         statusItem.button?.title = "SayAll"
         statusItem.button?.imagePosition = .imageLeading
         statusItem.button?.toolTip = "SayAll"
         rebuildMenu(); registerShortcut()
-        if !CGPreflightPostEventAccess() { requestAccessibility() }
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(cancel), name: NSWorkspace.willSleepNotification, object: nil)
     }
     func applicationWillTerminate(_ notification: Notification) {
+        guard ownsInstance else { return }
         accessibilityTimer?.invalidate()
         coordinator.cancel()
+        controlServer.stop()
         AudioCapture.removeStaleFiles()
+        ownsInstance = false
     }
     @objc private func cancel() { coordinator.cancel() }
     @objc private func trigger() { coordinator.trigger() }
+    @objc private func installCommandLineTool() {
+        guard cliInstaller == nil else {
+            showInstallResult("Command line tool installation is already in progress.")
+            return
+        }
+        let cli = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/sayall").path
+        let target = "/usr/local/bin/sayall"
+        if let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: target) {
+            if installedCLIIsCurrent(destination: destination, target: target, cli: cli) {
+                showInstallResult("The current SayAll command line tool is already installed.")
+            } else {
+                showInstallResult("\(target) is already a symlink to another location and was not changed.")
+            }
+            return
+        }
+        if FileManager.default.fileExists(atPath: target) {
+            showInstallResult("\(target) already exists and was not changed. Remove it manually only if you own it.")
+            return
+        }
+        let script = """
+        on run argv
+          set sourcePath to item 1 of argv
+          set targetPath to item 2 of argv
+          do shell script "/usr/bin/install -d -m 755 /usr/local/bin && /bin/test ! -e " & quoted form of targetPath & " && /bin/test ! -L " & quoted form of targetPath & " && /bin/ln -sh " & quoted form of sourcePath & " " & quoted form of targetPath with administrator privileges
+        end run
+        """
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script, cli, target]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        process.terminationHandler = { [weak self] process in
+            Task { @MainActor in
+                guard let self else { return }
+                self.cliInstaller = nil
+                guard process.terminationStatus == 0,
+                      let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: target),
+                      self.installedCLIIsCurrent(destination: destination, target: target, cli: cli) else {
+                    self.showInstallResult("The command line tool was not installed or could not be verified.")
+                    return
+                }
+                self.showInstallResult("Installed \(target). Open a new Terminal window and run ‘sayall version’.")
+            }
+        }
+        do {
+            cliInstaller = process
+            try process.run()
+        } catch {
+            cliInstaller = nil
+            showInstallResult("Could not start the macOS administrator authorization prompt.")
+        }
+    }
+    private func installedCLIIsCurrent(destination: String, target: String, cli: String) -> Bool {
+        let resolved = destination.hasPrefix("/") ? URL(fileURLWithPath: destination) :
+            URL(fileURLWithPath: target).deletingLastPathComponent().appendingPathComponent(destination)
+        return resolved.standardizedFileURL.resolvingSymlinksInPath().path ==
+            URL(fileURLWithPath: cli).resolvingSymlinksInPath().path
+    }
+    private func showInstallResult(_ message: String) {
+        let alert = NSAlert(); alert.messageText = "Install Command Line Tool"; alert.informativeText = message
+        alert.addButton(withTitle: "OK"); alert.runModal()
+    }
     @objc private func openMicSettings() { openSystemSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") }
     @objc private func openAXSettings() { openSystemSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") }
     @objc private func requestAccessibility() {
@@ -82,6 +157,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             conflict.isEnabled = false; menu.addItem(conflict)
         }
         menu.addItem(withTitle: coordinator.state == .recording ? "Stop Dictation" : "Start Dictation", action: #selector(trigger), keyEquivalent: "")
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Install Command Line Tool…", action: #selector(installCommandLineTool), keyEquivalent: "")
         menu.addItem(.separator())
         let mic = AVCaptureDevice.authorizationStatus(for: .audio)
         menu.addItem(withTitle: "Microphone: \(String(describing: mic)) — Open Settings", action: #selector(openMicSettings), keyEquivalent: "")
@@ -124,26 +201,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 private final class ErrorNotifier: NSObject, UNUserNotificationCenterDelegate {
     private let center = UNUserNotificationCenter.current()
-    private var preparation: Task<Void, Never>?
 
     override init() {
         super.init()
         center.delegate = self
     }
 
-    func prepare() {
-        guard preparation == nil else { return }
-        preparation = Task { [center] in
-            let settings = await center.notificationSettings()
-            if settings.authorizationStatus == .notDetermined {
-                _ = try? await center.requestAuthorization(options: [.alert, .sound])
-            }
-        }
-    }
-
     func notify(_ message: String) async -> Bool {
-        if let preparation { await preparation.value }
-        let settings = await center.notificationSettings()
+        var settings = await center.notificationSettings()
+        if settings.authorizationStatus == .notDetermined {
+            guard (try? await center.requestAuthorization(options: [.alert, .sound])) == true else { return false }
+            settings = await center.notificationSettings()
+        }
         guard [.authorized, .provisional].contains(settings.authorizationStatus),
               settings.alertSetting == .enabled else { return false }
         let content = UNMutableNotificationContent()

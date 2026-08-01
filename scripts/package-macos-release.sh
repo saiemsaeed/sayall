@@ -45,15 +45,17 @@ app="$root/dist/macos/SayAll.app"
 archive="$root/dist/sayall-$version-macos-arm64$artifact_suffix.zip"
 rm -rf -- "$root/dist/macos" "$archive"
 install -d "$app/Contents/MacOS" "$app/Contents/Helpers" "$app/Contents/Resources"
-install -m755 "$swift_bin/SayAll" "$app/Contents/MacOS/SayAll"
+install -m755 "$swift_bin/SayAllApp" "$app/Contents/MacOS/SayAll"
+install -m755 "$swift_bin/sayall" "$app/Contents/Helpers/sayall"
 install -m755 "$root/zig-out/bin/sayall-process" "$app/Contents/Helpers/sayall-process"
 install -m644 ui/macos/Info.plist "$app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $version" "$app/Contents/Info.plist"
 [[ $("$app/Contents/Helpers/sayall-process" --version) == "sayall-process $version" ]]
+[[ $("$app/Contents/Helpers/sayall" --version) == "sayall $version" ]]
 "$app/Contents/Helpers/sayall-process" --stream </dev/null
 
-for executable in "$app/Contents/MacOS/SayAll" "$app/Contents/Helpers/sayall-process"; do
+for executable in "$app/Contents/MacOS/SayAll" "$app/Contents/Helpers/sayall" "$app/Contents/Helpers/sayall-process"; do
     [[ $(lipo -archs "$executable") == arm64 ]] || {
         printf 'expected arm64-only executable: %s\n' "$executable" >&2
         exit 1
@@ -62,10 +64,13 @@ done
 
 if [[ "$mode" == developer-id ]]; then
     codesign --force --sign "$identity" --options runtime --timestamp \
+        "$app/Contents/Helpers/sayall"
+    codesign --force --sign "$identity" --options runtime --timestamp \
         "$app/Contents/Helpers/sayall-process"
     codesign --force --sign "$identity" --options runtime --timestamp \
         --entitlements ui/macos/SayAll.entitlements "$app"
 else
+    codesign --force --sign - "$app/Contents/Helpers/sayall"
     codesign --force --sign - "$app/Contents/Helpers/sayall-process"
     codesign --force --sign - --entitlements ui/macos/SayAll.entitlements "$app"
 fi

@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import SayAllControl
 
 @MainActor
 final class Coordinator {
@@ -37,6 +38,24 @@ final class Coordinator {
             beginTask = Task { await begin(id) }
         case .recording: stop()
         default: break
+        }
+    }
+    var controlState: String { operationID != nil && state == .idle ? "starting" : state.rawValue }
+
+    func handleControl(_ method: ControlMethod) -> ControlResponse {
+        switch method {
+        case .status:
+            return ControlResponse(ok: true, state: controlState)
+        case .toggle:
+            guard state == .idle || state == .recording else {
+                return ControlResponse(ok: false, state: controlState,
+                                       error: "busy: SayAll is \(controlState)")
+            }
+            guard !(state == .idle && operationID != nil) else {
+                return ControlResponse(ok: false, state: controlState, error: "busy: SayAll is starting")
+            }
+            trigger()
+            return ControlResponse(ok: true, state: controlState)
         }
     }
     private func set(_ next: DictationState, _ message: String) {
