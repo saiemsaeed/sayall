@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Carbon
+import UserNotifications
 
 @main
 @MainActor
@@ -10,7 +11,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var accessibilityTimer: Timer?
     private var accessibilityChecksRemaining = 0
     private let statusPanel = StatusPanel()
+    private let errorNotifier = ErrorNotifier()
     private var shortcutAvailable = false
+    private var statusGeneration = 0
+    private var errorNotificationTask: Task<Void, Never>?
 
     static func main() {
         let application = NSApplication.shared
@@ -22,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard ProcessInfo.processInfo.machineHardwareName == "arm64" else { NSApp.terminate(nil); return }
         NSApp.setActivationPolicy(.accessory); AudioCapture.removeStaleFiles()
+        errorNotifier.prepare()
         coordinator = Coordinator(
             configuration: ConfigurationLoader(),
             changed: { [weak self] in self?.refreshStatus() }
@@ -91,7 +96,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     private func refreshStatus() {
         rebuildMenu()
+        statusGeneration += 1
+        let generation = statusGeneration
+        errorNotificationTask?.cancel()
         statusPanel.update(state: coordinator.state, message: coordinator.message, audioLevel: coordinator.audioLevel)
+        guard coordinator.state == .error else { return }
+        let message = coordinator.message
+        errorNotificationTask = Task { [weak self] in
+            guard let self, await errorNotifier.notify(message), !Task.isCancelled,
+                  statusGeneration == generation,
+                  coordinator.state == .error,
+                  coordinator.message == message else { return }
+            statusPanel.update(state: .idle, message: "", audioLevel: 0)
+        }
     }
     private func registerShortcut() {
         let id = EventHotKeyID(signature: OSType(0x53415941), id: 1)
@@ -101,6 +118,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let context else { return noErr }; Unmanaged<AppDelegate>.fromOpaque(context).takeUnretainedValue().trigger(); return noErr
         }, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), nil)
         rebuildMenu()
+    }
+}
+
+@MainActor
+private final class ErrorNotifier: NSObject, UNUserNotificationCenterDelegate {
+    private let center = UNUserNotificationCenter.current()
+    private var preparation: Task<Void, Never>?
+
+    override init() {
+        super.init()
+        center.delegate = self
+    }
+
+    func prepare() {
+        guard preparation == nil else { return }
+        preparation = Task { [center] in
+            let settings = await center.notificationSettings()
+            if settings.authorizationStatus == .notDetermined {
+                _ = try? await center.requestAuthorization(options: [.alert, .sound])
+            }
+        }
+    }
+
+    func notify(_ message: String) async -> Bool {
+        if let preparation { await preparation.value }
+        let settings = await center.notificationSettings()
+        guard [.authorized, .provisional].contains(settings.authorizationStatus),
+              settings.alertSetting == .enabled else { return false }
+        let content = UNMutableNotificationContent()
+        content.title = "SayAll error"
+        content.body = message
+        content.sound = .default
+        do {
+            try await center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound])
     }
 }
 
