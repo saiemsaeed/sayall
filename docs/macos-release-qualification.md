@@ -88,8 +88,9 @@ At minimum, qualify:
 - [ ] No release-blocking defect remains open.
 - [ ] Signing/notarization evidence is attached to the immutable candidate.
 - [ ] Release approver records name, date, candidate SHA-256, and go/no-go.
-- [ ] `MACOS_018_APPROVED_SHA256` equals that exact candidate and
-  `MACOS_018_QUALIFIED` is `true` before the protected publish job is approved.
+- [ ] `MACOS_APPROVED_SHA256` equals that exact candidate and
+  `MACOS_QUALIFIED_VERSION` is `0.1.8` before the protected publish job is
+  approved.
 
 Until every publication item is checked, 0.1.7 remains the latest supported
 macOS release and 0.1.8 must not be published.

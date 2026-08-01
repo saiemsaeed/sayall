@@ -208,11 +208,13 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Verify release version
         id: release
+        env:
+          QUALIFIED_MACOS_VERSION: ${{ vars.MACOS_QUALIFIED_VERSION }}
         run: |
           version=$(tr -d '[:space:]' < VERSION)
           [[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
           test "$GITHUB_REF_NAME" = "release/$version"
-          test "${{ vars.MACOS_018_QUALIFIED }}" = true
+          test "$QUALIFIED_MACOS_VERSION" = "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Download Linux and source assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -227,7 +229,7 @@ jobs:
       - name: Assemble and verify release assets
         env:
           VERSION: ${{ steps.release.outputs.version }}
-          APPROVED_MACOS_SHA256: ${{ vars.MACOS_018_APPROVED_SHA256 }}
+          APPROVED_MACOS_SHA256: ${{ vars.MACOS_APPROVED_SHA256 }}
         run: |
           cat dist/SHA256SUMS dist/SHA256SUMS.macos | sort -k2 > dist/SHA256SUMS.all
           mv dist/SHA256SUMS.all dist/SHA256SUMS
@@ -270,9 +272,9 @@ jobs:
             gh api --method DELETE "repos/${{ github.repository }}/releases/$(jq -r .id <<<"$release")"
           fi
           cat > "$RUNNER_TEMP/release-notes.md" <<EOF
-          SayAll $VERSION adds a native terminal client to the signed and notarized Apple Silicon app for macOS 15.0 or later, alongside the x86-64 Arch Linux release for Omarchy.
+          SayAll $VERSION provides an x86-64 Arch Linux release for Omarchy and a signed and notarized Apple Silicon app for macOS 15.0 or later.
 
-          The macOS app is distributed directly as a ZIP for Apple Silicon. Its menu can install the bundled sayall client at /usr/local/bin/sayall. It does not support Intel Macs, the App Store, or automatic updates.
+          The macOS app is distributed directly as a ZIP for Apple Silicon. It does not support Intel Macs, the App Store, or automatic updates.
 
           See CHANGELOG.md for the complete user-visible changes and known limitations.
           EOF

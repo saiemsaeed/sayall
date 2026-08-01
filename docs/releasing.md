@@ -47,9 +47,10 @@ to release branches. Keep their authority separate:
 - `macos-signing` authorizes only signing/notarization. Configure the
   `APPLE_TEAM_ID` variable and all six Apple secrets below.
 - `macos-publication` contains no signing credentials. Configure
-  version-specific qualification variables (for 0.1.8,
-  `MACOS_018_QUALIFIED` and `MACOS_018_APPROVED_SHA256`). Leave qualification
-  unset or false until the exact candidate is approved.
+  `MACOS_QUALIFIED_VERSION` and `MACOS_APPROVED_SHA256` only after the named
+  version's exact candidate is approved. The workflow requires both the
+  version and digest to match, so stale approval values cannot publish a later
+  release.
 
 Configure secrets:
 
@@ -108,9 +109,9 @@ the gate.
     candidate.
 11. Download that exact `macos-assets` artifact while `publish` remains blocked.
     Complete the artifact checks and physical Apple Silicon matrix, record the
-    approver, decision, and ZIP SHA-256, then set `MACOS_018_QUALIFIED=true` and
-    `MACOS_018_APPROVED_SHA256` to that exact digest. Do not approve publication
-    if any required row is incomplete.
+    approver, decision, and ZIP SHA-256, then set `MACOS_QUALIFIED_VERSION` to
+    the exact release version and `MACOS_APPROVED_SHA256` to that exact digest.
+    Do not approve publication if any required row is incomplete.
 12. Approve the protected `publish` job. It rejects any candidate whose digest
     differs from the approved value, creates the immutable `v<version>` tag at
     the exact release commit, and publishes Linux, source, and signed macOS
