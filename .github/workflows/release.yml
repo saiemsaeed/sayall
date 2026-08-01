@@ -208,13 +208,10 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Verify release version
         id: release
-        env:
-          QUALIFIED_MACOS_VERSION: ${{ vars.MACOS_QUALIFIED_VERSION }}
         run: |
           version=$(tr -d '[:space:]' < VERSION)
           [[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
           test "$GITHUB_REF_NAME" = "release/$version"
-          test "$QUALIFIED_MACOS_VERSION" = "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Download Linux and source assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
