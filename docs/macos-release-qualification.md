@@ -1,11 +1,10 @@
-# macOS 0.1.7 release qualification
+# macOS 0.1.8 release qualification
 
-SayAll 0.1.6 publishes Linux and source artifacts only. This checklist is the
-support-publication gate for the 0.1.7 Apple Silicon macOS release on macOS 15.0
-or later. The target is conditional: an incomplete gate parks macOS for a later
-version rather than weakening the release criteria. Automated CI establishes
-build and test readiness only. Do not publish or support macOS until the exact
-signed and notarized candidate completes this physical matrix.
+SayAll has published a signed Apple Silicon app since 0.1.7. This checklist is
+the support-publication gate for the 0.1.8 macOS release on macOS 15.0 or later.
+An incomplete gate parks the release rather than weakening its criteria.
+Automated CI establishes build and test readiness only. Do not publish 0.1.8
+until the exact signed and notarized candidate completes this physical matrix.
 
 ## Artifact and signing checklist
 
@@ -38,8 +37,8 @@ xcrun stapler validate qualification/SayAll.app
   manifest is `SHA256SUMS.macos`).
 - [ ] The app, CLI, and processing helper report arm64 only and a macOS 15.0
   minimum deployment.
-- [ ] Bundle ID is `pro.leets.sayall`; helper is bundled and not independently
-  installed.
+- [ ] Bundle ID is `pro.leets.sayall`; the processing helper remains private,
+  while the bundled CLI is exposed only by the explicit menu installation.
 - [ ] The CLI and processing helper were signed before the containing app; all
   use the intended Developer ID Application identity and Hardened Runtime.
 - [ ] Notarization was accepted, ticket stapled, Gatekeeper assessment accepted,
@@ -89,8 +88,8 @@ At minimum, qualify:
 - [ ] No release-blocking defect remains open.
 - [ ] Signing/notarization evidence is attached to the immutable candidate.
 - [ ] Release approver records name, date, candidate SHA-256, and go/no-go.
-- [ ] `MACOS_017_APPROVED_SHA256` equals that exact candidate and
-  `MACOS_017_QUALIFIED` is `true` before the protected publish job is approved.
+- [ ] `MACOS_018_APPROVED_SHA256` equals that exact candidate and
+  `MACOS_018_QUALIFIED` is `true` before the protected publish job is approved.
 
-Until every publication item is checked, describe macOS as a development
-preview with no supported release artifact.
+Until every publication item is checked, 0.1.7 remains the latest supported
+macOS release and 0.1.8 must not be published.
