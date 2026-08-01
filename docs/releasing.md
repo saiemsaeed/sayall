@@ -14,7 +14,7 @@ the control protocol merely for an application release.
 | Platform / target | Release status |
 | --- | --- |
 | x86-64 Arch Linux with Omarchy (Wayland/Hyprland) | Supported and tested; Linux archive and AUR packages |
-| Apple Silicon arm64, macOS 15.0+ | 0.1.7 release candidate; publication requires protected signing and physical qualification |
+| Apple Silicon arm64, macOS 15.0+ | Supported since 0.1.7; each release requires protected signing and physical qualification |
 | Windows (`x86_64-windows` compile target) | Core compile readiness only; no app, runtime, package, or installable output |
 
 Release binaries may work on related Linux Wayland systems, but that is not
@@ -24,17 +24,18 @@ accepted [0.1.6 macOS ADR](adr-macos-0.1.6.md), the
 [macOS qualification gate](macos-release-qualification.md), and the Linux-only
 HUD/control [`protocol-v1 compatibility contract`](protocol-v1.md).
 
-## macOS 0.1.7 signing and qualification
+## macOS signing and qualification
 
 Normal CI runs on macOS 15 arm64, tests, and ad-hoc assembles a clearly named
 `-unsigned` ZIP without release credentials. That artifact is evidence of
 automated readiness only and must not be published as the supported download.
 
 `scripts/package-macos-release.sh` builds with a macOS 15 deployment target and
-produces the tested, ad-hoc-signed CI candidate. On `release/0.1.7`, the Release
+produces the tested, ad-hoc-signed CI candidate. On `release/<version>`, the Release
 workflow rebuilds that candidate without credentials, verifies it before
-credentials are exposed, then uses a protected job to sign the nested helper
-first and the app second, notarize, staple, and Gatekeeper-check the result.
+credentials are exposed, then uses a protected job to sign the nested CLI and
+processing helper first and the app second, notarize, staple, and
+Gatekeeper-check the result.
 Repository build or test code does not run while release credentials are
 available, and an `if: always()` step removes the certificate, notary key, and
 temporary keychain before the signed artifact is uploaded.
@@ -46,8 +47,10 @@ to release branches. Keep their authority separate:
 - `macos-signing` authorizes only signing/notarization. Configure the
   `APPLE_TEAM_ID` variable and all six Apple secrets below.
 - `macos-publication` contains no signing credentials. Configure
-  `MACOS_017_QUALIFIED` (leave unset or false until qualification is approved)
-  and `MACOS_017_APPROVED_SHA256` (the exact approved candidate SHA-256).
+  `MACOS_APPROVED_SHA256` only after the exact candidate is approved. The
+  checked-in `VERSION` determines the release version, while the digest binds
+  approval to one signed artifact; a stale digest cannot publish a later
+  candidate.
 
 Configure secrets:
 
@@ -67,15 +70,17 @@ the gate.
 
 ## Prepare a release
 
-1. Start `release/<version>` from the tested `main` commit, for example
-   `git switch -c release/0.1.7`. Only release branches can publish; pushes to
-   `main` never create a release.
-2. On the release branch, replace the versioned changelog section's
-   `Unreleased` marker with the publication date and change its comparison
-   link from `HEAD` to the new tag.
+1. Update local `main` to the tested `origin/main`, then create a non-triggering
+   preparation branch such as `prep/0.1.8`. Do not use `release/*` for the
+   preparation PR: any push to that pattern starts the protected release
+   workflow.
+2. On the preparation branch, move the user-visible changes from `Unreleased`
+   into the versioned changelog section with the intended publication date and
+   add its comparison link. If publication slips to another date, correct the
+   changelog through another preparation PR rather than editing a release
+   branch.
 3. Set the same SemVer value in `VERSION`, `build.zig.zon`, and
-   `ui/linux/Cargo.toml`, then update `ui/linux/Cargo.lock`. The branch name
-   must match that value exactly.
+   `ui/linux/Cargo.toml`, then update `ui/linux/Cargo.lock`.
 4. Run `zig build test`, `zig build check-darwin-core`,
    `zig build check-windows-core`, `cargo test --locked --manifest-path
    ui/linux/Cargo.toml`, and `cargo check --locked --manifest-path
@@ -90,19 +95,24 @@ the gate.
    typing, restart, and uninstall smoke test.
 7. Confirm the normal macOS CI test and ad-hoc unsigned assembly remain green;
    this is regression coverage only and produces no releasable artifact.
-8. Commit the release preparation, merge that preparation into `main`, and push
-   `main` first. The secret-capable AUR workflow runs from the default branch
-   and requires its AUR templates and preparation script to match the release
-   commit. Pushing `main` runs CI but cannot publish a release.
-9. Push `release/<version>` to trigger the release workflow. It rebuilds the
-   Linux, source, and unsigned macOS candidates. Approve the protected
-   `macos-assets` job to sign, notarize, staple, and upload the candidate.
-10. Download that exact `macos-assets` artifact while `publish` remains blocked.
+8. Commit and push the preparation branch, merge its PR, then fetch and
+   fast-forward local `main` to the merged `origin/main`. Pushing `main` runs CI
+   but cannot publish a release. The secret-capable AUR workflow later requires
+   its templates and preparation script on the default branch to match the
+   release commit.
+9. Verify the worktree is clean and no same-version release branch, tag, or
+   GitHub release already exists. Create `release/<version>` from the exact
+   merged `origin/main` commit, assert both SHAs match, make no further edits or
+   commits, and push it once to trigger the release workflow.
+10. After the Linux, source, and unsigned macOS jobs succeed, approve the
+    protected `macos-assets` job to sign, notarize, staple, and upload the exact
+    candidate.
+11. Download that exact `macos-assets` artifact while `publish` remains blocked.
     Complete the artifact checks and physical Apple Silicon matrix, record the
-    approver, decision, and ZIP SHA-256, then set `MACOS_017_QUALIFIED=true` and
-    `MACOS_017_APPROVED_SHA256` to that exact digest. Do not approve publication
-    if any required row is incomplete.
-11. Approve the protected `publish` job. It rejects any candidate whose digest
+    approver, decision, and ZIP SHA-256, then set `MACOS_APPROVED_SHA256` to
+    that exact digest. Do not approve publication if any required row is
+    incomplete.
+12. Approve the protected `publish` job. It rejects any candidate whose digest
     differs from the approved value, creates the immutable `v<version>` tag at
     the exact release commit, and publishes Linux, source, and signed macOS
     archives with one checksum manifest. A default-branch workflow then

@@ -18,22 +18,17 @@ cleanup is configured, filler words and false starts are removed before output.
 
 | Platform / target | Current status |
 | --- | --- |
-| x86-64 Arch Linux with Omarchy (Wayland/Hyprland) | Supported and tested in 0.1.6; daemon/CLI/HUD and AUR or archive distribution |
-| Apple Silicon (`arm64`), macOS 15.0 or later | 0.1.7 release candidate; support and publication remain gated on signing, notarization, and physical qualification |
+| x86-64 Arch Linux with Omarchy (Wayland/Hyprland) | Supported and tested; daemon/CLI/HUD and AUR or archive distribution |
+| Apple Silicon (`arm64`), macOS 15.0 or later | Supported since 0.1.7 as a signed, notarized, and stapled native app |
 | Windows (`x86_64-windows` compile target) | Core compile readiness only; no app, runtime, package, or installable output |
 
-Other Linux systems may work but are not tested or supported. The macOS preview
-must not be presented as an installable or supported product until its signing,
-notarization, and physical qualification gate passes. Windows readiness
-does not constitute product or runtime support. The accepted
+Other Linux systems may work but are not tested or supported. Each macOS
+release remains gated on signing, notarization, and physical qualification;
+unsigned CI candidates are never distributed. Windows readiness does not
+constitute product or runtime support. The accepted
 [`0.1.6 macOS architecture ADR`](docs/adr-macos-0.1.6.md) selects the macOS
 topology; the current Linux control and HUD compatibility API remains the
 Linux-only [`protocol-v1 contract`](docs/protocol-v1.md).
-
-The macOS implementation is being prepared for 0.1.7. That target does not
-override its publication gates: if signing, notarization, or the physical Apple
-Silicon qualification matrix is incomplete, it remains a development preview
-and no macOS artifact is published.
 
 ## Getting Started
 
@@ -620,11 +615,11 @@ satisfied.
 ## Limitations
 
 - **Support scope** — Linux support is limited to x86-64 Arch Linux running
-  Omarchy. macOS remains unsupported until the qualified 0.1.7 candidate is
-  published; Windows is unsupported. Other environments may work but are not
+  Omarchy. macOS support is limited to Apple Silicon running macOS 15.0 or
+  later; Windows is unsupported. Other environments may work but are not
   supported.
-- **macOS preview** — source and CI readiness are not a distributable product;
-  no unsigned, unnotarized, or unqualified macOS build is published.
+- **macOS distribution** — source and CI readiness are not a distributable
+  product; no unsigned, unnotarized, or unqualified macOS build is published.
 - **REST network deadlines** — provider responses are memory-bounded, but an
   explicit end-to-end REST cancellation deadline is still roadmap work.
 - **Wayland input** — direct output requires a compositor implementing the
@@ -643,9 +638,10 @@ tests remain roadmap work.
 
 SayAll follows [Semantic Versioning](https://semver.org/). The Linux daemon,
 CLI, HUD, macOS app, and bundled macOS helper share one product version. macOS
-remains a preview until its qualified release artifact is published. Protocol
-versions are independent: the documented [`protocol-v1 contract`](docs/protocol-v1.md)
-remains Linux-only, and the macOS helper contract is separate.
+release artifacts remain unpublished until they complete signing, notarization,
+and physical qualification. Protocol versions are independent: the documented
+[`protocol-v1 contract`](docs/protocol-v1.md) remains Linux-only, and the macOS
+helper contract is separate.
 
 During the pre-1.0 period, patch releases remain backward-compatible whenever
 possible. A minor release may make a documented breaking change to
