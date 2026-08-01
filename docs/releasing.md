@@ -14,7 +14,7 @@ the control protocol merely for an application release.
 | Platform / target | Release status |
 | --- | --- |
 | x86-64 Arch Linux with Omarchy (Wayland/Hyprland) | Supported and tested; Linux archive and AUR packages |
-| Apple Silicon arm64, macOS 15.0+ | Development preview only; no 0.1.6 artifact or support claim |
+| Apple Silicon arm64, macOS 15.0+ | 0.1.7 release candidate; publication requires protected signing and physical qualification |
 | Windows (`x86_64-windows` compile target) | Core compile readiness only; no app, runtime, package, or installable output |
 
 Release binaries may work on related Linux Wayland systems, but that is not
@@ -24,24 +24,30 @@ accepted [0.1.6 macOS ADR](adr-macos-0.1.6.md), the
 [macOS qualification gate](macos-release-qualification.md), and the Linux-only
 HUD/control [`protocol-v1 compatibility contract`](protocol-v1.md).
 
-## macOS qualification parked for 0.1.7
+## macOS 0.1.7 signing and qualification
 
 Normal CI runs on macOS 15 arm64, tests, and ad-hoc assembles a clearly named
 `-unsigned` ZIP without release credentials. That artifact is evidence of
 automated readiness only and must not be published as the supported download.
 
 `scripts/package-macos-release.sh` builds with a macOS 15 deployment target and
-produces the tested, ad-hoc-signed CI candidate. The 0.1.6 Release workflow does
-not download, sign, or publish that candidate. It publishes only the supported
-Linux binary archive, source archive, and their checksum manifest.
+produces the tested, ad-hoc-signed CI candidate. On `release/0.1.7`, the Release
+workflow rebuilds that candidate without credentials, verifies it before
+credentials are exposed, then uses a protected job to sign the nested helper
+first and the app second, notarize, staple, and Gatekeeper-check the result.
+Repository build or test code does not run while release credentials are
+available, and an `if: always()` step removes the certificate, notary key, and
+temporary keychain before the signed artifact is uploaded.
 
-macOS publication is targeted for 0.1.7, but must move to a later version rather
-than bypass a missing gate. Before 0.1.7 can publish macOS, create a protected
-`macos-release` environment and configure variables:
+Create two protected environments with required reviewers, prevent self-review,
+disable administrator bypass where operationally acceptable, and restrict both
+to release branches. Keep their authority separate:
 
-- `APPLE_TEAM_ID`
-- a release-specific qualification flag
-- the exact approved signed-candidate SHA-256
+- `macos-signing` authorizes only signing/notarization. Configure the
+  `APPLE_TEAM_ID` variable and all six Apple secrets below.
+- `macos-publication` contains no signing credentials. Configure
+  `MACOS_017_QUALIFIED` (leave unset or false until qualification is approved)
+  and `MACOS_017_APPROVED_SHA256` (the exact approved candidate SHA-256).
 
 Configure secrets:
 
@@ -53,14 +59,16 @@ Configure secrets:
 - `APPLE_NOTARY_ISSUER_ID`
 
 Execute and retain every signing command and physical matrix row in [the
-qualification checklist](macos-release-qualification.md). These external
-prerequisites and physical checks have not been performed. A green build, test,
-or unsigned assembly does not satisfy the future support-publication gate.
+qualification checklist](macos-release-qualification.md). A green build, test,
+unsigned assembly, or successful notarization alone does not satisfy the
+support-publication gate. If qualification is incomplete, do not approve the
+publish job; move macOS publication to a later version rather than weakening
+the gate.
 
 ## Prepare a release
 
 1. Start `release/<version>` from the tested `main` commit, for example
-   `git switch -c release/0.1.6`. Only release branches can publish; pushes to
+   `git switch -c release/0.1.7`. Only release branches can publish; pushes to
    `main` never create a release.
 2. On the release branch, replace the versioned changelog section's
    `Unreleased` marker with the publication date and change its comparison
@@ -81,17 +89,25 @@ or unsigned assembly does not satisfy the future support-publication gate.
    running Omarchy and complete a manual recording, transcription, HUD,
    typing, restart, and uninstall smoke test.
 7. Confirm the normal macOS CI test and ad-hoc unsigned assembly remain green;
-   this is regression coverage only and produces no release artifact.
+   this is regression coverage only and produces no releasable artifact.
 8. Commit the release preparation, merge that preparation into `main`, and push
    `main` first. The secret-capable AUR workflow runs from the default branch
    and requires its AUR templates and preparation script to match the release
    commit. Pushing `main` runs CI but cannot publish a release.
-9. Push `release/<version>` to trigger the release workflow. It rebuilds and
-   verifies the Linux and source archives, creates the immutable `v<version>`
-   tag at that exact commit, and publishes those two archives with one checksum
-   manifest. A default-branch workflow then publishes all three AUR repositories
-   from those immutable assets. Keep the release branch until AUR publication
-   succeeds; it may then be deleted.
+9. Push `release/<version>` to trigger the release workflow. It rebuilds the
+   Linux, source, and unsigned macOS candidates. Approve the protected
+   `macos-assets` job to sign, notarize, staple, and upload the candidate.
+10. Download that exact `macos-assets` artifact while `publish` remains blocked.
+    Complete the artifact checks and physical Apple Silicon matrix, record the
+    approver, decision, and ZIP SHA-256, then set `MACOS_017_QUALIFIED=true` and
+    `MACOS_017_APPROVED_SHA256` to that exact digest. Do not approve publication
+    if any required row is incomplete.
+11. Approve the protected `publish` job. It rejects any candidate whose digest
+    differs from the approved value, creates the immutable `v<version>` tag at
+    the exact release commit, and publishes Linux, source, and signed macOS
+    archives with one checksum manifest. A default-branch workflow then
+    publishes all three AUR repositories from those immutable assets. Keep the
+    release branch until AUR publication succeeds; it may then be deleted.
 
 If publication fails while the GitHub release is still a draft, rerun the exact
 failed release commit; the workflow deletes and reconstructs the draft before

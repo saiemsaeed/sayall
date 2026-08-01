@@ -16,10 +16,10 @@ cleanup is configured, filler words and false starts are removed before output.
 
 ## Platform support
 
-| Platform / target | 0.1.6 status |
+| Platform / target | Current status |
 | --- | --- |
-| x86-64 Arch Linux with Omarchy (Wayland/Hyprland) | Supported and tested; daemon/CLI/HUD and AUR or archive distribution |
-| Apple Silicon (`arm64`), macOS 15.0 or later | Development preview in source and CI only; no 0.1.6 release artifact or support claim |
+| x86-64 Arch Linux with Omarchy (Wayland/Hyprland) | Supported and tested in 0.1.6; daemon/CLI/HUD and AUR or archive distribution |
+| Apple Silicon (`arm64`), macOS 15.0 or later | 0.1.7 release candidate; support and publication remain gated on signing, notarization, and physical qualification |
 | Windows (`x86_64-windows` compile target) | Core compile readiness only; no app, runtime, package, or installable output |
 
 Other Linux systems may work but are not tested or supported. The macOS preview
@@ -30,21 +30,21 @@ does not constitute product or runtime support. The accepted
 topology; the current Linux control and HUD compatibility API remains the
 Linux-only [`protocol-v1 contract`](docs/protocol-v1.md).
 
-The macOS implementation is parked for a targeted 0.1.7 release. That target
-does not override its publication gates: if signing, notarization, or the
-physical Apple Silicon qualification matrix is incomplete, it remains a
-development preview and no macOS artifact is published.
+The macOS implementation is being prepared for 0.1.7. That target does not
+override its publication gates: if signing, notarization, or the physical Apple
+Silicon qualification matrix is incomplete, it remains a development preview
+and no macOS artifact is published.
 
 ## Getting Started
 
 ### Apple Silicon macOS development preview
 
 The source tree contains a native `SayAll.app` implementation for arm64 Macs
-running macOS 15.0 or later, and CI exercises an ad-hoc-signed build. SayAll
-0.1.6 does not publish that unsigned build, provide a macOS download, or claim
-macOS support. The preview must complete Developer ID signing, notarization,
-Gatekeeper verification, and the documented physical-device matrix before a
-targeted 0.1.7 release can add installation instructions.
+running macOS 15.0 or later. Normal CI exercises an ad-hoc-signed build that
+must never be distributed. The 0.1.7 release workflow can promote that candidate
+only after Developer ID signing, notarization, Gatekeeper verification, and the
+documented physical-device matrix pass. Installation instructions will be
+added only when that exact qualified candidate is published.
 
 ### Install on Arch Linux or Omarchy
 
@@ -600,8 +600,9 @@ satisfied.
 ## Limitations
 
 - **Support scope** — Linux support is limited to x86-64 Arch Linux running
-  Omarchy. macOS and Windows are not supported in 0.1.6. Other environments may
-  work but are not supported.
+  Omarchy. macOS remains unsupported until the qualified 0.1.7 candidate is
+  published; Windows is unsupported. Other environments may work but are not
+  supported.
 - **macOS preview** — source and CI readiness are not a distributable product;
   no unsigned, unnotarized, or unqualified macOS build is published.
 - **REST network deadlines** — provider responses are memory-bounded, but an
@@ -621,11 +622,10 @@ tests remain roadmap work.
 ## Versioning and releases
 
 SayAll follows [Semantic Versioning](https://semver.org/). The Linux daemon,
-CLI, and HUD share one product version. The macOS preview currently follows the
-source version but is not a 0.1.6 release artifact or supported product.
-Protocol versions are independent: SayAll 0.1.6 continues to use the documented
-[`protocol-v1 contract`](docs/protocol-v1.md) for Linux only; the macOS helper
-contract is separate.
+CLI, HUD, macOS app, and bundled macOS helper share one product version. macOS
+remains a preview until its qualified release artifact is published. Protocol
+versions are independent: the documented [`protocol-v1 contract`](docs/protocol-v1.md)
+remains Linux-only, and the macOS helper contract is separate.
 
 During the pre-1.0 period, patch releases remain backward-compatible whenever
 possible. A minor release may make a documented breaking change to

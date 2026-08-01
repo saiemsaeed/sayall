@@ -62,8 +62,14 @@ jobs:
             "https://api.github.com/repos/${{ github.repository }}/releases/tags/v$version")
           test "$(printf '%s' "$release" | jq -r .draft)" = false
           test "$(printf '%s' "$release" | jq -r .immutable)" = true
-          printf '%s\n' SHA256SUMS "sayall-$version-linux-x86_64.tar.gz" \
-            "sayall-$version.tar.gz" | sort > "$RUNNER_TEMP/expected-assets"
+          assets=(SHA256SUMS "sayall-$version-linux-x86_64.tar.gz" \
+            "sayall-$version.tar.gz")
+          has_macos=false
+          if printf '%s\n' 0.1.7 "$version" | sort -V -C; then
+            assets+=("sayall-$version-macos-arm64.zip")
+            has_macos=true
+          fi
+          printf '%s\n' "${assets[@]}" | sort > "$RUNNER_TEMP/expected-assets"
           printf '%s' "$release" | jq -r '.assets[].name' | sort > "$RUNNER_TEMP/actual-assets"
           diff -u "$RUNNER_TEMP/expected-assets" "$RUNNER_TEMP/actual-assets"
           tag_commit=$(curl --fail --silent --show-error --location \
@@ -91,8 +97,7 @@ jobs:
 
           release_assets="$RUNNER_TEMP/release-assets"
           mkdir "$release_assets"
-          for name in SHA256SUMS "sayall-$version-linux-x86_64.tar.gz" \
-            "sayall-$version.tar.gz"; do
+          for name in "${assets[@]}"; do
             asset_id=$(printf '%s' "$release" | jq -r --arg name "$name" \
               '.assets[] | select(.name == $name) | .id')
             test -n "$asset_id"
@@ -103,9 +108,14 @@ jobs:
               "https://api.github.com/repos/${{ github.repository }}/releases/assets/$asset_id" \
               --output "$release_assets/$name"
           done
-          test "$(wc -l < "$release_assets/SHA256SUMS")" -eq 2
+          expected_checksums=$((${#assets[@]} - 1))
+          test "$(wc -l < "$release_assets/SHA256SUMS")" -eq "$expected_checksums"
           grep -Eq "^[0-9a-f]{64}  sayall-$version-linux-x86_64\.tar\.gz$" \
             "$release_assets/SHA256SUMS"
+          if [[ $has_macos == true ]]; then
+            grep -Eq "^[0-9a-f]{64}  sayall-$version-macos-arm64\.zip$" \
+              "$release_assets/SHA256SUMS"
+          fi
           grep -Eq "^[0-9a-f]{64}  sayall-$version\.tar\.gz$" \
             "$release_assets/SHA256SUMS"
           (cd "$release_assets" && sha256sum --check SHA256SUMS)
