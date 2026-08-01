@@ -497,6 +497,71 @@ final class ProcessingOwnershipTests: XCTestCase {
     }
 }
 
+final class SharedBackendContractTests: XCTestCase {
+    private struct HostRequest: Decodable {
+        enum Method: String, Decodable { case status, toggle }
+        let version: Int
+        let method: Method
+    }
+    private struct HostResponse: Decodable {
+        struct Failure: Decodable { let code: String; let message: String }
+        let version: Int
+        let ok: Bool
+        let state: String
+        let error: Failure?
+    }
+    private struct WorkerReady: Decodable {
+        let version: Int
+        let event: String
+        let streaming: Bool
+    }
+
+    private func fixture(_ name: String) throws -> Data {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<5 { root.deleteLastPathComponent() }
+        return try Data(contentsOf: root.appendingPathComponent("tests/contracts-0.2/\(name).json"))
+    }
+
+    func testWorkerFixturesMatchTheSwiftDecoder() throws {
+        let ready = try JSONDecoder().decode(WorkerReady.self, from: fixture("worker-ready-streaming"))
+        XCTAssertEqual(ready.version, 1)
+        XCTAssertEqual(ready.event, "ready")
+        XCTAssertTrue(ready.streaming)
+
+        let success = try HelperDecoder.decode(fixture("worker-result-success"))
+        XCTAssertEqual(success.status, .success)
+        XCTAssertEqual(success.text, "Hello, world.")
+
+        let warning = try HelperDecoder.decode(fixture("worker-result-cleanup-warning"))
+        XCTAssertEqual(warning.warning, "cleanup_failed")
+        XCTAssertEqual(warning.text, "raw transcript")
+
+        XCTAssertEqual(try HelperDecoder.decode(fixture("worker-result-no-speech")).status, .noSpeech)
+        XCTAssertThrowsError(try HelperDecoder.decode(fixture("worker-result-error"))) {
+            XCTAssertEqual($0 as? HelperFailure, .unsuccessful("deepgram_rate_limited"))
+        }
+    }
+
+    func testFutureUnifiedHostFixturesAreLanguageNeutral() throws {
+        let decoder = JSONDecoder()
+        let status = try decoder.decode(HostRequest.self, from: fixture("host-status-request"))
+        XCTAssertEqual(status.version, 2)
+        XCTAssertEqual(status.method, .status)
+        XCTAssertEqual(try decoder.decode(HostRequest.self, from: fixture("host-toggle-request")).method, .toggle)
+
+        let idle = try decoder.decode(HostResponse.self, from: fixture("host-status-response"))
+        XCTAssertTrue(idle.ok)
+        XCTAssertEqual(idle.state, "idle")
+        XCTAssertNil(idle.error)
+
+        let busy = try decoder.decode(HostResponse.self, from: fixture("host-busy-response"))
+        XCTAssertFalse(busy.ok)
+        XCTAssertEqual(busy.state, "processing")
+        XCTAssertEqual(busy.error?.code, "busy")
+        XCTAssertEqual(busy.error?.message, "SayAll is processing")
+    }
+}
+
 final class ConfigurationLoaderTests: XCTestCase {
     func testLoadsLinuxConfigSchema() throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

@@ -488,6 +488,7 @@ pub fn read_frame<'a, R: BufRead>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Deserialize;
     use std::io::{BufReader, Cursor};
 
     const SUBSCRIBE: &str =
@@ -497,6 +498,71 @@ mod tests {
         include_str!("../../../tests/protocol-v1/response-error-additive.json");
     const UNKNOWN_EVENT: &str =
         include_str!("../../../tests/protocol-v1/event-unknown-additive.json");
+    const WORKER_SUCCESS: &str =
+        include_str!("../../../tests/contracts-0.2/worker-result-success.json");
+    const WORKER_WARNING: &str =
+        include_str!("../../../tests/contracts-0.2/worker-result-cleanup-warning.json");
+    const HOST_STATUS_REQUEST: &str =
+        include_str!("../../../tests/contracts-0.2/host-status-request.json");
+    const HOST_BUSY_RESPONSE: &str =
+        include_str!("../../../tests/contracts-0.2/host-busy-response.json");
+
+    #[derive(Deserialize)]
+    struct WorkerResultFixture {
+        version: u32,
+        status: String,
+        text: Option<String>,
+        warning: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct HostRequestFixture {
+        version: u32,
+        method: String,
+    }
+
+    #[derive(Deserialize)]
+    struct HostErrorFixture {
+        code: String,
+        message: String,
+    }
+
+    #[derive(Deserialize)]
+    struct HostResponseFixture {
+        version: u32,
+        ok: bool,
+        state: String,
+        error: Option<HostErrorFixture>,
+    }
+
+    #[test]
+    fn shared_backend_contract_fixtures_decode_in_rust() {
+        let success: WorkerResultFixture = serde_json::from_str(WORKER_SUCCESS).unwrap();
+        assert_eq!(success.version, 1);
+        assert_eq!(success.status, "success");
+        assert_eq!(success.text.as_deref(), Some("Hello, world."));
+
+        let warning: WorkerResultFixture = serde_json::from_str(WORKER_WARNING).unwrap();
+        assert_eq!(warning.warning.as_deref(), Some("cleanup_failed"));
+        assert_eq!(warning.text.as_deref(), Some("raw transcript"));
+
+        let request: HostRequestFixture = serde_json::from_str(HOST_STATUS_REQUEST).unwrap();
+        assert_eq!(request.version, 2);
+        assert_eq!(request.method, "status");
+
+        let busy: HostResponseFixture = serde_json::from_str(HOST_BUSY_RESPONSE).unwrap();
+        assert_eq!(busy.version, 2);
+        assert!(!busy.ok);
+        assert_eq!(busy.state, "processing");
+        assert_eq!(
+            busy.error.as_ref().map(|error| error.code.as_str()),
+            Some("busy")
+        );
+        assert_eq!(
+            busy.error.as_ref().map(|error| error.message.as_str()),
+            Some("SayAll is processing")
+        );
+    }
 
     fn subscribed_decoder() -> SubscriptionDecoder {
         let mut decoder = SubscriptionDecoder::new(3);
