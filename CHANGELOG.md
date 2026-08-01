@@ -14,6 +14,12 @@ follows [Semantic Versioning](https://semver.org/).
   separate credential-free protected publication environment accepts only the
   physically qualified ZIP's exact SHA-256.
 
+### Fixed
+
+- Bound automatic macOS paste delivery to the original editable,
+  non-secure Accessibility element; focus changes and uncertain or secure
+  targets now fall back to clipboard-only delivery.
+
 ### Development target
 
 - Apple Silicon macOS publication and support remain conditional on successful
