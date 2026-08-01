@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import ApplicationServices
 @testable import SayAll
 
 final class StateMachineTests: XCTestCase {
@@ -30,6 +31,180 @@ final class TextDeliveryTests: XCTestCase {
 
         XCTAssertTrue(TextDelivery.copy(text, to: pasteboard))
         XCTAssertEqual(pasteboard.string(forType: .string), text)
+    }
+
+    @MainActor
+    func testUnchangedEditableTargetPostsPasteAfterCopying() {
+        let element = AXUIElementCreateApplication(101)
+        let focus = focus(pid: 101, element: element)
+        var posted = 0
+        let client = accessibilityClient(focus: { focus }, post: { posted += 1; return true })
+        let target = TextDelivery.captureTarget(client: client)
+        let pasteboard = testPasteboard()
+
+        let result = TextDelivery.deliver("bound transcript", to: target, pasteboard: pasteboard, client: client)
+
+        guard case .pasteCommandPosted = result else { return XCTFail("Expected paste delivery") }
+        XCTAssertEqual(posted, 1)
+        XCTAssertEqual(pasteboard.string(forType: .string), "bound transcript")
+    }
+
+    @MainActor
+    func testChangedElementCopiesWithoutPostingPaste() {
+        let original = AXUIElementCreateApplication(101)
+        let changed = AXUIElementCreateApplication(102)
+        let target = TextDelivery.captureTarget(client: accessibilityClient(
+            focus: { self.focus(pid: 101, element: original) }
+        ))
+        var posted = false
+        let deliveryClient = accessibilityClient(
+            focus: { self.focus(pid: 101, element: changed) },
+            post: { posted = true; return true }
+        )
+        let pasteboard = testPasteboard()
+
+        let result = TextDelivery.deliver("private transcript", to: target,
+            pasteboard: pasteboard, client: deliveryClient)
+
+        guard case .copied = result else { return XCTFail("Expected clipboard fallback") }
+        XCTAssertFalse(posted)
+        XCTAssertEqual(pasteboard.string(forType: .string), "private transcript")
+    }
+
+    @MainActor
+    func testChangedApplicationCopiesWithoutPostingPaste() {
+        let element = AXUIElementCreateApplication(101)
+        let target = TextDelivery.captureTarget(client: accessibilityClient(
+            focus: { self.focus(pid: 101, element: element) }
+        ))
+        var posted = false
+        let deliveryClient = accessibilityClient(
+            focus: { self.focus(pid: 202, element: element) },
+            post: { posted = true; return true }
+        )
+
+        let result = TextDelivery.deliver("private transcript", to: target,
+            pasteboard: testPasteboard(), client: deliveryClient)
+
+        guard case .copied = result else { return XCTFail("Expected clipboard fallback") }
+        XCTAssertFalse(posted)
+    }
+
+    @MainActor
+    func testTargetThatBecomesSecureCopiesWithoutPostingPaste() {
+        let element = AXUIElementCreateApplication(101)
+        let focus = focus(pid: 101, element: element)
+        let target = TextDelivery.captureTarget(client: accessibilityClient(focus: { focus }))
+        var posted = false
+        let deliveryClient = accessibilityClient(focus: { focus }, eligible: { _ in false },
+            post: { posted = true; return true })
+
+        let result = TextDelivery.deliver("private transcript", to: target,
+            pasteboard: testPasteboard(), client: deliveryClient)
+
+        guard case .copied = result else { return XCTFail("Expected clipboard fallback") }
+        XCTAssertFalse(posted)
+    }
+
+    @MainActor
+    func testFinalFocusChangeCopiesWithoutPostingPaste() {
+        let original = AXUIElementCreateApplication(101)
+        let changed = AXUIElementCreateApplication(102)
+        let target = TextDelivery.captureTarget(client: accessibilityClient(
+            focus: { self.focus(pid: 101, element: original) }
+        ))
+        var focuses = [
+            focus(pid: 101, element: original),
+            focus(pid: 101, element: changed),
+        ]
+        var posted = false
+        let deliveryClient = accessibilityClient(
+            focus: { focuses.removeFirst() },
+            post: { posted = true; return true }
+        )
+
+        let result = TextDelivery.deliver("private transcript", to: target,
+            pasteboard: testPasteboard(), client: deliveryClient)
+
+        guard case .copied = result else { return XCTFail("Expected clipboard fallback") }
+        XCTAssertFalse(posted)
+    }
+
+    @MainActor
+    func testReusedPIDFromDifferentApplicationInstanceCopiesWithoutPostingPaste() {
+        let element = AXUIElementCreateApplication(101)
+        let currentFocus = focus(pid: 101, element: element)
+        let target = TextDelivery.captureTarget(client: accessibilityClient(focus: { currentFocus }))
+        var posted = false
+        let deliveryClient = accessibilityClient(
+            focus: { currentFocus },
+            applicationsMatch: { _, _ in false },
+            post: { posted = true; return true }
+        )
+
+        let result = TextDelivery.deliver("private transcript", to: target,
+            pasteboard: testPasteboard(), client: deliveryClient)
+
+        guard case .copied = result else { return XCTFail("Expected clipboard fallback") }
+        XCTAssertFalse(posted)
+    }
+
+    @MainActor
+    func testMissingOrUntrustedTargetCopiesWithoutPostingPaste() {
+        var posted = false
+        let client = accessibilityClient(
+            trusted: false,
+            focus: { nil },
+            post: { posted = true; return true }
+        )
+        XCTAssertNil(TextDelivery.captureTarget(client: client))
+
+        let result = TextDelivery.deliver("private transcript", to: nil,
+            pasteboard: testPasteboard(), client: client)
+
+        guard case .copied = result else { return XCTFail("Expected clipboard fallback") }
+        XCTAssertFalse(posted)
+    }
+
+    @MainActor
+    func testSubroleValidationFailsClosed() {
+        XCTAssertFalse(TextDelivery.nonSecureSubrole(error: .success, value: nil))
+        XCTAssertFalse(TextDelivery.nonSecureSubrole(error: .success, value: NSNumber(value: 1)))
+        XCTAssertFalse(TextDelivery.nonSecureSubrole(error: .success,
+            value: kAXSecureTextFieldSubrole as CFString))
+        XCTAssertTrue(TextDelivery.nonSecureSubrole(error: .success, value: "AXSearchField" as CFString))
+        XCTAssertTrue(TextDelivery.nonSecureSubrole(error: .noValue, value: nil))
+        XCTAssertTrue(TextDelivery.nonSecureSubrole(error: .attributeUnsupported, value: nil))
+        XCTAssertFalse(TextDelivery.nonSecureSubrole(error: .cannotComplete, value: nil))
+    }
+
+    @MainActor
+    private func accessibilityClient(
+        trusted: Bool = true,
+        focus: @escaping @MainActor () -> TextDelivery.Focus?,
+        eligible: @escaping @MainActor (AXUIElement) -> Bool = { _ in true },
+        applicationsMatch: @escaping @MainActor (NSRunningApplication, NSRunningApplication) -> Bool = { _, _ in true },
+        post: @escaping @MainActor () -> Bool = { true }
+    ) -> TextDelivery.AccessibilityClient {
+        TextDelivery.AccessibilityClient(
+            processID: 999,
+            isTrusted: { trusted },
+            currentFocus: focus,
+            isEditableAndNonSecure: eligible,
+            elementsEqual: { CFEqual($0, $1) },
+            applicationsMatch: applicationsMatch,
+            postPasteCommand: post
+        )
+    }
+
+    @MainActor
+    private func focus(pid: pid_t, element: AXUIElement) -> TextDelivery.Focus {
+        TextDelivery.Focus(pid: pid, element: element, application: .current)
+    }
+
+    @MainActor
+    private func testPasteboard() -> NSPasteboard {
+        NSPasteboard(name: NSPasteboard.Name("pro.leets.sayall.tests.\(UUID().uuidString)"))
     }
 }
 
