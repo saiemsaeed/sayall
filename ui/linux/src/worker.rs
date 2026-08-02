@@ -183,14 +183,22 @@ pub fn resolve() -> io::Result<PathBuf> {
         exe.parent().unwrap().join("sayall-process"),
         exe.parent().unwrap().join("../lib/sayall/sayall-process"),
         PathBuf::from("/usr/lib/sayall/sayall-process"),
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../zig-out/bin/sayall-process"),
     ];
-    candidates.into_iter().find(|p| p.is_file()).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            "private processing worker not installed",
-        )
-    })
+    if let Some(path) = candidates.into_iter().find(|p| p.is_file()) {
+        return Ok(path);
+    }
+    #[cfg(debug_assertions)]
+    {
+        let development =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../zig-out/bin/sayall-process");
+        if development.is_file() {
+            return Ok(development);
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "private processing worker not installed",
+    ))
 }
 
 impl Worker {
