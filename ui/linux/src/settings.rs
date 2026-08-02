@@ -1,4 +1,4 @@
-use crate::{autostart, worker};
+use crate::{autostart, global_shortcut, worker};
 use gtk::prelude::*;
 use gtk::{Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, Label, Orientation};
 use serde::Deserialize;
@@ -52,7 +52,7 @@ fn config_operation(flag: &str) -> Result<ConfigResult, String> {
     }
 }
 
-pub fn show(app: &Application) {
+pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
     if let Some(window) = app
         .windows()
         .into_iter()
@@ -77,15 +77,41 @@ pub fn show(app: &Application) {
     let status = Label::new(None);
     status.set_xalign(0.0);
     status.set_wrap(true);
+    let shortcut = Label::new(Some(shortcut_status.message()));
+    shortcut.set_xalign(0.0);
+    shortcut.set_wrap(true);
     let init = Button::with_label("Initialize configuration");
+    let enable_shortcut = Button::with_label("Enable/configure global shortcut");
     let reload = Button::with_label("Revalidate status");
     let login = CheckButton::with_label("Start SayAll at login (preview)");
     column.append(&heading);
     column.append(&status);
+    column.append(&shortcut);
+    column.append(&enable_shortcut);
     column.append(&init);
     column.append(&reload);
     column.append(&login);
     window.set_child(Some(&column));
+    let enable_for_click = enable_shortcut.clone();
+    enable_shortcut.connect_clicked(move |_| {
+        enable_for_click.set_sensitive(false);
+        crate::enable_portal_shortcut();
+    });
+    let shortcut_poll = shortcut.downgrade();
+    let enable_poll = enable_shortcut.downgrade();
+    gtk::glib::timeout_add_local(Duration::from_millis(250), move || {
+        let (Some(shortcut), Some(enable)) = (shortcut_poll.upgrade(), enable_poll.upgrade())
+        else {
+            return gtk::glib::ControlFlow::Break;
+        };
+        let current = crate::portal_status();
+        shortcut.set_text(current.message());
+        enable.set_sensitive(!matches!(
+            current,
+            global_shortcut::Status::Initializing | global_shortcut::Status::Active
+        ));
+        gtk::glib::ControlFlow::Continue
+    });
     let changing = std::rc::Rc::new(Cell::new(false));
     let refresh = {
         let status = status.clone();

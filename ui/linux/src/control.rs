@@ -97,7 +97,13 @@ impl Server {
         })
     }
     pub fn shutdown_and_join(&mut self) {
+        self.request_stop();
+        self.join();
+    }
+    pub fn request_stop(&self) {
         self.stop.store(true, Ordering::Release);
+    }
+    pub fn join(&mut self) {
         if let Some(j) = self.join.take() {
             let _ = j.join();
         }
