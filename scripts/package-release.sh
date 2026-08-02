@@ -40,11 +40,16 @@ fi
 zig build test
 cargo test --locked --manifest-path ui/linux/Cargo.toml
 zig build -Doptimize=ReleaseFast
+zig build process -Doptimize=ReleaseFast
 cargo build --locked --release --manifest-path ui/linux/Cargo.toml
 
 reported_version=$(zig-out/bin/sayall --version)
 if [[ "$reported_version" != "sayall $version" ]]; then
     printf 'unexpected version output: %q\n' "$reported_version" >&2
+    exit 1
+fi
+if [[ $(zig-out/bin/sayall-process --version) != "sayall-process $version" ]]; then
+    echo 'private worker version does not match the release' >&2
     exit 1
 fi
 
@@ -54,10 +59,12 @@ stage="dist/$name"
 rm -rf -- "$stage"
 mkdir -p \
     "$stage/bin" \
+    "$stage/lib/sayall" \
     "$stage/share/doc/sayall" \
     "$stage/share/licenses/sayall" \
     "$stage/share/systemd/user"
 install -m755 zig-out/bin/sayall ui/linux/target/release/sayall-hud "$stage/bin/"
+install -m755 zig-out/bin/sayall-process "$stage/lib/sayall/sayall-process"
 install -m644 README.md CHANGELOG.md "$stage/share/doc/sayall/"
 install -m644 LICENSE licenses/websocket.zig-LICENSE "$stage/share/licenses/sayall/"
 python3 scripts/third-party-licenses.py \

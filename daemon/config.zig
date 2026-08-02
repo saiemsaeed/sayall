@@ -118,6 +118,16 @@ fn validateDirectoryOwner(handle: Io.File.Handle) !void {
 /// Loads config from ~/.config/sayall/config.json if it exists and applies
 /// environment overrides. All strings are owned by `gpa` (use an arena).
 pub fn load(gpa: Allocator, io: Io, env: *const std.process.Environ.Map) !Config {
+    return loadWithPolicy(gpa, io, env, true);
+}
+
+/// Loads and validates configuration without performing legacy keyword
+/// migration or any other filesystem write.
+pub fn loadReadOnly(gpa: Allocator, io: Io, env: *const std.process.Environ.Map) !Config {
+    return loadWithPolicy(gpa, io, env, false);
+}
+
+fn loadWithPolicy(gpa: Allocator, io: Io, env: *const std.process.Environ.Map, migrate_keywords: bool) !Config {
     var cfg: Config = .{};
     if (try paths.Config.file(gpa, env)) |path| {
         const bytes = Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1024 * 1024)) catch |err| switch (err) {
@@ -151,7 +161,8 @@ pub fn load(gpa: Allocator, io: Io, env: *const std.process.Environ.Map) !Config
             // any filesystem side effects.
             cfg.stt.keyterms = try keywords.normalizeLegacy(gpa, cfg.stt.keyterms);
             try validate(&cfg);
-            cfg.stt.keyterms = try store.loadOrMigrate(gpa, io, cfg.stt.keyterms);
+            if (migrate_keywords)
+                cfg.stt.keyterms = try store.loadOrMigrate(gpa, io, cfg.stt.keyterms);
         }
     } else {
         cfg.stt.keyterms = try keywords.normalizeLegacy(gpa, cfg.stt.keyterms);
@@ -391,6 +402,11 @@ test "config load migrates legacy exact duplicates without startup failure" {
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
+    const read_only = try loadReadOnly(arena, std.testing.io, &env);
+    try std.testing.expectEqual(@as(usize, 4), read_only.stt.keyterms.len);
+    const keywords_path = try std.fmt.allocPrint(arena, "{s}/keywords.json", .{config_dir});
+    try std.testing.expectError(error.FileNotFound, Io.Dir.cwd().statFile(std.testing.io, keywords_path, .{}));
+
     const cfg = try load(arena, std.testing.io, &env);
     try std.testing.expectEqual(@as(usize, 4), cfg.stt.keyterms.len);
     try std.testing.expectEqualStrings("SayAll", cfg.stt.keyterms[0]);
@@ -398,7 +414,6 @@ test "config load migrates legacy exact duplicates without startup failure" {
     try std.testing.expectEqualStrings("sayall", cfg.stt.keyterms[2]);
     try std.testing.expectEqualStrings(" spaced ", cfg.stt.keyterms[3]);
 
-    const keywords_path = try std.fmt.allocPrint(arena, "{s}/keywords.json", .{config_dir});
     const stored = (try keywords.Store.init(keywords_path).load(arena, std.testing.io)).?;
     try std.testing.expectEqual(@as(usize, 4), stored.len);
 }
