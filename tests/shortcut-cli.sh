@@ -22,6 +22,19 @@ bindings=$test_dir/config/hypr/bindings.conf
 systemctl_log=$test_dir/systemctl.log
 output=$test_dir/output
 
+assert_service_migration() {
+  expected=$test_dir/systemctl.expected
+  cat >"$expected" <<'EOF'
+--user daemon-reload
+--user enable sayall-hud.service
+--user stop sayall.service
+--user is-active sayall.service
+--user disable sayall.service
+--user restart sayall-hud.service
+EOF
+  cmp "$expected" "$systemctl_log"
+}
+
 for retired in 'daemon' '__service' 'stop' 'toggle --raw'; do
   if HOME=$test_dir/home XDG_CONFIG_HOME=$test_dir/config \
       sh -c 'exec "$1" $2' _ "$sayall" "$retired" >"$output" 2>&1; then
@@ -47,7 +60,25 @@ cmp "$test_dir/bindings.before" "$bindings"
 test ! -e "$test_dir/config/hypr/sayall.conf"
 test ! -e "$test_dir/config/sayall/shortcut.json"
 grep -q 'leaving the existing binding unchanged' "$output"
-test "$(wc -l <"$systemctl_log")" -eq 6
+assert_service_migration
+
+: >"$systemctl_log"
+if SAYALL_TEST_SYSTEMCTL_LOG=$systemctl_log \
+    SAYALL_TEST_LEGACY_STATE=active \
+    HOME=$test_dir/home \
+    XDG_CONFIG_HOME=$test_dir/config \
+    PATH=$test_dir/bin:$PATH \
+    env -u HYPRLAND_INSTANCE_SIGNATURE "$sayall" setup >"$output" 2>&1; then
+  echo 'setup unexpectedly started the native host while the legacy owner remained active' >&2
+  exit 1
+fi
+cat >"$test_dir/systemctl-active.expected" <<'EOF'
+--user daemon-reload
+--user enable sayall-hud.service
+--user stop sayall.service
+--user is-active sayall.service
+EOF
+cmp "$test_dir/systemctl-active.expected" "$systemctl_log"
 
 variable_config=$test_dir/variable-config
 mkdir -p "$variable_config/hypr"
@@ -150,7 +181,7 @@ XDG_CONFIG_HOME=$managed_config \
 PATH=$test_dir/bin:$PATH \
 env -u HYPRLAND_INSTANCE_SIGNATURE "$sayall" setup >"$output" 2>&1
 grep -q '"shortcut": "SUPER+H"' "$managed_config/sayall/shortcut.json"
-test "$(wc -l <"$systemctl_log")" -eq 6
+assert_service_migration
 
 HOME=$test_dir/home XDG_CONFIG_HOME=$managed_config \
   env -u HYPRLAND_INSTANCE_SIGNATURE "$sayall" shortcut disable >"$output" 2>&1
@@ -204,7 +235,7 @@ fi
 
 grep -q 'shortcut conflicts with' "$output"
 grep -q 'host service was enabled and restarted' "$output"
-test "$(wc -l <"$systemctl_log")" -eq 6
+assert_service_migration
 test ! -e "$test_dir/config/hypr/sayall.conf"
 test ! -e "$test_dir/config/sayall/shortcut.json"
 
