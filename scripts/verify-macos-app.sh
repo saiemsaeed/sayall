@@ -19,6 +19,7 @@ cli="$app/Contents/Helpers/sayall"
 [[ $(lipo -archs "$cli") == arm64 ]]
 [[ $(lipo -archs "$helper") == arm64 ]]
 [[ $("$cli" --version) == "sayall $version" ]]
+[[ $("$helper" --version) == "sayall-process $version" ]]
 help=$("$cli" --help)
 grep -Fq 'sayall status' <<<"$help"
 grep -Fq 'sayall config init' <<<"$help"

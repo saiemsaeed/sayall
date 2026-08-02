@@ -35,7 +35,8 @@ produces the tested, ad-hoc-signed CI candidate. On `release/<version>`, the Rel
 workflow rebuilds that candidate without credentials, verifies it before
 credentials are exposed, then uses a protected job to sign the nested CLI and
 processing helper first and the app second, notarize, staple, and
-Gatekeeper-check the result.
+Gatekeeper-check the result. It then creates a DMG containing that one app and
+an `/Applications` symlink, and notarizes, staples, and validates the final DMG.
 Repository build or test code does not run while release credentials are
 available, and an `if: always()` step removes the certificate, notary key, and
 temporary keychain before the signed artifact is uploaded.
@@ -109,7 +110,7 @@ the gate.
     candidate.
 11. Download that exact `macos-assets` artifact while `publish` remains blocked.
     Complete the artifact checks and physical Apple Silicon matrix, record the
-    approver, decision, and ZIP SHA-256, then set `MACOS_APPROVED_SHA256` to
+    approver, decision, and DMG SHA-256, then set `MACOS_APPROVED_SHA256` to
     that exact digest. Do not approve publication if any required row is
     incomplete.
 12. Approve the protected `publish` job. It rejects any candidate whose digest
@@ -133,6 +134,32 @@ assets.
 Treat a successfully published release branch as frozen. If publication
 succeeds and a defect is found afterward, prepare a new patch version rather
 than pushing replacement artifacts to the same branch.
+
+## Automated Homebrew Cask publishing
+
+The release workflow generates `sayall.rb` from the approved DMG version and
+SHA-256 and retains it as the `homebrew-cask` workflow artifact. After the
+release is published, the default-branch `Publish Homebrew Cask` workflow
+independently downloads the immutable DMG and checksum manifest, verifies the
+tag and release commit, regenerates the exact Cask, runs `brew style` and
+`brew audit --cask`, and pushes `Casks/sayall.rb` to the dedicated
+[`saiemsaeed/homebrew-sayall`](https://github.com/saiemsaeed/homebrew-sayall)
+tap. It uses a write-enabled deploy key scoped only to that tap; the private key
+is `HOMEBREW_TAP_SSH_PRIVATE_KEY` and its expected public fingerprint is
+`HOMEBREW_TAP_SSH_KEY_FINGERPRINT`. The private key exists only in the
+`homebrew-publication` environment, which permits deployment from `main`; Cask
+generation, download, style, and audit run before the key is injected into the
+final Git-only publication step. It does not share Apple credentials or a
+general-purpose GitHub token.
+
+The Cask uses the immutable GitHub release DMG, installs `SayAll.app`, and lets
+Homebrew expose `Contents/Helpers/sayall`; it never uses `sha256 :no_check`.
+Normal uninstall quits bundle ID `pro.leets.sayall` and removes Homebrew's app
+and binary shim. Shared configuration is removed only by explicit `--zap`.
+Manual retries require the immutable version and verify the matching release
+branch, tag, asset, checksum, and generator before accessing the deploy key.
+The publisher permits an equal-version idempotent retry but refuses to replace
+the tap with an older version.
 
 ## Automated AUR publishing
 
