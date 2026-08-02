@@ -180,7 +180,7 @@ fn run(init: std.process.Init) !u8 {
         return keywordCommand(arena, io, env, argv[2..]);
     }
 
-    if (std.mem.eql(u8, cmd, "toggle") or std.mem.eql(u8, cmd, "stop") or std.mem.eql(u8, cmd, "status")) {
+    if (std.mem.eql(u8, cmd, "toggle") or std.mem.eql(u8, cmd, "stop")) {
         const is_toggle = std.mem.eql(u8, cmd, "toggle");
         if ((!is_toggle and argv.len != 2) or (is_toggle and argv.len > 3)) return invalidArguments(cmd);
         const raw = is_toggle and argv.len == 3 and std.mem.eql(u8, std.mem.span(argv[2]), "--raw");

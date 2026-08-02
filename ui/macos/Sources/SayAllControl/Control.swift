@@ -19,8 +19,35 @@ public struct ControlResponse: Codable, Equatable {
     }
 }
 
+public enum HostControlMethod: String, Codable { case status, toggle }
+public enum HostControlState: String, Codable, CaseIterable {
+    case idle, starting, recording, stopping, processing, delivering, success, error, cancelled
+}
+public struct HostControlRequest: Codable, Equatable {
+    public let version: Int
+    public let method: HostControlMethod
+    public init(version: Int, method: HostControlMethod) { self.version = version; self.method = method }
+}
+public struct HostControlError: Codable, Equatable {
+    public let code: String
+    public let message: String
+    public init(code: String, message: String) { self.code = code; self.message = message }
+}
+public struct HostControlResponse: Codable, Equatable {
+    public let version: Int
+    public let ok: Bool
+    public let state: HostControlState
+    public let error: HostControlError?
+    public init(version: Int = 2, ok: Bool, state: HostControlState, error: HostControlError? = nil) {
+        self.version = version; self.ok = ok; self.state = state; self.error = error
+    }
+    public func validate() throws {
+        guard version == 2, ok != (error != nil) else { throw POSIXError(.EPROTO) }
+    }
+}
+
 public enum ControlSocket {
-    public static let maximumFrameBytes = 4_096
+    public static let maximumFrameBytes = 64 * 1_024
 
     public static var directoryURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -82,11 +109,18 @@ public enum ControlSocket {
         let deadline = deadline(afterMilliseconds: timeoutMilliseconds)
         let fd = try connect(deadline: deadline)
         defer { close(fd) }
-        var data = try JSONEncoder().encode(request); data.append(0x0a)
+        let data = try encodeFrame(request)
         try writeAll(data, to: fd, deadline: deadline)
         let response = try JSONDecoder().decode(ControlResponse.self, from: readLine(from: fd, deadline: deadline))
         guard response.version == 1 else { throw POSIXError(.EPROTO) }
         return response
+    }
+
+    public static func encodeFrame<T: Encodable>(_ value: T) throws -> Data {
+        var data = try JSONEncoder().encode(value)
+        data.append(0x0a)
+        guard data.count <= maximumFrameBytes else { throw POSIXError(.EMSGSIZE) }
+        return data
     }
 
     public static func readLine(from fd: Int32, deadline: UInt64) throws -> Data {
@@ -100,6 +134,7 @@ public enum ControlSocket {
             result.append(contentsOf: buffer[..<Int(count)])
             if let newline = result.firstIndex(of: 0x0a) {
                 guard newline == result.index(before: result.endIndex) else { throw POSIXError(.EPROTO) }
+                guard result.count <= maximumFrameBytes else { throw POSIXError(.EMSGSIZE) }
                 result.removeLast()
                 return result
             }

@@ -34,7 +34,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             configuration: ConfigurationLoader(),
             changed: { [weak self] in self?.refreshStatus() }
         )
-        do { try controlServer.start { [weak self] method in
+        do { try controlServer.start(state: { [weak self] in
+            self?.coordinator.hostControlState ?? .error
+        }) { [weak self] method in
             self?.coordinator.handleControl(method) ?? ControlResponse(ok: false, state: "unavailable", error: "app unavailable")
         } } catch {
             NSApp.terminate(nil)
