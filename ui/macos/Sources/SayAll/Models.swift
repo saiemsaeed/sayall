@@ -88,7 +88,13 @@ struct HelperResult: Codable, Equatable {
 
 enum HelperFailure: Error, Equatable {
     case launch, invalidSignature, timeout, oversizedRequest, oversizedOutput, malformedOutput, unsupportedVersion
-    case streamUnavailableBeforeFinish, unsuccessful(String)
+    case incompatibleBuild, streamUnavailableBeforeFinish, unsuccessful(String)
+}
+
+struct WorkerInfo: Codable, Equatable {
+    let protocolVersion: Int
+    let buildVersion: String
+    enum CodingKeys: String, CodingKey { case protocolVersion = "protocol_version", buildVersion = "build_version" }
 }
 
 enum HelperDecoder {
@@ -104,18 +110,22 @@ enum HelperDecoder {
 }
 
 enum StreamingHelperDecoder {
-    private struct Ready: Codable {
+    struct Ready: Codable, Equatable {
         let version: Int
         let event: String
         let streaming: Bool
     }
 
+    static let maximumReadyBytes = 4096
+    static func decodeReady(_ data: Data) throws -> Ready {
+        guard !data.isEmpty, data.count <= maximumReadyBytes,
+              let ready = try? JSONDecoder().decode(Ready.self, from: data),
+              ready.version == 1, ready.event == "ready" else { throw HelperFailure.streamUnavailableBeforeFinish }
+        return ready
+    }
+
     static func decode(_ data: Data) throws -> HelperResult {
         guard data.count <= HelperDecoder.maximumOutputBytes else { throw HelperFailure.oversizedOutput }
-        let lines = data.split(separator: 0x0A, omittingEmptySubsequences: true)
-        guard lines.count == 2,
-              let ready = try? JSONDecoder().decode(Ready.self, from: Data(lines[0])),
-              ready.version == 1, ready.event == "ready" else { throw HelperFailure.malformedOutput }
-        return try HelperDecoder.decode(Data(lines[1]))
+        return try HelperDecoder.decode(data)
     }
 }

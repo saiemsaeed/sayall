@@ -60,6 +60,11 @@ pub fn build(b: *std.Build) void {
     }) });
     const batch_step = b.step("test-batch", "Compile and test the platform-free batch operation");
     if (target.query.isNative()) batch_step.dependOn(&b.addRunArtifact(batch_tests).step) else batch_step.dependOn(&batch_tests.step);
+    if (target.query.isNative()) {
+        const worker_info_test = b.addSystemCommand(&.{ "sh", b.pathFromRoot("tests/worker-info-wait.sh") });
+        worker_info_test.addArtifactArg(process_exe);
+        batch_step.dependOn(&worker_info_test.step);
+    }
     const stream_tests_module = b.createModule(.{
         .root_source_file = b.path("daemon/stream_batch.zig"),
         .target = target,

@@ -1,6 +1,7 @@
 const std = @import("std");
 const batch = @import("batch.zig");
 const stream_batch = @import("stream_batch.zig");
+const worker_protocol = @import("worker_protocol.zig");
 const build_options = @import("build_options");
 
 pub fn main(init: std.process.Init) u8 {
@@ -14,6 +15,20 @@ fn run(init: std.process.Init) !void {
     const argv = init.minimal.args.vector;
     if (argv.len == 2 and std.mem.eql(u8, std.mem.span(argv[1]), "--version")) {
         return writeBytes(io, "sayall-process " ++ build_options.version ++ "\n");
+    }
+    if ((argv.len == 2 or (argv.len == 3 and std.mem.eql(u8, std.mem.span(argv[2]), "--wait"))) and
+        std.mem.eql(u8, std.mem.span(argv[1]), "--worker-info"))
+    {
+        const info = try worker_protocol.stringifyInfo(gpa, build_options.version);
+        defer gpa.free(info);
+        try writeBytes(io, info);
+        try writeBytes(io, "\n");
+        if (argv.len == 3) {
+            var storage: [1]u8 = undefined;
+            var reader = std.Io.File.stdin().reader(io, &storage);
+            _ = reader.interface.allocRemaining(gpa, .limited(1)) catch return;
+        }
+        return;
     }
     if (argv.len == 2 and std.mem.eql(u8, std.mem.span(argv[1]), "--stream")) {
         return stream_batch.run(gpa, io);

@@ -3,6 +3,8 @@ const batch = @import("batch.zig");
 const deepgram_stream = @import("stt/deepgram_stream.zig");
 const provider = @import("provider_config.zig");
 const keywords = @import("keywords.zig");
+const worker_protocol = @import("worker_protocol.zig");
+const secure_audio = @import("secure_audio.zig");
 
 pub const Request = struct {
     version: u32,
@@ -26,12 +28,6 @@ pub const Finish = struct {
     force_rest: bool = false,
 };
 
-const Ready = struct {
-    version: u32 = 1,
-    event: []const u8 = "ready",
-    streaming: bool,
-};
-
 pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
     var storage: [batch.max_request_bytes + 1]u8 = undefined;
     var reader = std.Io.File.stdin().reader(io, &storage);
@@ -44,9 +40,9 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
     defer parsed.deinit();
     const request = parsed.value;
 
-    if (!validRequest(io, request)) {
+    const pcm = validateAndOpenAudio(io, request) catch {
         return writeResult(gpa, io, .{ .status = .@"error", .@"error" = .invalid_request });
-    }
+    };
 
     var cfg: provider.SttConfig = .{
         .api_key = request.deepgram_api_key,
@@ -57,14 +53,14 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
         .streaming = true,
         .stream_finalize_timeout_ms = request.stream_finalize_timeout_ms,
     };
-    var session: ?*deepgram_stream.Session = deepgram_stream.Session.startBounded(
+    var session: ?*deepgram_stream.Session = deepgram_stream.Session.startBoundedFile(
         gpa,
         io,
         &cfg,
-        request.pcm_path,
+        pcm,
         9_600_000,
     ) catch null;
-    try writeJsonLine(gpa, io, Ready{ .streaming = session != null });
+    try writeJsonLine(gpa, io, worker_protocol.Ready{ .streaming = session != null });
 
     const finish_line = readLine(&reader.interface) catch {
         if (session) |active| active.cancel();
@@ -120,26 +116,25 @@ fn readLine(reader: *std.Io.Reader) !?[]const u8 {
     return if (line) |bytes| std.mem.trimEnd(u8, bytes, "\r") else null;
 }
 
-fn validRequest(io: std.Io, request: Request) bool {
-    if (request.version != 1 or request.deepgram_api_key.len == 0) return false;
-    if (!std.fs.path.isAbsolute(request.wav_path) or !std.fs.path.isAbsolute(request.pcm_path)) return false;
-    if (std.mem.eql(u8, request.wav_path, request.pcm_path)) return false;
-    if (!safeSecret(request.deepgram_api_key) or !safeSecret(request.groq_api_key)) return false;
-    if (!safeProviderValue(request.deepgram_model) or !safeProviderValue(request.deepgram_language)) return false;
-    if (!validRegion(request.deepgram_region)) return false;
-    if (request.stream_finalize_timeout_ms < 250 or request.stream_finalize_timeout_ms > 10_000) return false;
+fn validateAndOpenAudio(io: std.Io, request: Request) !std.Io.File {
+    if (request.version != 1 or request.deepgram_api_key.len == 0) return error.InvalidRequest;
+    if (!std.fs.path.isAbsolute(request.wav_path) or !std.fs.path.isAbsolute(request.pcm_path)) return error.InvalidRequest;
+    if (std.mem.eql(u8, request.wav_path, request.pcm_path)) return error.InvalidRequest;
+    if (!safeSecret(request.deepgram_api_key) or !safeSecret(request.groq_api_key)) return error.InvalidRequest;
+    if (!safeProviderValue(request.deepgram_model) or !safeProviderValue(request.deepgram_language)) return error.InvalidRequest;
+    if (!validRegion(request.deepgram_region)) return error.InvalidRequest;
+    if (request.stream_finalize_timeout_ms < 250 or request.stream_finalize_timeout_ms > 10_000) return error.InvalidRequest;
     if (!safeProviderValue(request.groq_model) or
-        !std.mem.eql(u8, request.groq_base_url, "https://api.groq.com/openai/v1/chat/completions")) return false;
-    keywords.validate(request.deepgram_keyterms) catch return false;
+        !std.mem.eql(u8, request.groq_base_url, "https://api.groq.com/openai/v1/chat/completions")) return error.InvalidRequest;
+    keywords.validate(request.deepgram_keyterms) catch return error.InvalidRequest;
     if (request.deepgram_keyterms.len > 0 and !std.mem.eql(u8, request.deepgram_model, "nova-3") and
-        !std.mem.startsWith(u8, request.deepgram_model, "nova-3-")) return false;
-    var file = std.Io.Dir.cwd().openFile(io, request.pcm_path, .{
-        .allow_directory = false,
-        .follow_symlinks = false,
-    }) catch return false;
-    defer file.close(io);
-    const stat = file.stat(io) catch return false;
-    return stat.kind == .file;
+        !std.mem.startsWith(u8, request.deepgram_model, "nova-3-")) return error.InvalidRequest;
+    var pcm = try secure_audio.open(io, request.pcm_path, 9_600_000, .growing);
+    errdefer pcm.file.close(io);
+    var wav = try secure_audio.open(io, request.wav_path, batch.max_audio_bytes, .nonempty);
+    defer wav.file.close(io);
+    if (secure_audio.sameFile(pcm.identity, wav.identity)) return error.InvalidRequest;
+    return pcm.file;
 }
 
 fn batchRequest(request: Request) batch.Request {
