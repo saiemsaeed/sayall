@@ -9,13 +9,51 @@ fi
 sayall=$1
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 test_dir=$(mktemp -d /tmp/sayall-shortcut-test.XXXXXX)
-trap 'rm -rf -- "$test_dir"' EXIT HUP INT TERM
+host_pid=
+cleanup() {
+  if [ -n "$host_pid" ]; then
+    kill "$host_pid" 2>/dev/null || true
+    wait "$host_pid" 2>/dev/null || true
+  fi
+  rm -rf -- "$test_dir"
+}
+trap cleanup EXIT HUP INT TERM
 
 mkdir -p "$test_dir/bin" "$test_dir/home" "$test_dir/config/hypr"
 cp "$script_dir/fixtures/systemctl" "$test_dir/bin/systemctl"
 cp "$script_dir/fixtures/hyprctl" "$test_dir/bin/hyprctl"
 chmod +x "$test_dir/bin/systemctl"
 chmod +x "$test_dir/bin/hyprctl"
+
+SAYALL_SOCKET=$test_dir/sayall.sock
+export SAYALL_SOCKET
+python3 - "$SAYALL_SOCKET" <<'PY' &
+import os
+import socket
+import sys
+
+path = sys.argv[1]
+server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+server.bind(path)
+os.chmod(path, 0o600)
+server.listen()
+while True:
+    connection, _ = server.accept()
+    with connection:
+        request = b""
+        while not request.endswith(b"\n"):
+            chunk = connection.recv(4096)
+            if not chunk:
+                break
+            request += chunk
+        connection.sendall(b'{"version":2,"ok":true,"state":"idle"}\n')
+PY
+host_pid=$!
+for _ in $(seq 1 100); do
+  [ -S "$SAYALL_SOCKET" ] && break
+  sleep 0.01
+done
+test -S "$SAYALL_SOCKET"
 
 root=$test_dir/config/hypr/hyprland.conf
 bindings=$test_dir/config/hypr/bindings.conf
