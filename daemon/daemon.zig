@@ -9,6 +9,7 @@ const metrics = @import("metrics.zig");
 const paths = @import("paths.zig");
 const platform = @import("platform.zig");
 const protocol = @import("protocol.zig");
+const host_control = @import("host_control.zig");
 const recorder_mod = @import("recorder.zig");
 const deepgram_stream = @import("stt/deepgram_stream.zig");
 const groq = @import("llm/groq.zig");
@@ -26,6 +27,43 @@ const PipelineJob = struct {
     stopped_at_awake_ms: i64,
     stream: ?*deepgram_stream.Session,
 };
+
+const EnvelopeRoute = enum { plaintext, v1, v2, invalid };
+
+fn classifyEnvelope(gpa: Allocator, frame: []const u8) EnvelopeRoute {
+    if (frame.len == 0 or frame[0] != '{') return .plaintext;
+    const Envelope = struct { version: ?u16 = null, v: ?u16 = null };
+    const envelope = std.json.parseFromSlice(Envelope, gpa, frame, .{ .ignore_unknown_fields = true }) catch return .invalid;
+    defer envelope.deinit();
+    if (envelope.value.version != null) return .v2;
+    if (envelope.value.v != null) return .v1;
+    return .invalid;
+}
+
+const ToggleResult = struct { state: host_control.State, reply: []const u8 };
+const ToggleFn = *const fn (*anyopaque) ToggleResult;
+
+fn dispatchHostV2(gpa: Allocator, frame: []const u8, current_state: host_control.State, context: *anyopaque, toggle: ToggleFn) host_control.Response {
+    const parsed = host_control.parseRequest(gpa, frame) catch |err| return .{
+        .version = host_control.version,
+        .ok = false,
+        .state = current_state,
+        .@"error" = .{
+            .code = if (err == error.UnsupportedVersion) "incompatible_version" else "invalid_request",
+            .message = @errorName(err),
+        },
+    };
+    defer parsed.deinit();
+    if (parsed.value.method == .status) return .{ .version = host_control.version, .ok = true, .state = current_state };
+    const result = toggle(context);
+    return Daemon.hostV2ToggleResponse(result.state, result.reply);
+}
+
+fn daemonToggle(context: *anyopaque) ToggleResult {
+    const daemon: *Daemon = @ptrCast(@alignCast(context));
+    const reply = daemon.onToggle(false);
+    return .{ .state = daemon.hostState(), .reply = reply };
+}
 
 const ProviderContext = struct {
     daemon: *Daemon,
@@ -178,11 +216,45 @@ const Daemon = struct {
             }
             return;
         } orelse return;
-        if (cmd.len > 0 and cmd[0] == '{') {
-            self.handleJson(stream, cmd);
-            return;
+        switch (classifyEnvelope(self.gpa, cmd)) {
+            .plaintext => ipc.writeReply(stream, self.io, self.dispatch(cmd)) catch {},
+            .v1 => self.handleJson(stream, cmd),
+            .v2 => self.handleHostV2(stream, cmd),
+            .invalid => protocol.writeError(stream, self.io, 0, "invalid_request", "Malformed or missing protocol version") catch {},
         }
-        ipc.writeReply(stream, self.io, self.dispatch(cmd)) catch {};
+    }
+
+    fn handleHostV2(self: *Daemon, stream: Io.net.Stream, frame: []const u8) void {
+        const response = dispatchHostV2(self.gpa, frame, self.hostState(), self, daemonToggle);
+        host_control.writeResponse(stream, self.io, response) catch {};
+    }
+
+    fn hostV2ToggleResponse(state: host_control.State, reply: []const u8) host_control.Response {
+        const busy_prefix = "busy: ";
+        const error_prefix = "error: ";
+        const busy = std.mem.startsWith(u8, reply, busy_prefix);
+        const failed = busy or std.mem.startsWith(u8, reply, error_prefix);
+        return .{
+            .version = host_control.version,
+            .ok = !failed,
+            .state = state,
+            .@"error" = if (failed) .{
+                .code = if (busy) "busy" else "unavailable",
+                .message = if (busy) reply[busy_prefix.len..] else reply[error_prefix.len..],
+            } else null,
+        };
+    }
+
+    fn hostState(self: *Daemon) host_control.State {
+        self.lock();
+        defer self.unlock();
+        if (self.state == .processing and self.stage == .delivering) return .delivering;
+        return switch (self.state) {
+            .idle => .idle,
+            .recording => .recording,
+            .stopping => .stopping,
+            .processing => .processing,
+        };
     }
 
     fn handleJson(self: *Daemon, stream: Io.net.Stream, frame: []const u8) void {
@@ -800,4 +872,49 @@ test "subscription barrier snapshots state before the next event" {
     try std.testing.expectEqual(barrier.next_seq, parsed.value.seq);
     try std.testing.expectEqual(protocol.State.processing, parsed.value.data.state);
     try std.testing.expectEqual(protocol.ProcessingStage.validating, parsed.value.data.stage.?);
+}
+
+test "host v2 response construction strips one exact legacy prefix" {
+    const busy = Daemon.hostV2ToggleResponse(.processing, "busy: SayAll is processing");
+    try std.testing.expect(!busy.ok);
+    try std.testing.expectEqualStrings("busy", busy.@"error".?.code);
+    try std.testing.expectEqualStrings("SayAll is processing", busy.@"error".?.message);
+    const failed = Daemon.hostV2ToggleResponse(.idle, "error: unavailable");
+    try std.testing.expectEqualStrings("unavailable", failed.@"error".?.message);
+    const success = Daemon.hostV2ToggleResponse(.recording, "recording");
+    try std.testing.expect(success.ok);
+    try std.testing.expectEqual(@as(?host_control.Failure, null), success.@"error");
+}
+
+test "envelope classification preserves plaintext v1 and v2 routing" {
+    try std.testing.expectEqual(EnvelopeRoute.plaintext, classifyEnvelope(std.testing.allocator, "toggle"));
+    try std.testing.expectEqual(EnvelopeRoute.v1, classifyEnvelope(std.testing.allocator, "{\"v\":1,\"id\":1,\"method\":\"get_state\"}"));
+    try std.testing.expectEqual(EnvelopeRoute.v2, classifyEnvelope(std.testing.allocator, "{\"version\":2,\"method\":\"status\"}"));
+    try std.testing.expectEqual(EnvelopeRoute.invalid, classifyEnvelope(std.testing.allocator, "{broken"));
+    try std.testing.expectEqual(EnvelopeRoute.invalid, classifyEnvelope(std.testing.allocator, "{}"));
+}
+
+test "v2 dispatch mutates only once for a valid toggle" {
+    const Counter = struct {
+        calls: usize = 0,
+        fn toggle(context: *anyopaque) ToggleResult {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            return .{ .state = .recording, .reply = "recording" };
+        }
+    };
+    var counter: Counter = .{};
+    const status = dispatchHostV2(std.testing.allocator, "{\"version\":2,\"method\":\"status\"}", .idle, &counter, Counter.toggle);
+    try std.testing.expect(status.ok);
+    try std.testing.expectEqual(@as(usize, 0), counter.calls);
+    const toggle = dispatchHostV2(std.testing.allocator, "{\"version\":2,\"method\":\"toggle\"}", .idle, &counter, Counter.toggle);
+    try std.testing.expect(toggle.ok);
+    try std.testing.expectEqual(host_control.State.recording, toggle.state);
+    try std.testing.expectEqual(@as(usize, 1), counter.calls);
+    const malformed = dispatchHostV2(std.testing.allocator, "{broken", .idle, &counter, Counter.toggle);
+    try std.testing.expect(!malformed.ok);
+    const unsupported = dispatchHostV2(std.testing.allocator, "{\"version\":3,\"method\":\"toggle\"}", .idle, &counter, Counter.toggle);
+    try std.testing.expect(!unsupported.ok);
+    try std.testing.expectEqualStrings("incompatible_version", unsupported.@"error".?.code);
+    try std.testing.expectEqual(@as(usize, 1), counter.calls);
 }

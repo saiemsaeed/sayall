@@ -30,9 +30,14 @@ pub fn parse(args: []const []const u8) ParseError!Command {
 
 pub const HostOutcome = union(enum) {
     idle,
+    starting,
     recording,
     stopping,
     processing,
+    delivering,
+    success,
+    host_error,
+    cancelled,
     busy: []const u8,
     operation_error: []const u8,
     transport_error: []const u8,
@@ -73,9 +78,14 @@ pub fn execute(command: Command, version: []const u8, host: HostControl) Present
 fn present(result: HostOutcome) Presentation {
     return switch (result) {
         .idle => .{ .exit_code = 0, .stdout = "idle\n" },
+        .starting => .{ .exit_code = 0, .stdout = "starting\n" },
         .recording => .{ .exit_code = 0, .stdout = "recording\n" },
         .stopping => .{ .exit_code = 0, .stdout = "stopping\n" },
         .processing => .{ .exit_code = 0, .stdout = "processing\n" },
+        .delivering => .{ .exit_code = 0, .stdout = "delivering\n" },
+        .success => .{ .exit_code = 0, .stdout = "success\n" },
+        .host_error => .{ .exit_code = 0, .stdout = "error\n" },
+        .cancelled => .{ .exit_code = 0, .stdout = "cancelled\n" },
         .busy, .operation_error => |reply| .{ .exit_code = 1, .stdout = reply },
         .transport_error => |diagnostic| .{ .exit_code = 1, .stderr = diagnostic },
         .incompatible => |reply| .{ .exit_code = 1, .stderr = reply },

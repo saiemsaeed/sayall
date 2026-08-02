@@ -40,7 +40,22 @@ final class Coordinator {
         default: break
         }
     }
-    var controlState: String { operationID != nil && state == .idle ? "starting" : state.rawValue }
+    var hostControlState: HostControlState {
+        if operationID != nil && state == .idle { return .starting }
+        // DictationState and HostControlState are both closed. This explicit,
+        // total conversion prevents an app-only state leaking onto protocol v2.
+        switch state {
+        case .idle: return .idle
+        case .recording: return .recording
+        case .stopping: return .stopping
+        case .processing: return .processing
+        case .delivering: return .delivering
+        case .success: return .success
+        case .error: return .error
+        case .cancelled: return .cancelled
+        }
+    }
+    var controlState: String { hostControlState.rawValue }
 
     func handleControl(_ method: ControlMethod) -> ControlResponse {
         switch method {
