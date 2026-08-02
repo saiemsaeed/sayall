@@ -45,6 +45,7 @@ build() {
   export CARGO_TARGET_DIR="$srcdir/cargo-target"
   export ZIG_GLOBAL_CACHE_DIR="$srcdir/zig-cache"
   zig build -Doptimize=ReleaseFast -Dversion="$pkgver"
+  zig build process -Doptimize=ReleaseFast -Dversion="$pkgver"
   cargo build --frozen --release --manifest-path ui/linux/Cargo.toml
 }
 
@@ -63,6 +64,8 @@ package() {
   install -Dm755 -t "$pkgdir/usr/bin" \
     "$src/zig-out/bin/sayall" \
     "$srcdir/cargo-target/release/sayall-hud"
+  install -Dm755 "$src/zig-out/bin/sayall-process" \
+    "$pkgdir/usr/lib/sayall/sayall-process"
 
   install -Dm644 -t "$pkgdir/usr/lib/systemd/user" \
     "$src/sayall.service" \

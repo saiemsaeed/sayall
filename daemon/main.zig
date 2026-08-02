@@ -3,6 +3,8 @@ const Io = std.Io;
 const build_options = @import("build_options");
 
 const cli = @import("cli.zig");
+const cli_config_validate = @import("cli_config_validate.zig");
+const cli_transcribe = @import("cli_transcribe.zig");
 const host_control = @import("host_control.zig");
 const config = @import("config.zig");
 const keywords = @import("keywords.zig");
@@ -47,7 +49,7 @@ fn run(init: std.process.Init) !u8 {
         (std.mem.eql(u8, cmd, "toggle") and !(argv.len == 3 and std.mem.eql(u8, std.mem.span(argv[2]), "--raw"))) or
         std.mem.eql(u8, cmd, "config");
     if (canonical_candidate) {
-        var args: [2][]const u8 = undefined;
+        var args: [3][]const u8 = undefined;
         if (argv.len - 1 > args.len) return writePresentation(io, cli.invalid_presentation);
         for (argv[1..], 0..) |arg, index| args[index] = std.mem.span(arg);
         const command = cli.parse(args[0 .. argv.len - 1]) catch return writePresentation(io, cli.invalid_presentation);
@@ -58,6 +60,9 @@ fn run(init: std.process.Init) !u8 {
             };
             try printLine(io, try std.fmt.allocPrint(arena, "Created {s}", .{path}));
             return 0;
+        }
+        if (command == .config_validate or command == .config_validate_json) {
+            return cli_config_validate.run(arena, io, env, command == .config_validate_json);
         }
         var linux_host: host_control.Linux = .{ .arena = arena, .io = io, .env = env };
         const version = "sayall " ++ build_options.version ++ "\n";
@@ -196,59 +201,11 @@ fn run(init: std.process.Init) !u8 {
     }
 
     if (std.mem.eql(u8, cmd, "transcribe")) {
-        var raw = false;
-        var verbose = false;
-        var path: ?[]const u8 = null;
-        for (argv[2..]) |a| {
-            const value = std.mem.span(a);
-            if (std.mem.eql(u8, value, "--raw") and !raw) raw = true else if (flag(value, "--verbose", "-v") and !verbose) verbose = true else if (path == null and !std.mem.startsWith(u8, value, "-")) path = value else return invalidArguments("transcribe");
-        }
-        const wav_path = path orelse {
-            std.debug.print("sayall: transcribe needs a WAV file path\n", .{});
-            return 2;
-        };
-        var cfg = try config.load(arena, io, env);
-        if (cfg.stt.api_key.len == 0) {
-            std.debug.print("sayall: error: no Deepgram API key configured\n", .{});
-            return 1;
-        }
-        if (cfg.llm.enabled and cfg.llm.api_key.len == 0) cfg.llm.enabled = false;
-        cfg.verbose = cfg.verbose or verbose;
-        const wav = try Io.Dir.cwd().readFileAlloc(io, wav_path, arena, .limited(256 * 1024 * 1024));
-        const info = recorder.inspectWav(wav) catch {
-            std.debug.print("sayall: not a valid WAV file: {s}\n", .{wav_path});
-            return 1;
-        };
-        var line_buf: [256]u8 = undefined;
-        const info_line = std.fmt.bufPrint(&line_buf, "duration: {d:.2}s ({d} Hz, {d} ch)", .{
-            info.seconds, info.sample_rate, info.channels,
-        }) catch "?";
-        try printLine(io, info_line);
-
-        const metrics_path = try paths.PersistentState.metrics(arena, env);
-        const metrics_store: ?metrics.Store = if (cfg.metrics.enabled)
-            metrics.Store.init(metrics_path, cfg.metrics.history_max_entries)
-        else
-            null;
-        const tracked = try metrics.transcribeTracked(
-            arena,
-            io,
-            metrics_store,
-            &cfg.stt,
-            wav,
-            cfg.verbose,
-            "cli",
-            @intFromFloat(info.seconds * 1000.0),
-            null,
-        );
-        const transcript = tracked.transcript;
-        try printLine(io, try std.fmt.allocPrint(arena, "raw: {s}", .{transcript}));
-
-        if (!raw and cfg.llm.enabled and transcript.len > 0) {
-            const cleaned = try groq.cleanup(arena, io, &cfg.llm, cfg.stt.keyterms, transcript, cfg.verbose);
-            try printLine(io, try std.fmt.allocPrint(arena, "clean: {s}", .{cleaned}));
-        }
-        return 0;
+        var values: [3][]const u8 = undefined;
+        if (argv.len < 3 or argv.len > 5) return invalidArguments("transcribe");
+        for (argv[2..], 0..) |arg, i| values[i] = std.mem.span(arg);
+        const options = cli_transcribe.parse(values[0 .. argv.len - 2]) catch return invalidArguments("transcribe");
+        return cli_transcribe.run(gpa, arena, io, env, options);
     }
 
     if (std.mem.eql(u8, cmd, "stats")) {

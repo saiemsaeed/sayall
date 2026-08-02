@@ -19,7 +19,17 @@ pub fn configFile(gpa: std.mem.Allocator, env: *const std.process.Environ.Map) !
     }
     return null;
 }
-pub const keywordsFile = unsupported.keywordsFile;
+pub fn keywordsFile(gpa: std.mem.Allocator, env: *const std.process.Environ.Map) !?[]u8 {
+    if (env.get("XDG_CONFIG_HOME")) |dir| {
+        if (dir.len == 0 or !std.fs.path.isAbsolute(dir)) return error.InvalidConfigHome;
+        return try std.fmt.allocPrint(gpa, "{s}/sayall/keywords.json", .{dir});
+    }
+    if (env.get("HOME")) |home| {
+        if (home.len == 0 or !std.fs.path.isAbsolute(home)) return error.InvalidConfigHome;
+        return try std.fmt.allocPrint(gpa, "{s}/.config/sayall/keywords.json", .{home});
+    }
+    return null;
+}
 pub const metricsFile = unsupported.metricsFile;
 pub const runtimeRoot = unsupported.runtimeRoot;
 pub const effectiveUserId = unsupported.effectiveUserId;

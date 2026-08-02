@@ -39,9 +39,17 @@ pub const ErrorCode = enum {
     internal,
 };
 pub const Warning = enum { cleanup_failed };
+pub const Status = enum { success, no_speech, @"error" };
 pub const Result = struct {
     version: u32 = 1,
-    status: enum { success, no_speech, @"error" },
+    status: Status,
+    text: ?[]const u8 = null,
+    warning: ?Warning = null,
+    @"error": ?ErrorCode = null,
+};
+pub const WireResult = struct {
+    version: u32,
+    status: Status,
     text: ?[]const u8 = null,
     warning: ?Warning = null,
     @"error": ?ErrorCode = null,
@@ -176,6 +184,25 @@ pub fn stringifyResult(gpa: std.mem.Allocator, result: Result) ![]u8 {
     return bytes;
 }
 
+/// Requires protocol fields and validates status-specific semantics while
+/// allowing unknown additive object fields.
+pub fn parseResult(gpa: std.mem.Allocator, bytes: []const u8) !std.json.Parsed(WireResult) {
+    if (bytes.len == 0 or bytes.len > max_output_bytes) return error.InvalidResult;
+    const parsed = std.json.parseFromSlice(WireResult, gpa, bytes, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch return error.InvalidResult;
+    errdefer parsed.deinit();
+    const value = parsed.value;
+    if (value.version != worker_protocol.version) return error.IncompatibleVersion;
+    switch (value.status) {
+        .success => if (value.text == null or value.text.?.len == 0 or value.@"error" != null) return error.InvalidResult,
+        .no_speech => if (value.text != null or value.warning != null or value.@"error" != null) return error.InvalidResult,
+        .@"error" => if (value.@"error" == null or value.text != null or value.warning != null) return error.InvalidResult,
+    }
+    return parsed;
+}
+
 fn liveTranscribe(_: ?*anyopaque, gpa: std.mem.Allocator, io: std.Io, cfg: *const provider.SttConfig, wav: []const u8) ![]u8 {
     return deepgram.transcribe(gpa, io, cfg, wav, false);
 }
@@ -232,6 +259,19 @@ test "strict bounded request and result JSON" {
     const out = try stringifyResult(std.testing.allocator, .{ .status = .success, .text = "München" });
     defer std.testing.allocator.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "München") != null);
+}
+
+test "worker result decoder requires fields and status semantics" {
+    const valid = try parseResult(std.testing.allocator, "{\"version\":1,\"status\":\"success\",\"text\":\"hello\",\"future\":true}");
+    defer valid.deinit();
+    try std.testing.expectEqualStrings("hello", valid.value.text.?);
+    for ([_][]const u8{
+        "{\"status\":\"success\",\"text\":\"hello\"}",
+        "{\"version\":1,\"status\":\"success\"}",
+        "{\"version\":1,\"status\":\"success\",\"text\":\"\"}",
+        "{\"version\":1,\"status\":\"no_speech\",\"text\":\"unexpected\"}",
+        "{\"version\":1,\"status\":\"error\"}",
+    }) |invalid_json| try std.testing.expectError(error.InvalidResult, parseResult(std.testing.allocator, invalid_json));
 }
 
 test "provider mapping is deterministic" {
