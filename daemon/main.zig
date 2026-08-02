@@ -128,6 +128,10 @@ fn run(init: std.process.Init) !u8 {
             std.debug.print("sayall: could not configure the systemd user host service\n", .{});
             return 1;
         }
+        if (!waitForLinuxHost(arena, io, env)) {
+            std.debug.print("sayall: the systemd user host service started but did not become ready\n", .{});
+            return 1;
+        }
         if (!result.shortcut_ok) {
             std.debug.print("sayall: the host service was enabled and restarted, but shortcut setup is incomplete; resolve the error above and retry 'sayall setup'.\n", .{});
             return 1;
@@ -249,6 +253,22 @@ fn run(init: std.process.Init) !u8 {
     }
 
     return writePresentation(io, cli.invalid_presentation);
+}
+
+fn waitForLinuxHost(arena: std.mem.Allocator, io: Io, env: *const std.process.Environ.Map) bool {
+    var host: host_control.Linux = .{ .arena = arena, .io = io, .env = env };
+    for (0..40) |attempt| {
+        if (hostReady(host.adapter().status())) return true;
+        if (attempt < 39) std.Io.sleep(io, .fromMilliseconds(50), .awake) catch return false;
+    }
+    return false;
+}
+
+fn hostReady(outcome: cli.HostOutcome) bool {
+    return switch (outcome) {
+        .idle, .starting, .recording, .stopping, .processing, .delivering, .success, .host_error, .cancelled, .busy, .operation_error => true,
+        .transport_error, .incompatible, .unavailable => false,
+    };
 }
 
 fn flag(value: []const u8, long: []const u8, short: []const u8) bool {
@@ -772,6 +792,15 @@ test "updates only restart an idle daemon" {
     try std.testing.expect(!cli.updateAllowed(.recording));
     try std.testing.expect(!cli.updateAllowed(.processing));
     try std.testing.expect(!cli.updateAllowed(.stopping));
+}
+
+test "setup readiness distinguishes a live host from startup transport failures" {
+    try std.testing.expect(hostReady(.idle));
+    try std.testing.expect(hostReady(.recording));
+    try std.testing.expect(hostReady(.{ .operation_error = "missing microphone" }));
+    try std.testing.expect(!hostReady(.{ .transport_error = "not bound" }));
+    try std.testing.expect(!hostReady(.{ .incompatible = "old host" }));
+    try std.testing.expect(!hostReady(.unavailable));
 }
 
 test "keyword search preserves values and folds ASCII case" {
