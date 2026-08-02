@@ -226,13 +226,31 @@ fn analyze_tail(path: &Path) -> io::Result<Level> {
 }
 
 fn resolve_program(name: &str) -> io::Result<PathBuf> {
-    for dir in ["/usr/bin", "/bin"] {
-        let path = Path::new(dir).join(name);
-        let Ok(meta) = fs::symlink_metadata(&path) else {
+    resolve_program_in(name, &[Path::new("/usr/bin"), Path::new("/bin")], 0)
+}
+fn resolve_program_in(name: &str, dirs: &[&Path], trusted_uid: u32) -> io::Result<PathBuf> {
+    let trusted_roots: Vec<_> = dirs
+        .iter()
+        .filter_map(|dir| fs::canonicalize(dir).ok())
+        .collect();
+    for dir in dirs {
+        let path = dir.join(name);
+        let Ok(entry) = fs::symlink_metadata(&path) else {
             continue;
         };
-        if meta.file_type().is_file()
-            && meta.uid() == 0
+        let Ok(target) = fs::canonicalize(&path) else {
+            continue;
+        };
+        let Ok(meta) = fs::metadata(&target) else {
+            continue;
+        };
+        if (entry.file_type().is_file() || entry.file_type().is_symlink())
+            && entry.uid() == trusted_uid
+            && trusted_roots
+                .iter()
+                .any(|root| target.parent() == Some(root.as_path()))
+            && meta.file_type().is_file()
+            && meta.uid() == trusted_uid
             && meta.mode() & 0o022 == 0
             && meta.mode() & 0o111 != 0
         {
@@ -255,7 +273,7 @@ fn write_wav(w: &mut impl Write, pcm: &[u8]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt, symlink};
 
     fn private_root(name: &str) -> PathBuf {
         let root =
@@ -291,6 +309,45 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
         assert!(!root.join("session-7").exists());
         fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn trusted_program_accepts_packaged_symlink() {
+        let root = private_root("trusted-program-symlink");
+        let bin = root.join("bin");
+        fs::create_dir(&bin).unwrap();
+        let target = bin.join("pw-cat");
+        fs::write(&target, b"#!/bin/sh\n").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+        symlink("pw-cat", bin.join("pw-record")).unwrap();
+
+        let uid = fs::metadata(&target).unwrap().uid();
+        assert_eq!(
+            resolve_program_in("pw-record", &[&bin], uid).unwrap(),
+            bin.join("pw-record")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn trusted_program_rejects_escaping_or_writable_symlink_target() {
+        let root = private_root("untrusted-program-symlink");
+        let bin = root.join("bin");
+        fs::create_dir(&bin).unwrap();
+        let outside = root.join("outside");
+        fs::write(&outside, b"#!/bin/sh\n").unwrap();
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o755)).unwrap();
+        symlink(&outside, bin.join("pw-record")).unwrap();
+        let uid = fs::metadata(&outside).unwrap().uid();
+        assert!(resolve_program_in("pw-record", &[&bin], uid).is_err());
+
+        fs::remove_file(bin.join("pw-record")).unwrap();
+        let target = bin.join("pw-cat");
+        fs::write(&target, b"#!/bin/sh\n").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o775)).unwrap();
+        symlink("pw-cat", bin.join("pw-record")).unwrap();
+        assert!(resolve_program_in("pw-record", &[&bin], uid).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
