@@ -21,8 +21,12 @@ cask "sayall" do
   desc "Voice dictation for Apple Silicon Macs"
   homepage "https://github.com/saiemsaeed/sayall"
 
+  livecheck do
+    skip "The release workflow updates this Cask from immutable assets"
+  end
+
   depends_on arch: :arm64
-  depends_on macos: ">= :sequoia"
+  depends_on macos: :sequoia
 
   app "SayAll.app"
   binary "#{appdir}/SayAll.app/Contents/Helpers/sayall"
@@ -30,8 +34,8 @@ cask "sayall" do
   uninstall quit: "pro.leets.sayall"
 
   zap trash: [
-    "~/Library/Application Support/SayAll",
     "~/.config/sayall",
+    "~/Library/Application Support/SayAll",
   ]
 end
 EOF
