@@ -45,6 +45,70 @@ pub const Config = struct {
 
 pub const ValidationError = error{InvalidConfig};
 
+/// The single Zig-owned default template. It is serialized from Config so the
+/// initializer cannot drift from runtime defaults and secrets remain empty.
+pub fn defaultTemplate(gpa: Allocator) ![]u8 {
+    const cfg: Config = .{};
+    return std.json.Stringify.valueAlloc(gpa, cfg, .{ .whitespace = .indent_2 });
+}
+
+/// Securely creates config.json without replacing any existing filesystem
+/// object. The final file is created exclusively, so readers never observe a
+/// replace of their configuration; a failed write removes the partial file.
+pub fn initDefault(gpa: Allocator, io: Io, env: *const std.process.Environ.Map) ![]const u8 {
+    const root = try configRoot(gpa, env);
+    defer gpa.free(root);
+    // Validate the complete environment policy before making directories.
+    const path = try std.fmt.allocPrint(gpa, "{s}/sayall/config.json", .{root});
+    errdefer gpa.free(path);
+    const base = try Io.Dir.cwd().createDirPathOpen(io, root, .{});
+    defer base.close(io);
+    base.createDir(io, "sayall", .fromMode(0o700)) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+    const dir = try base.openDir(io, "sayall", .{ .follow_symlinks = false });
+    defer dir.close(io);
+    const parent_stat = try dir.stat(io);
+    if (parent_stat.kind != .directory) return error.UnsafeConfigDirectory;
+    try validateDirectoryOwner(dir.handle);
+    try dir.setPermissions(io, .fromMode(0o700));
+
+    const template = try defaultTemplate(gpa);
+    defer gpa.free(template);
+    const file = try dir.createFile(io, "config.json", .{
+        .exclusive = true,
+        .permissions = @enumFromInt(0o600),
+    });
+    errdefer dir.deleteFile(io, "config.json") catch {};
+    defer file.close(io);
+    try file.writeStreamingAll(io, template);
+    return path;
+}
+
+fn configRoot(gpa: Allocator, env: *const std.process.Environ.Map) ![]u8 {
+    if (env.get("XDG_CONFIG_HOME")) |xdg| {
+        if (xdg.len == 0 or !std.fs.path.isAbsolute(xdg)) return error.InvalidConfigHome;
+        return gpa.dupe(u8, xdg);
+    }
+    const home = env.get("HOME") orelse return error.ConfigHomeUnavailable;
+    if (home.len == 0 or !std.fs.path.isAbsolute(home)) return error.InvalidConfigHome;
+    return std.fmt.allocPrint(gpa, "{s}/.config", .{home});
+}
+
+fn validateDirectoryOwner(handle: Io.File.Handle) !void {
+    if (builtin.os.tag == .linux) {
+        var raw: std.os.linux.Statx = undefined;
+        if (std.os.linux.errno(std.os.linux.statx(handle, "", std.os.linux.AT.EMPTY_PATH, .{ .UID = true }, &raw)) != .SUCCESS)
+            return error.StatFailed;
+        if (raw.uid != std.os.linux.geteuid()) return error.WrongOwner;
+    } else if (builtin.os.tag == .macos) {
+        var raw: std.c.Stat = undefined;
+        if (std.c.fstat(handle, &raw) != 0) return error.StatFailed;
+        if (raw.uid != std.c.geteuid()) return error.WrongOwner;
+    } else return error.UnsupportedPlatform;
+}
+
 /// Loads config from ~/.config/sayall/config.json if it exists and applies
 /// environment overrides. All strings are owned by `gpa` (use an arena).
 pub fn load(gpa: Allocator, io: Io, env: *const std.process.Environ.Map) !Config {
@@ -183,6 +247,81 @@ test "defaults are sensible" {
     try std.testing.expect(cfg.hud.show_timer);
 }
 
+test "default template parses validates and keeps API keys empty" {
+    const template = try defaultTemplate(std.testing.allocator);
+    defer std.testing.allocator.free(template);
+    const parsed = try std.json.parseFromSlice(Config, std.testing.allocator, template, .{});
+    defer parsed.deinit();
+    try validate(&parsed.value);
+    try std.testing.expectEqualStrings("", parsed.value.stt.api_key);
+    try std.testing.expectEqualStrings("", parsed.value.llm.api_key);
+}
+
+test "config init honors XDG permissions and never overwrites" {
+    if (@import("builtin").os.tag != .linux and @import("builtin").os.tag != .macos) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const relative = try std.fmt.allocPrint(std.testing.allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer std.testing.allocator.free(relative);
+    const root = try Io.Dir.cwd().realPathFileAlloc(std.testing.io, relative, std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    try env.put("XDG_CONFIG_HOME", root);
+    const path = try initDefault(std.testing.allocator, std.testing.io, &env);
+    defer std.testing.allocator.free(path);
+    const parent = std.fs.path.dirname(path).?;
+    const parent_stat = try Io.Dir.cwd().statFile(std.testing.io, parent, .{});
+    const file_stat = try Io.Dir.cwd().statFile(std.testing.io, path, .{});
+    try std.testing.expectEqual(@as(u32, 0o700), parent_stat.permissions.toMode() & 0o777);
+    try std.testing.expectEqual(@as(u32, 0o600), file_stat.permissions.toMode() & 0o777);
+    try Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = path, .data = "preserve" });
+    try std.testing.expectError(error.PathAlreadyExists, initDefault(std.testing.allocator, std.testing.io, &env));
+    const preserved = try Io.Dir.cwd().readFileAlloc(std.testing.io, path, std.testing.allocator, .limited(32));
+    defer std.testing.allocator.free(preserved);
+    try std.testing.expectEqualStrings("preserve", preserved);
+}
+
+test "config init validates XDG and falls back to HOME before mutation" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const relative = try std.fmt.allocPrint(std.testing.allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer std.testing.allocator.free(relative);
+    const home = try Io.Dir.cwd().realPathFileAlloc(std.testing.io, relative, std.testing.allocator);
+    defer std.testing.allocator.free(home);
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    try env.put("HOME", home);
+    const path = try initDefault(std.testing.allocator, std.testing.io, &env);
+    defer std.testing.allocator.free(path);
+    try std.testing.expect(std.mem.endsWith(u8, path, "/.config/sayall/config.json"));
+    try env.put("XDG_CONFIG_HOME", "");
+    try std.testing.expectError(error.InvalidConfigHome, initDefault(std.testing.allocator, std.testing.io, &env));
+    try env.put("XDG_CONFIG_HOME", "relative");
+    try std.testing.expectError(error.InvalidConfigHome, initDefault(std.testing.allocator, std.testing.io, &env));
+}
+
+test "config init rejects symlink parent without chmodding target" {
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(std.testing.io, "target", .fromMode(0o755));
+    try tmp.dir.symLink(std.testing.io, "target", "sayall", .{ .is_directory = true });
+    const relative = try std.fmt.allocPrint(std.testing.allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer std.testing.allocator.free(relative);
+    const root = try Io.Dir.cwd().realPathFileAlloc(std.testing.io, relative, std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    try env.put("XDG_CONFIG_HOME", root);
+    if (initDefault(std.testing.allocator, std.testing.io, &env)) |unexpected| {
+        std.testing.allocator.free(unexpected);
+        return error.TestUnexpectedResult;
+    } else |_| {}
+    const stat = try tmp.dir.statFile(std.testing.io, "target", .{});
+    try std.testing.expectEqual(@as(u32, 0o755), stat.permissions.toMode() & 0o777);
+}
+
 test "HUD timer can be disabled" {
     const parsed = try std.json.parseFromSlice(Config, std.testing.allocator,
         \\{"hud":{"show_timer":false}}
@@ -220,6 +359,7 @@ test "validation accepts phrases and rejects invalid keyterms" {
 }
 
 test "config load migrates legacy exact duplicates without startup failure" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const relative_base = try std.fmt.allocPrint(std.testing.allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});

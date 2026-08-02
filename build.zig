@@ -140,6 +140,30 @@ pub fn build(b: *std.Build) void {
         .cpu_arch = .x86_64,
         .os_tag = .windows,
     }, "check-windows-core", "Compile x86_64-windows core readiness / unsupported runtime checks");
+
+    const darwin_cli_target = b.resolveTargetQuery(.{
+        .cpu_arch = .aarch64,
+        .os_tag = .macos,
+        .os_version_min = .{ .semver = .{ .major = 15, .minor = 0, .patch = 0 } },
+    });
+    const darwin_cli = b.addExecutable(.{
+        .name = "sayall-cli-readiness",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("daemon/cli_readiness_main.zig"),
+            .target = darwin_cli_target,
+            .optimize = optimize,
+        }),
+    });
+    const darwin_cli_step = b.step("check-darwin-cli", "Cross-compile the aarch64-macos.15 Zig CLI frontend boundary");
+    darwin_cli_step.dependOn(&darwin_cli.step);
+    const darwin_cli_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("daemon/cli_readiness_main.zig"),
+        .target = darwin_cli_target,
+        .optimize = optimize,
+    }) });
+    // Compilation-only: this explicit frontend test artifact is never installed
+    // or executed on Linux CI.
+    darwin_cli_step.dependOn(&darwin_cli_tests.step);
 }
 
 fn addCoreReadinessCheck(

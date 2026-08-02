@@ -3,7 +3,7 @@ Description=SayAll voice dictation daemon
 After=graphical-session.target pipewire.service
 
 [Service]
-ExecStart=%h/.local/bin/sayall daemon
+ExecStart=%h/.local/bin/sayall __service
 Restart=on-failure
 RestartSec=2
 RestartPreventExitStatus=78
