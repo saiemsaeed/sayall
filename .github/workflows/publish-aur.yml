@@ -135,7 +135,7 @@ jobs:
           test -n "$source_sha"
 
           runuser -u aur-builder -- bash scripts/prepare-aur-release.sh \
-            "$version" "$binary_sha" "$source_sha" \
+            "$version" "$HEAD_SHA" "$binary_sha" "$source_sha" \
             "$RUNNER_TEMP/aur-work/packages"
           printf 'VERSION=%s\n' "$version" >> "$GITHUB_ENV"
       - name: Configure and verify dedicated AUR SSH key

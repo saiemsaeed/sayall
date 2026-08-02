@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 4 ]]; then
-    echo 'usage: prepare-aur-release.sh <version> <binary-sha256> <source-sha256> <output-directory>' >&2
+if [[ $# -ne 5 ]]; then
+    echo 'usage: prepare-aur-release.sh <version> <release-commit> <binary-sha256> <source-sha256> <output-directory>' >&2
     exit 2
 fi
 
 version=$1
-binary_sha=$2
-source_sha=$3
-output=$4
+release_commit=$2
+binary_sha=$3
+source_sha=$4
+output=$5
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 
 if [[ ! $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
     printf 'invalid release version: %q\n' "$version" >&2
+    exit 1
+fi
+if [[ ! $release_commit =~ ^[0-9a-f]{40}$ ]]; then
+    printf 'invalid release commit: %q\n' "$release_commit" >&2
     exit 1
 fi
 for checksum in "$binary_sha" "$source_sha"; do
@@ -32,6 +37,7 @@ cp -a "$root/packaging/aur/." "$output/"
 
 bin_pkgbuild="$output/sayall-bin/PKGBUILD"
 source_pkgbuild="$output/sayall/PKGBUILD"
+git_pkgbuild="$output/sayall-git/PKGBUILD"
 dependency_sha=$(sed -n "/^sha256sums=(/,/^)/ s/^  '\([0-9a-f]\{64\}\)'$/\1/p" \
     "$source_pkgbuild" | sed -n '2p')
 if [[ -z $dependency_sha ]]; then
@@ -52,10 +58,17 @@ sed -i \
     -e "0,/^  '[0-9a-f]\{64\}'$/s//  '$source_sha'/" \
     "$source_pkgbuild"
 
+git_version="$version.r0.g${release_commit:0:7}"
+sed -i \
+    -e "s/^pkgver=.*/pkgver=$git_version/" \
+    -e 's/^pkgrel=.*/pkgrel=1/' \
+    "$git_pkgbuild"
+
 grep -Fqx "pkgver=$version" "$bin_pkgbuild"
 grep -Fqx "sha256sums=('$binary_sha')" "$bin_pkgbuild"
 grep -Fqx "pkgver=$version" "$source_pkgbuild"
 grep -Fq '$url/releases/download/v$pkgver/sayall-$pkgver.tar.gz' "$source_pkgbuild"
+grep -Fqx "pkgver=$git_version" "$git_pkgbuild"
 mapfile -t source_checksums < <(
     sed -n "/^sha256sums=(/,/^)/ s/^  '\([0-9a-f]\{64\}\)'$/\1/p" "$source_pkgbuild"
 )

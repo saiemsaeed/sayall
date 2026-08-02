@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=SayAll
+Comment=Voice dictation settings and status
+Exec=sayall-hud
+Icon=dev.sayall.Hud
+Terminal=false
+Categories=Utility;Accessibility;
+StartupNotify=true
+StartupWMClass=dev.sayall.Hud
