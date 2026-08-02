@@ -1,10 +1,12 @@
 # Releasing SayAll
 
-SayAll's Zig daemon/CLI and Rust HUD share one product version. `VERSION` is
-the source of truth. `build.zig.zon` and `ui/linux/Cargo.toml` must carry the
-same version because their package formats require literal metadata, and
-`ui/linux/Cargo.lock` records that local HUD package version. The release
-script rejects a mismatch among all four files.
+SayAll's public Zig CLI, native applications, and private processing workers
+share one product version. `VERSION` is the source of truth. `build.zig.zon`
+and `ui/linux/Cargo.toml` must carry the same version because their package
+formats require literal metadata, and `ui/linux/Cargo.lock` records that local
+application package version. The release script rejects a mismatch among all
+four files and verifies the Linux CLI, native host, and worker report that
+version.
 
 Protocol versions are independent of the product version. Do not increment
 the control protocol merely for an application release.
@@ -13,7 +15,7 @@ the control protocol merely for an application release.
 
 | Platform / target | Release status |
 | --- | --- |
-| x86-64 Arch Linux with Omarchy (Wayland/Hyprland) | Supported and tested; Linux archive and AUR packages |
+| x86-64 Arch Linux with Omarchy (Wayland/Hyprland) | Supported; Linux archive and AUR packages; every candidate requires physical qualification |
 | Apple Silicon arm64, macOS 15.0+ | Supported since 0.1.7; each release requires protected signing and physical qualification |
 | Windows (`x86_64-windows` compile target) | Core compile readiness only; no app, runtime, package, or installable output |
 
@@ -21,8 +23,9 @@ Release binaries may work on related Linux Wayland systems, but that is not
 part of the compatibility promise. The Darwin core check is distinct from the
 native macOS app build. The Windows check is not a release artifact. See the
 accepted [0.1.6 macOS ADR](adr-macos-0.1.6.md), the
-[macOS qualification gate](macos-release-qualification.md), and the Linux-only
-HUD/control [`protocol-v1 compatibility contract`](protocol-v1.md).
+[macOS qualification gate](macos-release-qualification.md), the
+[Linux qualification gate](linux-release-qualification.md), and the accepted
+[unified architecture](adr-unified-core-cli-and-native-hosts.md).
 
 ## macOS signing and qualification
 
@@ -48,10 +51,11 @@ to release branches. Keep their authority separate:
 - `macos-signing` authorizes only signing/notarization. Configure the
   `APPLE_TEAM_ID` variable and all six Apple secrets below.
 - `macos-publication` contains no signing credentials. Configure
-  `MACOS_APPROVED_SHA256` only after the exact candidate is approved. The
-  checked-in `VERSION` determines the release version, while the digest binds
-  approval to one signed artifact; a stale digest cannot publish a later
-  candidate.
+  `MACOS_APPROVED_SHA256` and `LINUX_APPROVED_MANIFEST_SHA256` only after the
+  exact candidates are approved. The checked-in `VERSION` determines the
+  release version. The macOS digest binds one signed DMG; the Linux manifest
+  digest binds both Linux archives from one workflow attempt. Stale digests
+  cannot publish later candidates.
 
 Configure secrets:
 
@@ -86,14 +90,15 @@ the gate.
    `zig build check-windows-core`, `cargo test --locked --manifest-path
    ui/linux/Cargo.toml`, and `cargo check --locked --manifest-path
    ui/linux/Cargo.toml` on supported Linux.
-5. Run `scripts/package-release.sh`. It checks version agreement, builds both
-   Linux executables, verifies `sayall --version`, and writes the Linux x86-64
+5. Run `scripts/package-release.sh`. It checks version agreement, builds the
+   public CLI, Rust native host, and private worker, validates every AUR
+   `package()` layout against the exact payload, and writes the Linux x86-64
    binary archive, source archive, and checksums to `dist/`. Inspect both
    archive listings; no Darwin or Windows compile output is installable or
    included.
-6. Install the Linux x86-64 archive in a clean x86-64 Arch Linux environment
-   running Omarchy and complete a manual recording, transcription, HUD,
-   typing, restart, and uninstall smoke test.
+6. Confirm the local Linux release assembly and package-layout smoke tests pass.
+   Physical Linux qualification happens later against the exact frozen workflow
+   artifact, not this pre-merge build.
 7. Confirm the normal macOS CI test and ad-hoc unsigned assembly remain green;
    this is regression coverage only and produces no releasable artifact.
 8. Commit and push the preparation branch, merge its PR, then fetch and
@@ -105,24 +110,37 @@ the gate.
    GitHub release already exists. Create `release/<version>` from the exact
    merged `origin/main` commit, assert both SHAs match, make no further edits or
    commits, and push it once to trigger the release workflow.
-10. After the Linux, source, and unsigned macOS jobs succeed, approve the
+10. After the `linux-assets` job succeeds, download that exact artifact while
+    publication remains blocked. Generate release-commit candidate AUR recipes
+    from its checksums and complete every non-`N/A` row in
+    [the Linux qualification checklist](linux-release-qualification.md),
+    including standalone archive, 0.1.8 upgrade, service retirement,
+    Wayland/X11 delivery, GNOME/KDE portal, recovery, uninstall, soak, and
+    rollback gates. Record the workflow run attempt and set
+    `LINUX_APPROVED_MANIFEST_SHA256` to the exact candidate `SHA256SUMS` file's
+    SHA-256 only after qualification passes. Do not approve publication if any
+    row is incomplete.
+11. After the unsigned macOS job succeeds, approve the
     protected `macos-assets` job to sign, notarize, staple, and upload the exact
     candidate.
-11. Download that exact `macos-assets` artifact while `publish` remains blocked.
+12. Download that exact `macos-assets` artifact while `publish` remains blocked.
     Complete the artifact checks and physical Apple Silicon matrix, record the
     approver, decision, and DMG SHA-256, then set `MACOS_APPROVED_SHA256` to
     that exact digest. Do not approve publication if any required row is
     incomplete.
-12. Approve the protected `publish` job. It rejects any candidate whose digest
+13. Approve the protected `publish` job only after both Linux and macOS
+    qualification records are complete. It rejects any macOS candidate whose digest
     differs from the approved value, creates the immutable `v<version>` tag at
     the exact release commit, and publishes Linux, source, and signed macOS
     archives with one checksum manifest. A default-branch workflow then
     publishes all three AUR repositories from those immutable assets. Keep the
     release branch until AUR publication succeeds; it may then be deleted.
 
-If publication fails while the GitHub release is still a draft, rerun the exact
-failed release commit; the workflow deletes and reconstructs the draft before
-publishing. If the release is already published, do not rerun or move its tag.
+If publication fails while the GitHub release is still a draft, rerun only the
+failed publication job when possible. Rerunning `linux-assets` creates a new
+candidate and invalidates Linux approval even at the same commit; repeat the
+full Linux qualification and update its approved manifest digest before
+publication. If the release is already published, do not rerun or move its tag.
 Use the manual `Publish AUR` workflow with the immutable version when only AUR
 publication needs retrying.
 
@@ -181,8 +199,10 @@ immutable release commit, preventing retries from combining old release assets
 with newer package recipes.
 
 `scripts/prepare-aur-release.sh` copies the checked-in `sayall`, `sayall-bin`,
-and `sayall-git` templates, updates both stable package versions and final
-checksums, and regenerates all three `.SRCINFO` files. The workflow checks the
+and `sayall-git` templates, updates stable package versions and final checksums,
+seeds the VCS package metadata with the release commit's version, and regenerates
+all three `.SRCINFO` files. The public VCS recipe still follows moving `main`, as
+expected for an AUR `-git` package. The workflow checks the
 public package ownership, clones all three standalone AUR repositories before
 the first mutation, and then publishes `sayall-bin`, `sayall`, and `sayall-git`
 in that order. Publishing the binary alternative first gives existing prebuilt
@@ -204,7 +224,8 @@ Before pushing the release branch:
 
 1. Run a clean `makepkg` build in the `sayall` and `sayall-bin` package
    directories. Inspect (do not install) each package archive. Verify the
-   packaged CLI reports the release version, both systemd units use `/usr/bin`,
+   packaged CLI, native host, and private worker report the release version,
+   the single systemd unit uses `/usr/bin`, the worker is absent from `PATH`,
    and licenses are under `/usr/share/licenses/<pkgname>`.
 2. Run a clean `makepkg` build for `sayall-git`. Its `pkgver()` function
    derives the development version from Git and does not require an update for
@@ -224,7 +245,7 @@ Before pushing the release branch:
    current variants and verify each switch preserves the selected or disabled
    shortcut state. Also test an upgrade with an existing manual
    `bind = CTRL, SLASH, exec, sayall toggle`: setup must leave the line intact
-   while successfully restarting both services. Verify `sayall update` detects
+   while successfully restarting the native host service. Verify `sayall update` detects
    and targets `sayall`, `sayall-bin`, and `sayall-git`; retain `sayall-src`
    coverage only as a legacy migration fallback.
 5. After the workflow succeeds, confirm the public pages for `sayall`,

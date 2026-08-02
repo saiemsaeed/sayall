@@ -36,6 +36,7 @@ jobs:
       - name: Build Linux x86-64 release archive
         run: bash scripts/package-release.sh
       - name: Upload Linux and source assets
+        id: upload-linux-assets
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux-assets
@@ -44,6 +45,16 @@ jobs:
             dist/sayall-${{ steps.release.outputs.version }}.tar.gz
             dist/SHA256SUMS
           if-no-files-found: error
+      - name: Record exact Linux qualification identity
+        env:
+          ARTIFACT_ID: ${{ steps.upload-linux-assets.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload-linux-assets.outputs.artifact-digest }}
+        run: |
+          test -n "$ARTIFACT_ID"
+          test -n "$ARTIFACT_DIGEST"
+          printf '### Linux qualification candidate\n\n- Run: `%s`\n- Attempt: `%s`\n- Commit: `%s`\n- Artifact ID: `%s`\n- Artifact digest: `%s`\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \
+            "$ARTIFACT_ID" "$ARTIFACT_DIGEST" >> "$GITHUB_STEP_SUMMARY"
 
   macos-unsigned:
     runs-on: macos-15
@@ -275,7 +286,11 @@ jobs:
         env:
           VERSION: ${{ steps.release.outputs.version }}
           APPROVED_MACOS_SHA256: ${{ vars.MACOS_APPROVED_SHA256 }}
+          APPROVED_LINUX_MANIFEST_SHA256: ${{ vars.LINUX_APPROVED_MANIFEST_SHA256 }}
         run: |
+          test -n "$APPROVED_LINUX_MANIFEST_SHA256"
+          linux_manifest_sha=$(sha256sum dist/SHA256SUMS | awk '{ print $1 }')
+          test "$linux_manifest_sha" = "$APPROVED_LINUX_MANIFEST_SHA256"
           cat dist/SHA256SUMS dist/SHA256SUMS.macos | sort -k2 > dist/SHA256SUMS.all
           mv dist/SHA256SUMS.all dist/SHA256SUMS
           rm dist/SHA256SUMS.macos
