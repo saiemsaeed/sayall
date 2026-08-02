@@ -34,13 +34,27 @@ Linux-only [`protocol-v1 contract`](docs/protocol-v1.md).
 
 ### Apple Silicon macOS
 
-Download the signed and notarized Apple Silicon ZIP from the GitHub release,
-move `SayAll.app` to `/Applications`, and launch it on macOS 15.0 or later.
+Starting with 0.2.0, download the signed, notarized, and stapled Apple Silicon
+DMG from the GitHub release, open it, drag `SayAll.app` to `/Applications`, and
+launch it on macOS 15.0 or later. The immutable 0.1.7 and 0.1.8 releases use ZIP
+archives instead.
 Normal CI also exercises an ad-hoc-signed build that must never be distributed.
 The app bundles a native terminal client. From the menu bar, choose **Install
 Command Line Tool…** and approve the macOS administrator prompt to link the
 signed helper at `/usr/local/bin/sayall`; SayAll never changes shell startup
-files or replaces an existing unrelated path.
+files or replaces an existing unrelated path. Choose **Remove Command Line
+Tool…** before deleting a directly installed app; removal revalidates that the
+link still belongs to that exact app before requesting administrator access.
+
+The official Homebrew Cask installs the same app and exposes its bundled CLI
+using Homebrew's managed binary shim:
+
+```sh
+brew install --cask saiemsaeed/sayall/sayall
+```
+Ordinary Cask uninstall quits SayAll and removes only the app and Homebrew CLI
+shim; it retains `~/.config/sayall`. Use `brew uninstall --zap --cask sayall`
+only when configuration and Application Support data should also be removed.
 
 The macOS CLI intentionally exposes only:
 

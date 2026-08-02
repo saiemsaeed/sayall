@@ -65,8 +65,15 @@ jobs:
           assets=(SHA256SUMS "sayall-$version-linux-x86_64.tar.gz" \
             "sayall-$version.tar.gz")
           has_macos=false
+          macos_asset=
           if printf '%s\n' 0.1.7 "$version" | sort -V -C; then
-            assets+=("sayall-$version-macos-arm64.zip")
+            if printf '%s\n' "$version" 0.1.8 | sort -V -C; then
+              # Preserve the already-published 0.1.7/0.1.8 ZIP asset contract.
+              macos_asset="sayall-$version-macos-arm64.zip"
+            else
+              macos_asset="sayall-$version-macos-arm64.dmg"
+            fi
+            assets+=("$macos_asset")
             has_macos=true
           fi
           printf '%s\n' "${assets[@]}" | sort > "$RUNNER_TEMP/expected-assets"
@@ -113,8 +120,8 @@ jobs:
           grep -Eq "^[0-9a-f]{64}  sayall-$version-linux-x86_64\.tar\.gz$" \
             "$release_assets/SHA256SUMS"
           if [[ $has_macos == true ]]; then
-            grep -Eq "^[0-9a-f]{64}  sayall-$version-macos-arm64\.zip$" \
-              "$release_assets/SHA256SUMS"
+            test -n "$(awk -v file="$macos_asset" '$2 == file { print $1 }' \
+              "$release_assets/SHA256SUMS")"
           fi
           grep -Eq "^[0-9a-f]{64}  sayall-$version\.tar\.gz$" \
             "$release_assets/SHA256SUMS"

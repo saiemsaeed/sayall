@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Install build dependencies
-        run: pacman -Syu --noconfirm zig rust python gtk4 gtk4-layer-shell
+        run: pacman -Syu --noconfirm zig rust ruby python gtk4 gtk4-layer-shell
       - name: Test Zig daemon and CLI
         run: zig build test
       - name: Compile readiness / unsupported runtime — Darwin core
@@ -23,6 +23,8 @@ jobs:
         run: zig build check-windows-core
       - name: Test Rust HUD
         run: cargo test --locked --manifest-path ui/linux/Cargo.toml
+      - name: Test Homebrew Cask generation
+        run: bash tests/homebrew-cask.sh
       - name: Verify release assembly
         run: bash scripts/package-release.sh
 
@@ -46,3 +48,4 @@ jobs:
           version=$(tr -d '[:space:]' < VERSION)
           test -f "dist/sayall-$version-macos-arm64-unsigned.zip"
           test ! -e "dist/sayall-$version-macos-arm64.zip"
+          test ! -e "dist/sayall-$version-macos-arm64.dmg"

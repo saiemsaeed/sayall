@@ -64,7 +64,9 @@ jobs:
       - name: Build and test without release credentials
         env:
           MACOS_SIGN_MODE: adhoc
-        run: bash scripts/package-macos-release.sh
+        run: |
+          bash scripts/package-macos-release.sh
+          bash tests/homebrew-cask.sh
       - name: Upload unsigned candidate for isolated signing
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -175,10 +177,54 @@ jobs:
           xcrun stapler staple "$app"
           xcrun stapler validate "$app"
           spctl --assess --type execute --verbose=2 "$app"
+          dmg_root="$RUNNER_TEMP/dmg-root"
+          mkdir "$dmg_root"
+          ditto "$app" "$dmg_root/SayAll.app"
+          ln -s /Applications "$dmg_root/Applications"
           mkdir -p dist
-          archive="$GITHUB_WORKSPACE/dist/sayall-$version-macos-arm64.zip"
-          ditto -c -k --sequesterRsrc --keepParent "$app" "$archive"
-          (cd dist && shasum -a 256 "$(basename "$archive")" > SHA256SUMS.macos)
+          dmg="$GITHUB_WORKSPACE/dist/sayall-$version-macos-arm64.dmg"
+          hdiutil create -quiet -fs HFS+ -format UDZO -imagekey zlib-level=9 \
+            -volname SayAll -srcfolder "$dmg_root" "$dmg"
+          codesign --force --sign "$APPLE_DEVELOPER_ID_APPLICATION" \
+            --timestamp "$dmg"
+          codesign --verify --strict --verbose=2 "$dmg"
+          xcrun notarytool submit "$dmg" \
+            --key "$RUNNER_TEMP/notary.p8" \
+            --key-id "$APPLE_NOTARY_KEY_ID" \
+            --issuer "$APPLE_NOTARY_ISSUER_ID" --wait
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          spctl --assess --type open --context context:primary-signature \
+            --verbose=2 "$dmg"
+          mount="$RUNNER_TEMP/dmg-mount"
+          mounted=false
+          cleanup_mount() {
+            if [[ $mounted == true ]]; then hdiutil detach -quiet "$mount"; fi
+          }
+          trap cleanup_mount EXIT
+          mkdir "$mount"
+          hdiutil attach -quiet -readonly -nobrowse -mountpoint "$mount" "$dmg"
+          mounted=true
+          test -d "$mount/SayAll.app"
+          test -L "$mount/Applications"
+          test "$(readlink "$mount/Applications")" = /Applications
+          mounted_app="$mount/SayAll.app"
+          plist="$mounted_app/Contents/Info.plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")" = "$version"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")" = "$version"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$plist")" = 15.0
+          for executable in "$mounted_app/Contents/MacOS/SayAll" \
+            "$mounted_app/Contents/Helpers/sayall" \
+            "$mounted_app/Contents/Helpers/sayall-process"; do
+            test "$(lipo -archs "$executable")" = arm64
+            vtool -show-build "$executable" | grep -Eq 'minos 15\.0'
+            codesign --verify --strict --verbose=2 "$executable"
+          done
+          codesign --verify --deep --strict --verbose=2 "$mounted_app"
+          hdiutil detach -quiet "$mount"
+          mounted=false
+          trap - EXIT
+          (cd dist && shasum -a 256 "$(basename "$dmg")" > SHA256SUMS.macos)
           cat dist/SHA256SUMS.macos | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Remove signing credentials
         if: always()
@@ -194,7 +240,7 @@ jobs:
         with:
           name: macos-assets
           path: |
-            dist/sayall-*-macos-arm64.zip
+            dist/sayall-*-macos-arm64.dmg
             dist/SHA256SUMS.macos
           if-no-files-found: error
 
@@ -206,6 +252,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - name: Verify release version
         id: release
         run: |
@@ -235,9 +283,19 @@ jobs:
           test "$(wc -l < dist/SHA256SUMS)" -eq 3
           grep -Eq "^[0-9a-f]{64}  sayall-$VERSION-linux-x86_64\.tar\.gz$" dist/SHA256SUMS
           grep -Eq "^[0-9a-f]{64}  sayall-$VERSION\.tar\.gz$" dist/SHA256SUMS
-          macos_sha=$(awk -v file="sayall-$VERSION-macos-arm64.zip" '$2 == file { print $1 }' dist/SHA256SUMS)
+          macos_sha=$(awk -v file="sayall-$VERSION-macos-arm64.dmg" '$2 == file { print $1 }' dist/SHA256SUMS)
           test -n "$APPROVED_MACOS_SHA256"
           test "$macos_sha" = "$APPROVED_MACOS_SHA256"
+          bash scripts/generate-homebrew-cask.sh "$VERSION" "$macos_sha" dist/sayall.rb
+          ruby -c dist/sayall.rb
+          grep -Fq 'binary "#{appdir}/SayAll.app/Contents/Helpers/sayall"' dist/sayall.rb
+          ! grep -Fq ':no_check' dist/sayall.rb
+      - name: Retain generated Homebrew Cask for tap publication
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: homebrew-cask
+          path: dist/sayall.rb
+          if-no-files-found: error
       - name: Atomically bind the release tag to this commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -271,7 +329,7 @@ jobs:
           cat > "$RUNNER_TEMP/release-notes.md" <<EOF
           SayAll $VERSION provides an x86-64 Arch Linux release for Omarchy and a signed and notarized Apple Silicon app for macOS 15.0 or later.
 
-          The macOS app is distributed directly as a ZIP for Apple Silicon. It does not support Intel Macs, the App Store, or automatic updates.
+          The macOS app is distributed directly as a DMG for Apple Silicon. It does not support Intel Macs, the App Store, or automatic updates.
 
           See CHANGELOG.md for the complete user-visible changes and known limitations.
           EOF
@@ -280,7 +338,7 @@ jobs:
             --notes-file "$RUNNER_TEMP/release-notes.md" \
             "dist/sayall-$VERSION-linux-x86_64.tar.gz" \
             "dist/sayall-$VERSION.tar.gz" \
-            "dist/sayall-$VERSION-macos-arm64.zip" \
+            "dist/sayall-$VERSION-macos-arm64.dmg" \
             dist/SHA256SUMS
       - name: Verify uploaded draft and publish
         env:
@@ -303,13 +361,13 @@ jobs:
           [[ $release_id =~ ^[0-9]+$ ]]
           test "$(jq -r .draft <<<"$release")" = true
           printf '%s\n' SHA256SUMS "sayall-$VERSION-linux-x86_64.tar.gz" \
-            "sayall-$VERSION-macos-arm64.zip" "sayall-$VERSION.tar.gz" |
+            "sayall-$VERSION-macos-arm64.dmg" "sayall-$VERSION.tar.gz" |
             sort > "$RUNNER_TEMP/expected-assets"
           jq -r '.assets[].name' <<<"$release" | sort > "$RUNNER_TEMP/actual-assets"
           diff -u "$RUNNER_TEMP/expected-assets" "$RUNNER_TEMP/actual-assets"
           mkdir "$RUNNER_TEMP/uploaded"
           for name in SHA256SUMS "sayall-$VERSION-linux-x86_64.tar.gz" \
-            "sayall-$VERSION-macos-arm64.zip" "sayall-$VERSION.tar.gz"; do
+            "sayall-$VERSION-macos-arm64.dmg" "sayall-$VERSION.tar.gz"; do
             asset_id=$(jq -r --arg name "$name" '.assets[] | select(.name == $name) | .id' <<<"$release")
             test -n "$asset_id"
             gh api -H 'Accept: application/octet-stream' \
