@@ -4,6 +4,7 @@ const provider = @import("provider_config.zig");
 const deepgram = @import("stt/deepgram.zig");
 const groq = @import("llm/groq.zig");
 const keywords = @import("keywords.zig");
+const provider_processing = @import("provider_processing.zig");
 
 pub const max_request_bytes = 64 * 1024;
 pub const max_audio_bytes = 10 * 1024 * 1024;
@@ -91,34 +92,47 @@ pub fn processWithTranscript(gpa: std.mem.Allocator, io: std.Io, r: Request, sea
         .keyterms = r.deepgram_keyterms,
         .streaming = false,
     };
-    const raw = if (streamed) |transcript|
-        gpa.dupe(u8, transcript) catch return fail(.internal)
-    else
-        seam.transcribe(seam.context, gpa, io, &stt, wav) catch |e| return fail(mapDeepgramError(e));
-    defer gpa.free(raw);
-    if (raw.len > max_output_bytes or !std.unicode.utf8ValidateSlice(raw)) return fail(.response_too_large);
-    if (raw.len == 0) return .{ .status = .no_speech };
-    if (r.cleanup_enabled and r.groq_api_key.len > 0) {
-        const llm: provider.LlmConfig = .{
-            .api_key = r.groq_api_key,
-            .model = r.groq_model,
-            .base_url = r.groq_base_url,
-        };
-        if (seam.cleanup(seam.context, gpa, io, &llm, r.deepgram_keyterms, raw)) |clean| {
-            defer gpa.free(clean);
-            if (clean.len <= max_output_bytes and std.unicode.utf8ValidateSlice(clean)) return success(gpa, clean, null);
-        } else |_| {}
-        return success(gpa, raw, .cleanup_failed);
-    }
-    return success(gpa, raw, null);
+    var context: CoreContext = .{ .io = io, .request = &r, .seam = seam, .stt = &stt, .wav = wav };
+    const streamed_owned = if (streamed) |text| gpa.dupe(u8, text) catch return fail(.internal) else null;
+    const outcome = provider_processing.process(gpa, streamed_owned, r.cleanup_enabled and r.groq_api_key.len > 0, .{
+        .max_bytes = max_output_bytes,
+        .require_utf8 = true,
+    }, .{
+        .context = &context,
+        .rest = coreRest,
+        .cleanup = coreCleanup,
+    }) catch |err| return fail(if (err == error.ResponseTooLarge) .response_too_large else mapDeepgramError(err));
+    return switch (outcome) {
+        .no_speech => .{ .status = .no_speech },
+        .success => |value| .{
+            .status = .success,
+            .text = value.text,
+            .warning = if (value.warning != null) .cleanup_failed else null,
+        },
+    };
 }
 
-fn success(gpa: std.mem.Allocator, text: []const u8, warning: ?Warning) Result {
-    return .{
-        .status = .success,
-        .text = gpa.dupe(u8, text) catch return fail(.internal),
-        .warning = warning,
+const CoreContext = struct {
+    io: std.Io,
+    request: *const Request,
+    seam: Seam,
+    stt: *const provider.SttConfig,
+    wav: []const u8,
+};
+
+fn coreRest(context_ptr: ?*anyopaque, gpa: std.mem.Allocator) ![]u8 {
+    const context: *CoreContext = @ptrCast(@alignCast(context_ptr.?));
+    return context.seam.transcribe(context.seam.context, gpa, context.io, context.stt, context.wav);
+}
+
+fn coreCleanup(context_ptr: ?*anyopaque, gpa: std.mem.Allocator, raw: []const u8) ![]u8 {
+    const context: *CoreContext = @ptrCast(@alignCast(context_ptr.?));
+    const llm: provider.LlmConfig = .{
+        .api_key = context.request.groq_api_key,
+        .model = context.request.groq_model,
+        .base_url = context.request.groq_base_url,
     };
+    return context.seam.cleanup(context.seam.context, gpa, context.io, &llm, context.request.deepgram_keyterms, raw);
 }
 
 fn fail(code: ErrorCode) Result {
