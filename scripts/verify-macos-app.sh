@@ -19,6 +19,15 @@ cli="$app/Contents/Helpers/sayall"
 [[ $(lipo -archs "$cli") == arm64 ]]
 [[ $(lipo -archs "$helper") == arm64 ]]
 [[ $("$cli" --version) == "sayall $version" ]]
+help=$("$cli" --help)
+grep -Fq 'sayall status' <<<"$help"
+grep -Fq 'sayall config init' <<<"$help"
+! grep -Eq 'sayall (daemon|service|setup|restart|start|stop|update)' <<<"$help"
+xdg=$(mktemp -d); trap 'rm -rf "$xdg"' EXIT
+XDG_CONFIG_HOME="$xdg" HOME=/definitely/poisoned "$cli" config init >/dev/null
+[[ $(stat -f '%Lp' "$xdg/sayall") == 700 ]]
+[[ $(stat -f '%Lp' "$xdg/sayall/config.json") == 600 ]]
+! XDG_CONFIG_HOME="$xdg" HOME=/definitely/poisoned "$cli" config init >/dev/null 2>&1
 [[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist") == pro.leets.sayall ]]
 [[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist") == "$version" ]]
 [[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist") == "$version" ]]
