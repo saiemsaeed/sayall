@@ -5,10 +5,12 @@ const deepgram = @import("stt/deepgram.zig");
 const groq = @import("llm/groq.zig");
 const keywords = @import("keywords.zig");
 const provider_processing = @import("provider_processing.zig");
+const worker_protocol = @import("worker_protocol.zig");
+const secure_audio = @import("secure_audio.zig");
 
-pub const max_request_bytes = 64 * 1024;
+pub const max_request_bytes = worker_protocol.max_control_bytes;
 pub const max_audio_bytes = 10 * 1024 * 1024;
-pub const max_output_bytes = 1024 * 1024;
+pub const max_output_bytes = worker_protocol.max_result_bytes;
 pub const Request = struct {
     version: u32,
     wav_path: []const u8,
@@ -69,11 +71,8 @@ pub fn processWithTranscript(gpa: std.mem.Allocator, io: std.Io, r: Request, sea
     keywords.validate(r.deepgram_keyterms) catch return fail(.invalid_request);
     if (r.deepgram_keyterms.len > 0 and !std.mem.eql(u8, r.deepgram_model, "nova-3") and
         !std.mem.startsWith(u8, r.deepgram_model, "nova-3-")) return fail(.invalid_request);
-    if (!std.fs.path.isAbsolute(r.wav_path)) return fail(.invalid_request);
-    var file = std.Io.Dir.cwd().openFile(io, r.wav_path, .{
-        .allow_directory = false,
-        .follow_symlinks = false,
-    }) catch return fail(.invalid_audio);
+    const opened = secure_audio.open(io, r.wav_path, max_audio_bytes, .nonempty) catch return fail(.invalid_audio);
+    var file = opened.file;
     defer file.close(io);
     const stat = file.stat(io) catch return fail(.invalid_audio);
     if (stat.kind != .file) return fail(.invalid_audio);
@@ -208,12 +207,16 @@ const FakeProvider = struct {
 };
 
 fn writeTestWav(tmp: *std.testing.TmpDir, sample_bytes: usize) ![]u8 {
+    try tmp.dir.setPermissions(std.testing.io, .fromMode(0o700));
     const pcm = try std.testing.allocator.alloc(u8, sample_bytes);
     defer std.testing.allocator.free(pcm);
     @memset(pcm, 0);
     const wav = try recorder.wavFromPcm(std.testing.allocator, pcm);
     defer std.testing.allocator.free(wav);
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "clip.wav", .data = wav });
+    var file = try tmp.dir.openFile(std.testing.io, "clip.wav", .{});
+    defer file.close(std.testing.io);
+    try file.setPermissions(std.testing.io, .fromMode(0o600));
     const relative = try std.fmt.allocPrint(std.testing.allocator, ".zig-cache/tmp/{s}/clip.wav", .{tmp.sub_path});
     defer std.testing.allocator.free(relative);
     const real_path = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, relative, std.testing.allocator);

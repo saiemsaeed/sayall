@@ -26,7 +26,8 @@ pub const Session = struct {
     gpa: Allocator,
     io: Io,
     cfg: config.SttConfig,
-    path: []u8,
+    path: ?[]u8,
+    recording: ?Io.File = null,
     max_audio_bytes: ?u64,
     started_ms: i64,
     finish_requested: std.atomic.Value(bool) = .init(false),
@@ -53,7 +54,28 @@ pub const Session = struct {
             .max_audio_bytes = max_audio_bytes,
             .started_ms = std.Io.Clock.now(.awake, io).toMilliseconds(),
         };
-        errdefer gpa.free(self.path);
+        errdefer gpa.free(self.path.?);
+        const thread = try std.Thread.spawn(.{}, workerMain, .{self});
+        thread.detach();
+        return self;
+    }
+
+    /// Consumes `file`, including on constructor failure.
+    pub fn startBoundedFile(gpa: Allocator, io: Io, cfg: *const config.SttConfig, file: Io.File, max_audio_bytes: ?u64) !*Session {
+        errdefer file.close(io);
+        const self = try gpa.create(Session);
+        errdefer gpa.destroy(self);
+        const owned_cfg = try cloneConfig(gpa, cfg);
+        errdefer freeConfig(gpa, owned_cfg);
+        self.* = .{
+            .gpa = gpa,
+            .io = io,
+            .cfg = owned_cfg,
+            .path = null,
+            .recording = file,
+            .max_audio_bytes = max_audio_bytes,
+            .started_ms = std.Io.Clock.now(.awake, io).toMilliseconds(),
+        };
         const thread = try std.Thread.spawn(.{}, workerMain, .{self});
         thread.detach();
         return self;
@@ -105,7 +127,8 @@ pub const Session = struct {
 
     fn destroy(self: *Session) void {
         freeConfig(self.gpa, self.cfg);
-        self.gpa.free(self.path);
+        if (self.path) |path| self.gpa.free(path);
+        if (self.recording) |file| file.close(self.io);
         self.gpa.destroy(self);
     }
 
@@ -282,9 +305,14 @@ fn freeResult(gpa: Allocator, result: Result) void {
 }
 
 fn openRecording(self: *Session) !Io.File {
+    if (self.recording) |file| {
+        self.recording = null;
+        return file;
+    }
+    const path = self.path orelse return error.RecordingOpenFailed;
     var attempt: usize = 0;
     while (attempt < 80) : (attempt += 1) {
-        if (Io.Dir.cwd().openFile(self.io, self.path, .{ .allow_directory = false, .follow_symlinks = false })) |file| {
+        if (Io.Dir.cwd().openFile(self.io, path, .{ .allow_directory = false, .follow_symlinks = false })) |file| {
             const stat = file.stat(self.io) catch {
                 file.close(self.io);
                 return error.RecordingStatFailed;

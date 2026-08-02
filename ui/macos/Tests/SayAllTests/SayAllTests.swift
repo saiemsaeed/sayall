@@ -295,17 +295,90 @@ final class HelperDecoderTests: XCTestCase {
     }
 
     func testStreamingDecoderRequiresReadyAndTerminalFrames() throws {
-        let output = Data("""
-        {"version":1,"event":"ready","streaming":true}
-        {"version":1,"status":"success","text":"hello"}
-
-        """.utf8)
-        XCTAssertEqual(try StreamingHelperDecoder.decode(output).text, "hello")
-        XCTAssertThrowsError(try StreamingHelperDecoder.decode(Data("{}\n".utf8)))
+        let ready = try StreamingHelperDecoder.decodeReady(Data(#"{"version":1,"event":"ready","streaming":true}"#.utf8))
+        XCTAssertTrue(ready.streaming)
+        let rest = try StreamingHelperDecoder.decodeReady(Data(#"{"version":1,"event":"ready","streaming":false}"#.utf8))
+        XCTAssertFalse(rest.streaming)
+        XCTAssertEqual(try StreamingHelperDecoder.decode(Data(#"{"version":1,"status":"success","text":"hello"}"#.utf8)).text, "hello")
+        XCTAssertThrowsError(try StreamingHelperDecoder.decodeReady(Data("{}".utf8)))
+        XCTAssertThrowsError(try StreamingHelperDecoder.decodeReady(Data(#"{"version":2,"event":"ready","streaming":true}"#.utf8)))
+        XCTAssertThrowsError(try StreamingHelperDecoder.decodeReady(Data(repeating: 0, count: StreamingHelperDecoder.maximumReadyBytes + 1)))
     }
 }
 
 final class HelperRunnerTests: XCTestCase {
+    private actor ProbeCount {
+        private(set) var value = 0
+
+        func increment() { value += 1 }
+    }
+
+    func testCompatibilityRegistrySharesConcurrentProbe() async throws {
+        let registry = CompatibilityRegistry()
+        let probeCount = ProbeCount()
+        let expected = HelperRunner.CompatibilityToken(
+            buildVersion: "test-build", codeIdentity: Data([0x01, 0x02]))
+
+        async let first = registry.token(for: "helper\u{0}test-build") {
+            await probeCount.increment()
+            try await Task.sleep(for: .milliseconds(100))
+            return expected
+        }
+        async let second = registry.token(for: "helper\u{0}test-build") {
+            await probeCount.increment()
+            try await Task.sleep(for: .milliseconds(100))
+            return expected
+        }
+
+        let results = try await [first, second]
+        let completedProbeCount = await probeCount.value
+        XCTAssertEqual(results.map(\.buildVersion), ["test-build", "test-build"])
+        XCTAssertEqual(results.map(\.codeIdentity), [Data([0x01, 0x02]), Data([0x01, 0x02])])
+        XCTAssertEqual(completedProbeCount, 1)
+    }
+
+    func testCompatibilityProbeUsesOneDeadlineAcrossDelayedFrameAndExit() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("helper.c")
+        let executable = directory.appendingPathComponent("helper")
+        try Data(#"""
+#include <signal.h>
+#include <stdio.h>
+#include <unistd.h>
+int main(void) {
+    signal(SIGTERM, SIG_IGN);
+    usleep(700000);
+    fputs("{\"protocol_version\":1,\"build_version\":\"test-build\"}\n", stdout);
+    fflush(stdout);
+    sleep(3);
+    return 0;
+}
+"""#.utf8).write(to: source)
+        try runProcess("/usr/bin/clang", [source.path, "-o", executable.path])
+        let process = Process(), stdin = Pipe(), stdout = Pipe()
+        process.executableURL = executable
+        process.standardInput = stdin
+        process.standardOutput = stdout
+        try process.run()
+
+        let started = DispatchTime.now().uptimeNanoseconds
+        do {
+            try await HelperRunner.completeCompatibilityProbe(process: process, stdin: stdin, stdout: stdout,
+                buildVersion: "test-build", timeout: 1)
+            XCTFail("Expected the shared probe deadline to expire")
+        } catch let failure as HelperFailure {
+            XCTAssertEqual(failure, .timeout)
+        }
+        let elapsed = TimeInterval(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000_000
+        // The one-second probe budget is followed only by requestTermination's
+        // documented one-second TERM-to-SIGKILL escalation allowance.
+        XCTAssertLessThan(elapsed, 2.5)
+        XCTAssertGreaterThan(elapsed, 0.9)
+        XCTAssertFalse(process.isRunning)
+    }
+
     func testClosesRequestPipeBeforeWaitingForResponse() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -416,6 +489,36 @@ int main(void) {
         XCTAssertLessThan(Date().timeIntervalSince(started), 2)
     }
 
+    func testCancellingLaunchWhileReadyIsWithheldEscalatesAndSettles() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("helper.c")
+        let executable = directory.appendingPathComponent("helper")
+        try Data(#"""
+#include <signal.h>
+#include <stdio.h>
+#include <unistd.h>
+int main(void) {
+    char line[65536];
+    for (int number = 1; number < 32; number++) signal(number, SIG_IGN);
+    if (!fgets(line, sizeof(line), stdin)) return 2;
+    for (;;) pause();
+}
+"""#.utf8).write(to: source)
+        try runProcess("/usr/bin/clang", [source.path, "-o", executable.path])
+        try runProcess("/usr/bin/codesign", ["--force", "--sign", "-", executable.path])
+        let launch = Task {
+            try await HelperRunner(executableURL: executable).launchStreaming(streamRequest())
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        let started = Date()
+        launch.cancel()
+        do { _ = try await launch.value; XCTFail("Expected cancelled launch to fail") }
+        catch {}
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+    }
+
     func testCancellingFinishEscalatesAndWaitsForHelperExit() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -523,10 +626,15 @@ final class SharedBackendContractTests: XCTestCase {
     }
 
     func testWorkerFixturesMatchTheSwiftDecoder() throws {
+        let info = try JSONDecoder().decode(WorkerInfo.self, from: fixture("worker-info"))
+        XCTAssertEqual(info, WorkerInfo(protocolVersion: 1, buildVersion: "0.1.8"))
         let ready = try JSONDecoder().decode(WorkerReady.self, from: fixture("worker-ready-streaming"))
         XCTAssertEqual(ready.version, 1)
         XCTAssertEqual(ready.event, "ready")
         XCTAssertTrue(ready.streaming)
+        XCTAssertFalse(try JSONDecoder().decode(WorkerReady.self, from: fixture("worker-ready-rest")).streaming)
+        XCTAssertEqual(try JSONDecoder().decode(StreamingHelperFinish.self, from: fixture("worker-finish")),
+            StreamingHelperFinish(version: 1, command: "finish", forceRest: false))
 
         let success = try HelperDecoder.decode(fixture("worker-result-success"))
         XCTAssertEqual(success.status, .success)

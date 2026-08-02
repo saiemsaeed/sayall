@@ -103,20 +103,23 @@ final class Coordinator {
             return
         }
         do {
-            let recording = try capture.start()
             guard let config = operationConfig else { throw HelperFailure.launch }
+            let helperURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/sayall-process")
+            let helper = HelperRunner(executableURL: helperURL)
+            let compatibility = try await helper.compatibilityPreflight()
+            guard operationID == id, !Task.isCancelled else { return }
+            let recording = try capture.start()
             var session: StreamingHelperSession?
             if config.streamingEnabled {
-                let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/sayall-process")
-                session = try await HelperRunner(executableURL: helper).launchStreaming(
+                session = try await helper.launchStreaming(
                     StreamingHelperRequest(version: 1, wavPath: recording.wavURL.path, pcmPath: recording.pcmURL.path,
                         deepgramAPIKey: config.deepgramAPIKey, deepgramModel: config.deepgramModel,
                         deepgramLanguage: config.deepgramLanguage, deepgramRegion: config.deepgramRegion,
                         deepgramKeyterms: config.deepgramKeyterms,
                         streamFinalizeTimeoutMs: config.streamFinalizeTimeoutMs,
                         groqAPIKey: config.groqAPIKey, groqModel: config.groqModel,
-                        groqBaseURL: config.groqBaseURL, cleanupEnabled: config.cleanupEnabled)
-                )
+                        groqBaseURL: config.groqBaseURL, cleanupEnabled: config.cleanupEnabled),
+                    compatibility: compatibility)
             }
             guard operationID == id, !Task.isCancelled else {
                 await session?.cancelAndWait()
@@ -259,6 +262,7 @@ final class Coordinator {
         switch failure {
         case .launch: return "Could not start the transcription helper"
         case .invalidSignature: return "The bundled transcription helper could not be verified"
+        case .incompatibleBuild: return "The bundled transcription helper does not match this version of SayAll"
         case .timeout: return "Deepgram timed out after 45 seconds"
         case .oversizedRequest: return "The transcription request was too large"
         case .streamUnavailableBeforeFinish: return "The streaming helper stopped unexpectedly"
