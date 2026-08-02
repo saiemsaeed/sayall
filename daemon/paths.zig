@@ -141,9 +141,7 @@ test "Linux path classes preserve XDG and HOME locations" {
     try std.testing.expectEqualStrings("/tmp/xdg-state/sayall/metrics-v2.json", metrics_xdg);
 
     try env.put("XDG_CONFIG_HOME", "relative");
-    const legacy_config_path = (try Config.file(std.testing.allocator, &env)).?;
-    defer std.testing.allocator.free(legacy_config_path);
-    try std.testing.expectEqualStrings("relative/sayall/config.json", legacy_config_path);
+    try std.testing.expectError(error.InvalidConfigHome, Config.file(std.testing.allocator, &env));
     try std.testing.expectError(error.InvalidConfigHome, Config.keywords(std.testing.allocator, &env));
     try env.put("XDG_STATE_HOME", "relative");
     try std.testing.expectError(error.InvalidStateHome, PersistentState.metrics(std.testing.allocator, &env));

@@ -66,11 +66,15 @@ pub fn environmentDiagnostic(env: *const std.process.Environ.Map) !contract.Diag
         .{ .status = .fail, .label = "Wayland", .detail = "WAYLAND_DISPLAY is not set" };
 }
 
-pub fn diagnostics(arena: Allocator, io: Io, notifications_enabled: ?bool) !contract.Diagnostics {
+pub fn diagnostics(arena: Allocator, io: Io, notifications_enabled: ?bool, output_method: ?[]const u8) !contract.Diagnostics {
     const required_commands = [_][]const u8{ "pw-record", "wtype", "wl-copy", "sayall-hud" };
     var commands: [required_commands.len]contract.Diagnostic = undefined;
     for (required_commands, 0..) |command, index| {
-        commands[index] = if (try commandExists(arena, io, command))
+        const required = !std.mem.eql(u8, command, "wtype") or output_method == null or
+            !std.mem.eql(u8, output_method.?, "clipboard");
+        commands[index] = if (!required)
+            .{ .status = .ok, .label = "Command", .detail = "wtype not required for clipboard output" }
+        else if (try commandExists(arena, io, command))
             .{ .status = .ok, .label = "Command", .detail = command }
         else
             .{ .status = .fail, .label = "Missing command", .detail = command };
