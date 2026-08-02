@@ -146,7 +146,10 @@ tag and release commit, regenerates the exact Cask, runs `brew style` and
 [`saiemsaeed/homebrew-sayall`](https://github.com/saiemsaeed/homebrew-sayall)
 tap. It uses a write-enabled deploy key scoped only to that tap; the private key
 is `HOMEBREW_TAP_SSH_PRIVATE_KEY` and its expected public fingerprint is
-`HOMEBREW_TAP_SSH_KEY_FINGERPRINT`. It does not share Apple credentials or a
+`HOMEBREW_TAP_SSH_KEY_FINGERPRINT`. The private key exists only in the
+`homebrew-publication` environment, which permits deployment from `main`; Cask
+generation, download, style, and audit run before the key is injected into the
+final Git-only publication step. It does not share Apple credentials or a
 general-purpose GitHub token.
 
 The Cask uses the immutable GitHub release DMG, installs `SayAll.app`, and lets
@@ -155,6 +158,8 @@ Normal uninstall quits bundle ID `pro.leets.sayall` and removes Homebrew's app
 and binary shim. Shared configuration is removed only by explicit `--zap`.
 Manual retries require the immutable version and verify the matching release
 branch, tag, asset, checksum, and generator before accessing the deploy key.
+The publisher permits an equal-version idempotent retry but refuses to replace
+the tap with an older version.
 
 ## Automated AUR publishing
 
