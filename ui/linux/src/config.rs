@@ -90,7 +90,7 @@ pub struct SessionConfig {
     pub output: OutputConfig,
     pub notifications: bool,
 }
-#[derive(Default, Deserialize)]
+#[derive(Deserialize)]
 #[serde(default)]
 struct Stt {
     provider: String,
@@ -102,7 +102,21 @@ struct Stt {
     streaming: Option<bool>,
     stream_finalize_timeout_ms: Option<u32>,
 }
-#[derive(Default, Deserialize)]
+impl Default for Stt {
+    fn default() -> Self {
+        Self {
+            provider: "deepgram".into(),
+            api_key: String::new(),
+            model: "nova-3".into(),
+            language: "en".into(),
+            region: "global".into(),
+            keyterms: Vec::new(),
+            streaming: Some(true),
+            stream_finalize_timeout_ms: Some(2000),
+        }
+    }
+}
+#[derive(Deserialize)]
 #[serde(default)]
 struct Llm {
     provider: String,
@@ -110,6 +124,17 @@ struct Llm {
     model: String,
     base_url: String,
     enabled: Option<bool>,
+}
+impl Default for Llm {
+    fn default() -> Self {
+        Self {
+            provider: "groq".into(),
+            api_key: String::new(),
+            model: "llama-3.1-8b-instant".into(),
+            base_url: "https://api.groq.com/openai/v1/chat/completions".into(),
+            enabled: Some(true),
+        }
+    }
 }
 
 pub fn load() -> io::Result<SessionConfig> {
@@ -176,21 +201,18 @@ pub fn load() -> io::Result<SessionConfig> {
     validate(&cfg.recording)?;
     let deepgram_api_key = resolve_secret(cfg.stt.api_key, "DEEPGRAM_API_KEY");
     let groq_api_key = resolve_secret(cfg.llm.api_key, "GROQ_API_KEY");
-    let model = defaulted(cfg.stt.model, "nova-3");
-    let language = defaulted(cfg.stt.language, "en");
-    let region = defaulted(cfg.stt.region, "global");
-    let groq_model = defaulted(cfg.llm.model, "llama-3.1-8b-instant");
-    let base = defaulted(
-        cfg.llm.base_url,
-        "https://api.groq.com/openai/v1/chat/completions",
-    );
+    let model = cfg.stt.model;
+    let language = cfg.stt.language;
+    let region = cfg.stt.region;
+    let groq_model = cfg.llm.model;
+    let base = cfg.llm.base_url;
     let keyterms = load_keywords(parent, cfg.stt.keyterms)?;
     let method = parse_output_method(&cfg.output.method)?;
     if deepgram_api_key.is_empty()
         || !safe_secret(&deepgram_api_key)
         || !safe_secret(&groq_api_key)
-        || defaulted(cfg.stt.provider, "deepgram") != "deepgram"
-        || defaulted(cfg.llm.provider, "groq") != "groq"
+        || cfg.stt.provider != "deepgram"
+        || cfg.llm.provider != "groq"
         || !safe_value(&model)
         || !safe_value(&language)
         || !safe_value(&groq_model)
@@ -246,9 +268,6 @@ where
     }
 }
 
-fn defaulted(v: String, d: &str) -> String {
-    if v.is_empty() { d.into() } else { v }
-}
 fn parse_output_method(value: &str) -> io::Result<OutputMethod> {
     match value {
         "type" => Ok(OutputMethod::Type),
@@ -316,8 +335,8 @@ fn load_keywords(dir: &Path, fallback: Vec<String>) -> io::Result<Vec<String>> {
 }
 
 fn validate(value: &RecordingConfig) -> io::Result<()> {
-    if value.max_seconds == 0 || value.max_seconds > 300 {
-        return Err(invalid("recording.max_seconds must be between 1 and 300"));
+    if value.max_seconds == 0 || value.max_seconds > 3600 {
+        return Err(invalid("recording.max_seconds must be between 1 and 3600"));
     }
     if value.min_ms > value.max_seconds * 1000 {
         return Err(invalid("recording.min_ms exceeds max_seconds"));
@@ -346,9 +365,9 @@ mod tests {
         let mut value = RecordingConfig::default();
         value.max_seconds = 0;
         assert!(validate(&value).is_err());
-        value.max_seconds = 301;
+        value.max_seconds = 3601;
         assert!(validate(&value).is_err());
-        value.max_seconds = 300;
+        value.max_seconds = 3600;
         validate(&value).unwrap();
         value.max_seconds = 1;
         value.min_ms = 1001;
@@ -369,6 +388,21 @@ mod tests {
         assert_eq!(cfg.recording.source, "node");
         assert_eq!(cfg.output.method, "type");
         assert!(cfg.output.trailing_space);
+    }
+
+    #[test]
+    fn provider_defaults_apply_only_to_omitted_fields() {
+        let omitted: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(omitted.stt.model, "nova-3");
+        assert_eq!(omitted.llm.provider, "groq");
+        let explicit: Config = serde_json::from_str(
+            r#"{"stt":{"model":"","provider":""},"llm":{"provider":"","model":""}}"#,
+        )
+        .unwrap();
+        assert!(explicit.stt.model.is_empty());
+        assert!(explicit.stt.provider.is_empty());
+        assert!(explicit.llm.provider.is_empty());
+        assert!(explicit.llm.model.is_empty());
     }
 
     #[test]
