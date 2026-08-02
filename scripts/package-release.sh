@@ -69,7 +69,11 @@ install -m644 README.md CHANGELOG.md "$stage/share/doc/sayall/"
 install -m644 LICENSE licenses/websocket.zig-LICENSE "$stage/share/licenses/sayall/"
 python3 scripts/third-party-licenses.py \
     "$stage/share/licenses/sayall/RUST-THIRD-PARTY-LICENSES.txt"
-install -m644 sayall.service sayall-hud.service "$stage/share/systemd/user/"
+install -m644 sayall-hud.service "$stage/share/systemd/user/"
+sed -i 's|ExecStart=/usr/bin/|ExecStart=%h/.local/bin/|' \
+    "$stage/share/systemd/user/sayall-hud.service"
+grep -Fxq 'ExecStart=%h/.local/bin/sayall-hud --autostart' \
+    "$stage/share/systemd/user/sayall-hud.service"
 
 archive="dist/$name.tar.gz"
 source_archive="dist/$source_name.tar.gz"
@@ -87,7 +91,6 @@ source_paths=(
     tests
     daemon
     ui
-    sayall.service
     sayall-hud.service
     README.md
     docs

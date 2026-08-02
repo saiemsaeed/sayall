@@ -103,5 +103,5 @@ pub const Diagnostic = struct {
 pub const Diagnostics = struct {
     commands: [4]Diagnostic,
     notification: ?Diagnostic,
-    services: [2]Diagnostic,
+    services: [1]Diagnostic,
 };

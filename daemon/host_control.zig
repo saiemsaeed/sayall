@@ -116,7 +116,7 @@ pub fn mapResponsePublic(arena: Allocator, response: Response) cli.HostOutcome {
 }
 
 fn diagnostic(arena: Allocator, err: anyerror) []const u8 {
-    return std.fmt.allocPrint(arena, "sayall: cannot reach daemon ({s}) — is 'sayall daemon' running?\n", .{@errorName(err)}) catch "sayall: cannot reach daemon\n";
+    return std.fmt.allocPrint(arena, "sayall: cannot reach native host ({s}) — run 'sayall setup'\n", .{@errorName(err)}) catch "sayall: cannot reach native host\n";
 }
 
 pub const Unavailable = struct {
