@@ -1,0 +1,310 @@
+use serde::Serialize;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+pub struct Capture {
+    child: Child,
+    dir: PathBuf,
+    pcm: PathBuf,
+    cleanup: bool,
+}
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct Level {
+    pub rms: f64,
+    pub peak: f64,
+    pub clipping: bool,
+}
+
+impl Capture {
+    pub fn start(root: &Path, generation: u64, source: &str) -> io::Result<Self> {
+        Self::start_with_program(root, generation, source, resolve_program("pw-record"))
+    }
+    fn start_with_program(
+        root: &Path,
+        generation: u64,
+        source: &str,
+        program: io::Result<PathBuf>,
+    ) -> io::Result<Self> {
+        let dir = root.join(format!("session-{generation}"));
+        fs::DirBuilder::new().mode(0o700).create(&dir)?;
+        struct StartupCleanup(Option<PathBuf>);
+        impl Drop for StartupCleanup {
+            fn drop(&mut self) {
+                if let Some(path) = self.0.take() {
+                    let _ = fs::remove_dir_all(path);
+                }
+            }
+        }
+        let mut startup_cleanup = StartupCleanup(Some(dir.clone()));
+        let pcm = dir.join("audio.pcm");
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&pcm)?;
+        let program = program?;
+        let allowed: Vec<_> = ["XDG_RUNTIME_DIR", "PIPEWIRE_REMOTE"]
+            .into_iter()
+            .filter_map(|key| std::env::var_os(key).map(|v| (key, v)))
+            .collect();
+        let parent = unsafe { libc::getpid() };
+        let mut command = Command::new(program);
+        command.env_clear().envs(allowed);
+        command.args([
+            "--raw",
+            "--format",
+            "s16",
+            "--rate",
+            "16000",
+            "--channels",
+            "1",
+        ]);
+        if !source.is_empty() {
+            command.args(["--target", source]);
+        }
+        command
+            .arg(&pcm)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        unsafe {
+            command.pre_exec(move || {
+                if libc::setpgid(0, 0) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                #[cfg(target_os = "linux")]
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if libc::getppid() != parent {
+                    libc::raise(libc::SIGKILL);
+                }
+                Ok(())
+            });
+        }
+        let child = command.spawn()?;
+        startup_cleanup.0 = None;
+        Ok(Self {
+            child,
+            dir,
+            pcm,
+            cleanup: true,
+        })
+    }
+    pub fn alive(&mut self) -> io::Result<bool> {
+        Ok(self.child.try_wait()?.is_none())
+    }
+    pub fn level(&self) -> io::Result<Level> {
+        analyze_tail(&self.pcm)
+    }
+    pub fn stop(mut self) -> io::Result<PathBuf> {
+        let status = self.terminate(Duration::from_secs(2));
+        if !status.success() {
+            return Err(io::Error::other(format!("pw-record exited with {status}")));
+        }
+        let wav = self.finish_wav()?;
+        self.cleanup = false;
+        Ok(wav)
+    }
+    pub fn cancel(mut self) {
+        let _ = self.terminate(Duration::from_millis(500));
+        let _ = fs::remove_dir_all(&self.dir);
+    }
+    fn terminate(&mut self, first: Duration) -> std::process::ExitStatus {
+        if let Some(status) = self.child.try_wait().ok().flatten() {
+            return status;
+        }
+        self.signal(libc::SIGINT);
+        if let Some(status) = self.reap_status(first) {
+            return status;
+        }
+        self.signal(libc::SIGTERM);
+        if let Some(status) = self.reap_status(Duration::from_millis(500)) {
+            return status;
+        }
+        self.signal(libc::SIGKILL);
+        self.child.wait().expect("capture child wait")
+    }
+    fn signal(&self, sig: i32) {
+        unsafe {
+            libc::kill(-(self.child.id() as i32), sig);
+        }
+    }
+    fn reap(&mut self, timeout: Duration) -> bool {
+        self.reap_status(timeout).is_some()
+    }
+    fn reap_status(&mut self, timeout: Duration) -> Option<std::process::ExitStatus> {
+        let end = Instant::now() + timeout;
+        while Instant::now() < end {
+            if let Some(status) = self.child.try_wait().ok().flatten() {
+                return Some(status);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        None
+    }
+    fn finish_wav(&mut self) -> io::Result<PathBuf> {
+        let mut pcm = Vec::new();
+        File::open(&self.pcm)?.read_to_end(&mut pcm)?;
+        if pcm.len() % 2 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid s16 PCM",
+            ));
+        }
+        let wav = self.dir.join("audio.wav");
+        let mut out = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&wav)?;
+        write_wav(&mut out, &pcm)?;
+        fs::remove_file(&self.pcm)?;
+        Ok(wav)
+    }
+}
+impl Drop for Capture {
+    fn drop(&mut self) {
+        if self.child.try_wait().ok().flatten().is_none() {
+            self.signal(libc::SIGKILL);
+            let _ = self.child.wait();
+        }
+        if self.cleanup {
+            let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
+}
+pub fn cleanup(path: &Path) {
+    if let Some(dir) = path.parent() {
+        let _ = fs::remove_dir_all(dir);
+    }
+}
+fn analyze_tail(path: &Path) -> io::Result<Level> {
+    let mut file = File::open(path)?;
+    let len = file.metadata()?.len();
+    let count = len.min(3200) & !1;
+    file.seek(SeekFrom::Start(len - count))?;
+    let mut b = vec![0; count as usize];
+    file.read_exact(&mut b)?;
+    let mut sum = 0f64;
+    let mut peak = 0i32;
+    let mut n = 0;
+    for x in b.chunks_exact(2) {
+        let v = i16::from_le_bytes([x[0], x[1]]) as i32;
+        peak = peak.max(v.abs());
+        sum += (v as f64) * (v as f64);
+        n += 1;
+    }
+    Ok(Level {
+        rms: if n == 0 {
+            0.0
+        } else {
+            (sum / n as f64).sqrt() / 32768.0
+        },
+        peak: peak as f64 / 32768.0,
+        clipping: peak >= 32760,
+    })
+}
+
+fn resolve_program(name: &str) -> io::Result<PathBuf> {
+    for dir in ["/usr/bin", "/bin"] {
+        let path = Path::new(dir).join(name);
+        let Ok(meta) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.file_type().is_file()
+            && meta.uid() == 0
+            && meta.mode() & 0o022 == 0
+            && meta.mode() & 0o111 != 0
+        {
+            return Ok(path);
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "pw-record not found in trusted paths",
+    ))
+}
+fn write_wav(w: &mut impl Write, pcm: &[u8]) -> io::Result<()> {
+    w.write_all(b"RIFF")?;
+    w.write_all(&(36 + pcm.len() as u32).to_le_bytes())?;
+    w.write_all(b"WAVEfmt \x10\0\0\0\x01\0\x01\0\x80>\0\0\0}\0\0\x02\0\x10\0data")?;
+    w.write_all(&(pcm.len() as u32).to_le_bytes())?;
+    w.write_all(pcm)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+    fn private_root(name: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("sayall-capture-test-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn wav_is_canonical_mono_16khz_s16le() {
+        let mut wav = Vec::new();
+        write_wav(&mut wav, &[1, 0, 255, 127]).unwrap();
+        assert_eq!(&wav[..4], b"RIFF");
+        assert_eq!(&wav[8..12], b"WAVE");
+        assert_eq!(&wav[36..40], b"data");
+        assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 4);
+        assert_eq!(&wav[44..], &[1, 0, 255, 127]);
+    }
+
+    #[test]
+    fn startup_failure_removes_session_artifacts() {
+        let root = private_root("startup-cleanup");
+        let error = match Capture::start_with_program(
+            &root,
+            7,
+            "",
+            Err(io::Error::new(io::ErrorKind::NotFound, "missing")),
+        ) {
+            Ok(_) => panic!("capture unexpectedly started"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(!root.join("session-7").exists());
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn capture_child_does_not_inherit_general_environment() {
+        let root = private_root("environment");
+        let script = root.join("fake-pw-record");
+        fs::write(
+            &script,
+            b"#!/bin/sh\nlast=\nfor arg do last=$arg; done\n/usr/bin/env > \"$last.env\"\ntrap 'exit 0' INT TERM\nwhile :; do /bin/sleep 1; done\n",
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let capture = Capture::start_with_program(&root, 8, "", Ok(script)).unwrap();
+        let environment = root.join("session-8/audio.pcm.env");
+        for _ in 0..100 {
+            if environment.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let contents = fs::read_to_string(environment).unwrap();
+        assert!(!contents.lines().any(|line| line.starts_with("HOME=")));
+        assert!(
+            !contents
+                .lines()
+                .any(|line| line.starts_with("DEEPGRAM_API_KEY="))
+        );
+        capture.cancel();
+        fs::remove_dir_all(root).unwrap();
+    }
+}

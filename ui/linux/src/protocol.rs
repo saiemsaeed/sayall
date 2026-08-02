@@ -503,7 +503,8 @@ mod tests {
     const WORKER_WARNING: &str =
         include_str!("../../../tests/contracts-0.2/worker-result-cleanup-warning.json");
     const WORKER_INFO: &str = include_str!("../../../tests/contracts-0.2/worker-info.json");
-    const WORKER_READY_REST: &str = include_str!("../../../tests/contracts-0.2/worker-ready-rest.json");
+    const WORKER_READY_REST: &str =
+        include_str!("../../../tests/contracts-0.2/worker-ready-rest.json");
     const WORKER_FINISH: &str = include_str!("../../../tests/contracts-0.2/worker-finish.json");
     const HOST_STATUS_REQUEST: &str =
         include_str!("../../../tests/contracts-0.2/host-status-request.json");
@@ -519,11 +520,22 @@ mod tests {
     }
 
     #[derive(Deserialize)]
-    struct WorkerInfoFixture { protocol_version: u32, build_version: String }
+    struct WorkerInfoFixture {
+        protocol_version: u32,
+        build_version: String,
+    }
     #[derive(Deserialize)]
-    struct WorkerReadyFixture { version: u32, event: String, streaming: bool }
+    struct WorkerReadyFixture {
+        version: u32,
+        event: String,
+        streaming: bool,
+    }
     #[derive(Deserialize)]
-    struct WorkerFinishFixture { version: u32, command: String, force_rest: bool }
+    struct WorkerFinishFixture {
+        version: u32,
+        command: String,
+        force_rest: bool,
+    }
 
     #[derive(Deserialize)]
     struct HostRequestFixture {
@@ -548,11 +560,20 @@ mod tests {
     #[test]
     fn shared_backend_contract_fixtures_decode_in_rust() {
         let info: WorkerInfoFixture = serde_json::from_str(WORKER_INFO).unwrap();
-        assert_eq!((info.protocol_version, info.build_version.as_str()), (1, "0.1.8"));
+        assert_eq!(
+            (info.protocol_version, info.build_version.as_str()),
+            (1, "0.1.8")
+        );
         let ready: WorkerReadyFixture = serde_json::from_str(WORKER_READY_REST).unwrap();
-        assert_eq!((ready.version, ready.event.as_str(), ready.streaming), (1, "ready", false));
+        assert_eq!(
+            (ready.version, ready.event.as_str(), ready.streaming),
+            (1, "ready", false)
+        );
         let finish: WorkerFinishFixture = serde_json::from_str(WORKER_FINISH).unwrap();
-        assert_eq!((finish.version, finish.command.as_str(), finish.force_rest), (1, "finish", false));
+        assert_eq!(
+            (finish.version, finish.command.as_str(), finish.force_rest),
+            (1, "finish", false)
+        );
         let success: WorkerResultFixture = serde_json::from_str(WORKER_SUCCESS).unwrap();
         assert_eq!(success.version, 1);
         assert_eq!(success.status, "success");
