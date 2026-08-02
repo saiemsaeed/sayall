@@ -1,10 +1,10 @@
 # Linux release qualification
 
-Complete this checklist with the exact 0.2.0 release candidate before approving
+Complete this checklist with the exact release candidate before approving
 publication. CI, package-layout tests, and a successful build do not replace
 physical desktop qualification. Start only after the `linux-assets` artifact
-exists for the frozen `release/0.2.0` commit and while protected publication is
-still blocked.
+exists for the frozen `release/<version>` commit and while protected
+publication is still blocked.
 
 ## Candidate record
 
@@ -49,7 +49,7 @@ release workflow SHA. Generate candidate AUR
 recipes on an x86-64 Arch test system, using the downloaded immutable inputs:
 
 ```sh
-version=0.2.0
+version=$(tr -d '[:space:]' < /path/to/sayall/VERSION)
 commit=RELEASE_COMMIT
 binary_sha=$(awk -v f="sayall-$version-linux-x86_64.tar.gz" '$2 == f {print $1}' SHA256SUMS)
 source_sha=$(awk -v f="sayall-$version.tar.gz" '$2 == f {print $1}' SHA256SUMS)
@@ -147,7 +147,7 @@ remain unless the tester explicitly removes it.
 
 Run on supported Omarchy/Hyprland Wayland, an X11 session, and representative
 GNOME and KDE portal sessions. Every checkbox below that is not explicitly
-`N/A` is a 0.2.0 publication blocker.
+`N/A` is a publication blocker for the current candidate.
 
 | Behavior | Wayland/Hyprland | X11 | GNOME/KDE portal | Evidence / notes |
 | --- | --- | --- | --- | --- |
@@ -189,10 +189,11 @@ The candidate fails qualification if the old service remains active, both hosts
 handle a shortcut, text is delivered twice, the private worker is public, or a
 stale socket prevents recovery.
 
-Before publication, prove rollback in a disposable environment: stop the 0.2.0
-host, downgrade all package-owned components together, reload the user manager,
-and restore the prior service. Never mix a 0.2.0 UI/CLI with a 0.1.8 worker or
-daemon. Record the exact package commands and result here:
+Before publication, prove rollback in a disposable environment: stop the
+candidate host, downgrade all package-owned components together, reload the user
+manager, and restore the prior service. Never mix candidate UI/CLI components
+with a worker or daemon from the prior release. Record the exact package commands
+and result here:
 
 - Rollback result:
 - Evidence / notes:

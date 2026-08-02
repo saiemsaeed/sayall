@@ -5,7 +5,7 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.2.1] - 2026-08-02
+## [0.2.2] - 2026-08-02
 
 ### Added
 
@@ -52,6 +52,8 @@ follows [Semantic Versioning](https://semver.org/).
   source-package builds.
 - Removed checkout-relative worker lookup from release builds so packaged Linux
   applications resolve only their bundled or installed private worker.
+- Made Linux setup wait for the restarted native host's control endpoint before
+  reporting success, without retrying toggle operations.
 
 ## [0.1.8] - 2026-08-01
 
@@ -233,8 +235,8 @@ Initial release, tested and supported on x86-64 Arch Linux with Omarchy.
 - Persistent privacy-safe transcription metrics and microphone diagnostics.
 - systemd user services and Hyprland hotkey integration.
 
-[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.2.1...HEAD
-[0.2.1]: https://github.com/saiemsaeed/sayall/compare/v0.1.8...v0.2.1
+[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/saiemsaeed/sayall/compare/v0.1.8...v0.2.2
 [0.1.8]: https://github.com/saiemsaeed/sayall/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/saiemsaeed/sayall/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/saiemsaeed/sayall/compare/v0.1.5...v0.1.6
