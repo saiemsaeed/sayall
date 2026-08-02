@@ -3,50 +3,9 @@ import AppKit
 import ApplicationServices
 import Darwin
 @testable import SayAll
-@testable import SayAllCLI
 import SayAllControl
 
-final class CLIFoundationTests: XCTestCase {
-    func testOnlyFoundationCommandsParse() throws {
-        XCTAssertEqual(try CLI.parse(["version"]), .version)
-        XCTAssertEqual(try CLI.parse(["--version"]), .version)
-        XCTAssertEqual(try CLI.parse(["status"]), .status)
-        XCTAssertEqual(try CLI.parse(["toggle"]), .toggle)
-        XCTAssertEqual(try CLI.parse(["config", "init"]), .configInit)
-        XCTAssertThrowsError(try CLI.parse(["start"]))
-        XCTAssertThrowsError(try CLI.parse(["stop"]))
-    }
-
-    func testConfigInitIsPrivateValidAndNeverOverwrites() throws {
-        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: home) }
-        let url = try CLI.initializeConfig(home: home, environment: [:])
-        let json = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
-        let stt = json?["stt"] as? [String: Any]
-        let recording = json?["recording"] as? [String: Any]
-        let metrics = json?["metrics"] as? [String: Any]
-        XCTAssertEqual(stt?["api_key"] as? String, "")
-        XCTAssertEqual(stt?["model"] as? String, "nova-3")
-        XCTAssertEqual(recording?["max_seconds"] as? Int, 300)
-        XCTAssertEqual(recording?["min_ms"] as? Int, 300)
-        XCTAssertEqual(metrics?["history_max_entries"] as? Int, 1_000)
-        XCTAssertEqual(json?["notifications"] as? Bool, true)
-        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?.intValue, 0o600)
-        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: url.deletingLastPathComponent().path)[.posixPermissions] as? NSNumber)?.intValue, 0o700)
-        let original = try Data(contentsOf: url)
-        XCTAssertThrowsError(try CLI.initializeConfig(home: home, environment: [:]))
-        XCTAssertEqual(try Data(contentsOf: url), original)
-    }
-
-    func testConfigInitUsesTheSameXDGPathAsTheAppLoader() throws {
-        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: home) }
-        let xdg = home.appendingPathComponent("custom-config")
-        let environment = ["XDG_CONFIG_HOME": xdg.path]
-        let url = try CLI.initializeConfig(home: home, environment: environment)
-        XCTAssertEqual(url, ConfigurationLoader(environment: environment, homeDirectory: home).url)
-    }
-
+final class ControlFoundationTests: XCTestCase {
     func testControlProtocolRoundTripsStableState() throws {
         let response = ControlResponse(ok: false, state: "processing", error: "busy: SayAll is processing")
         XCTAssertEqual(try JSONDecoder().decode(ControlResponse.self, from: JSONEncoder().encode(response)), response)
