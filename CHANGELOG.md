@@ -5,7 +5,7 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-08-02
+## [0.2.1] - 2026-08-02
 
 ### Added
 
@@ -48,6 +48,10 @@ follows [Semantic Versioning](https://semver.org/).
   rejecting writable or escaping capture executables.
 - Made private-worker permission tests portable across physical Arch kernels
   and filesystems.
+- Kept Linux IPC test endpoints within Unix socket path limits in deeply nested
+  source-package builds.
+- Removed checkout-relative worker lookup from release builds so packaged Linux
+  applications resolve only their bundled or installed private worker.
 
 ## [0.1.8] - 2026-08-01
 
@@ -229,8 +233,8 @@ Initial release, tested and supported on x86-64 Arch Linux with Omarchy.
 - Persistent privacy-safe transcription metrics and microphone diagnostics.
 - systemd user services and Hyprland hotkey integration.
 
-[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/saiemsaeed/sayall/compare/v0.1.8...v0.2.0
+[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/saiemsaeed/sayall/compare/v0.1.8...v0.2.1
 [0.1.8]: https://github.com/saiemsaeed/sayall/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/saiemsaeed/sayall/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/saiemsaeed/sayall/compare/v0.1.5...v0.1.6
