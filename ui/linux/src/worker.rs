@@ -380,7 +380,7 @@ fn probe(path: &Path, shutdown: &Arc<AtomicBool>) -> Result<(), String> {
         terminate(&mut r.child, deadline);
         return Err("processing worker protocol is incompatible".into());
     }
-    if info.build_version != env!("CARGO_PKG_VERSION") {
+    if info.build_version != crate::BUILD_VERSION {
         terminate(&mut r.child, deadline);
         return Err("processing worker build is incompatible".into());
     }
@@ -846,7 +846,7 @@ mod tests {
   IFS= read -r ignored || true
   exit 0
 fi"#,
-            env!("CARGO_PKG_VERSION")
+            crate::BUILD_VERSION
         )
     }
 

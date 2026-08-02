@@ -25,6 +25,19 @@ jobs:
         run: cargo test --locked --manifest-path ui/linux/Cargo.toml
       - name: Test Homebrew Cask generation
         run: bash tests/homebrew-cask.sh
+      - name: Verify checked-in AUR metadata
+        run: |
+          useradd --create-home aur-metadata
+          work=$(mktemp -d)
+          cp -a packaging/aur/. "$work/"
+          chown -R aur-metadata:aur-metadata "$work"
+          for package in sayall sayall-bin sayall-git; do
+            runuser -u aur-metadata -- bash -c \
+              'cd "$1" && makepkg --printsrcinfo' _ "$work/$package" \
+              > "$work/$package/.SRCINFO.generated"
+            diff -u "packaging/aur/$package/.SRCINFO" \
+              "$work/$package/.SRCINFO.generated"
+          done
       - name: Verify release assembly
         run: bash scripts/package-release.sh
 

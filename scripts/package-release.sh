@@ -52,6 +52,10 @@ if [[ $(zig-out/bin/sayall-process --version) != "sayall-process $version" ]]; t
     echo 'private worker version does not match the release' >&2
     exit 1
 fi
+if [[ $(ui/linux/target/release/sayall-hud --version) != "sayall-hud $version" ]]; then
+    echo 'Linux application version does not match the release' >&2
+    exit 1
+fi
 
 source_name="sayall-$version"
 name="$source_name-linux-x86_64"
@@ -61,10 +65,15 @@ mkdir -p \
     "$stage/bin" \
     "$stage/lib/sayall" \
     "$stage/share/doc/sayall" \
+    "$stage/share/applications" \
+    "$stage/share/icons/hicolor/scalable/apps" \
     "$stage/share/licenses/sayall" \
     "$stage/share/systemd/user"
 install -m755 zig-out/bin/sayall ui/linux/target/release/sayall-hud "$stage/bin/"
 install -m755 zig-out/bin/sayall-process "$stage/lib/sayall/sayall-process"
+install -m644 ui/linux/dev.sayall.Hud.desktop "$stage/share/applications/"
+install -m644 ui/linux/dev.sayall.Hud.svg \
+    "$stage/share/icons/hicolor/scalable/apps/"
 install -m644 README.md CHANGELOG.md "$stage/share/doc/sayall/"
 install -m644 LICENSE licenses/websocket.zig-LICENSE "$stage/share/licenses/sayall/"
 python3 scripts/third-party-licenses.py \
@@ -74,6 +83,10 @@ sed -i 's|ExecStart=/usr/bin/|ExecStart=%h/.local/bin/|' \
     "$stage/share/systemd/user/sayall-hud.service"
 grep -Fxq 'ExecStart=%h/.local/bin/sayall-hud --autostart' \
     "$stage/share/systemd/user/sayall-hud.service"
+test ! -e "$stage/bin/sayall-process"
+grep -Fxq 'Exec=sayall-hud' "$stage/share/applications/dev.sayall.Hud.desktop"
+grep -Fxq 'Icon=dev.sayall.Hud' "$stage/share/applications/dev.sayall.Hud.desktop"
+grep -Fq '<svg ' "$stage/share/icons/hicolor/scalable/apps/dev.sayall.Hud.svg"
 
 archive="dist/$name.tar.gz"
 source_archive="dist/$source_name.tar.gz"
@@ -100,6 +113,7 @@ tar --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner \
     --transform="s|^|$source_name/|" \
     -C "$root" -czf "$source_archive" "${source_paths[@]}"
 (cd dist && sha256sum "${name}.tar.gz" "${source_name}.tar.gz" > SHA256SUMS)
+bash tests/linux-package-layout.sh "$version" "$archive" "$source_archive"
 
 printf 'created %s\ncreated %s\ncreated dist/SHA256SUMS\n' \
     "$archive" "$source_archive"
