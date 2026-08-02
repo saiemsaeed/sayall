@@ -17,6 +17,8 @@ depends=(
   'pipewire-audio'
   'wl-clipboard'
   'wtype'
+  'xdotool'
+  'xsel'
 )
 provides=("sayall=$pkgver")
 conflicts=('sayall' 'sayall-src' 'sayall-git')
