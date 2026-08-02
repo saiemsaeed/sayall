@@ -155,9 +155,11 @@ fn feedStdin(io: Io, argv: []const []const u8, text: []const u8, fail: anyerror)
 
 pub fn configFile(gpa: Allocator, env: *const std.process.Environ.Map) !?[]u8 {
     if (env.get("XDG_CONFIG_HOME")) |dir| {
+        if (dir.len == 0 or !std.fs.path.isAbsolute(dir)) return error.InvalidConfigHome;
         return try std.fmt.allocPrint(gpa, "{s}/sayall/config.json", .{dir});
     }
     if (env.get("HOME")) |home| {
+        if (home.len == 0 or !std.fs.path.isAbsolute(home)) return error.InvalidConfigHome;
         return try std.fmt.allocPrint(gpa, "{s}/.config/sayall/config.json", .{home});
     }
     return null;
