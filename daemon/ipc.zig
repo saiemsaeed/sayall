@@ -66,13 +66,16 @@ pub fn readReply(gpa: Allocator, io: Io, stream: Io.net.Stream) ![]u8 {
 
 test "listen creates a private socket and rejects a non-socket endpoint" {
     if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const relative_base = try std.fmt.allocPrint(std.testing.allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
-    defer std.testing.allocator.free(relative_base);
-    const parent = try Io.Dir.cwd().realPathFileAlloc(std.testing.io, relative_base, std.testing.allocator);
+    var nonce: u64 = undefined;
+    try std.Io.randomSecure(std.testing.io, std.mem.asBytes(&nonce));
+    const name = try std.fmt.allocPrint(std.testing.allocator, "sayall-ipc-test-{x}", .{nonce});
+    defer std.testing.allocator.free(name);
+    const tmp = try Io.Dir.openDirAbsolute(std.testing.io, "/tmp", .{ .iterate = true });
+    defer tmp.close(std.testing.io);
+    try tmp.createDir(std.testing.io, name, .fromMode(0o700));
+    defer tmp.deleteTree(std.testing.io, name) catch {};
+    const parent = try std.fmt.allocPrint(std.testing.allocator, "/tmp/{s}", .{name});
     defer std.testing.allocator.free(parent);
-    try setMode(parent, 0o700);
     const socket_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/sayall.sock", .{parent});
     defer std.testing.allocator.free(socket_path);
     const endpoint: paths.Endpoint = .{
