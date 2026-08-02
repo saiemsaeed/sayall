@@ -31,6 +31,8 @@ package() {
   install -Dm755 -t "$pkgdir/usr/bin" \
     "$src/bin/sayall" \
     "$src/bin/sayall-hud"
+  install -Dm755 "$src/lib/sayall/sayall-process" \
+    "$pkgdir/usr/lib/sayall/sayall-process"
 
   install -Dm644 -t "$pkgdir/usr/lib/systemd/user" \
     "$src/share/systemd/user/sayall.service" \

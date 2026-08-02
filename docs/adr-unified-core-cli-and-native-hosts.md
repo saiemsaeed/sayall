@@ -155,3 +155,19 @@ complete bundle is notarized and stapled.
 - Worker startup overhead is accepted for crash isolation and atomic packaging.
 - The public CLI remains useful while live microphone authority stays in the
   native application.
+
+## Public CLI syntax during the 0.2.0 migration
+
+The cross-platform public surface currently consists of `help`, `version`,
+`status`, `toggle`, `config init`, `config validate [--json]`, and:
+
+```text
+sayall transcribe <WAV> [--raw] [--json]
+```
+
+`transcribe` accepts one WAV file of at most 10 MiB. It copies the input to a
+private, bounded scratch file and sends credentials only through the private
+worker's stdin protocol. Human output is transcript-only; `--json` emits the
+canonical worker result for automation, and `--raw` disables optional LLM
+cleanup. Status diagnostics go to stderr and never include credentials or
+transcript text. The native UI does not invoke this command.
