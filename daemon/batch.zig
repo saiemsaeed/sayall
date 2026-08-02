@@ -281,7 +281,7 @@ test "provider mapping is deterministic" {
 }
 
 test "process validates canonical audio and preserves raw transcript when cleanup fails" {
-    var tmp = std.testing.tmpDir(.{});
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     const path = try writeTestWav(&tmp, 16_000);
     defer std.testing.allocator.free(path);
@@ -302,7 +302,7 @@ test "process validates canonical audio and preserves raw transcript when cleanu
 }
 
 test "process distinguishes short and invalid audio without calling providers" {
-    var tmp = std.testing.tmpDir(.{});
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     const path = try writeTestWav(&tmp, 2);
     defer std.testing.allocator.free(path);
@@ -337,7 +337,7 @@ test "process rejects incompatible requests and oversized provider output" {
     defer std.testing.allocator.free(oversized);
     @memset(oversized, 'a');
     fake.transcript = oversized;
-    var tmp = std.testing.tmpDir(.{});
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     const path = try writeTestWav(&tmp, 16_000);
     defer std.testing.allocator.free(path);
