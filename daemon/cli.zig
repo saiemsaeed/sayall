@@ -11,10 +11,12 @@ pub const help =
     \\  sayall config init    securely create the default configuration
     \\  sayall config validate [--json]
     \\  sayall transcribe <WAV> [--raw] [--json]
+    \\  sayall doctor [--json]
+    \\  sayall update
     \\
 ;
 
-pub const Command = enum { help, version, status, toggle, config_init, config_validate, config_validate_json };
+pub const Command = enum { help, version, status, toggle, config_init, config_validate, config_validate_json, doctor, doctor_json, update };
 pub const ParseError = error{InvalidArguments};
 
 pub fn parse(args: []const []const u8) ParseError!Command {
@@ -25,10 +27,13 @@ pub fn parse(args: []const []const u8) ParseError!Command {
         if (std.mem.eql(u8, arg, "version") or std.mem.eql(u8, arg, "--version")) return .version;
         if (std.mem.eql(u8, arg, "status")) return .status;
         if (std.mem.eql(u8, arg, "toggle")) return .toggle;
+        if (std.mem.eql(u8, arg, "doctor")) return .doctor;
+        if (std.mem.eql(u8, arg, "update")) return .update;
     }
     if (args.len == 2 and std.mem.eql(u8, args[0], "config") and std.mem.eql(u8, args[1], "init")) return .config_init;
     if (args.len == 2 and std.mem.eql(u8, args[0], "config") and std.mem.eql(u8, args[1], "validate")) return .config_validate;
     if (args.len == 3 and std.mem.eql(u8, args[0], "config") and std.mem.eql(u8, args[1], "validate") and std.mem.eql(u8, args[2], "--json")) return .config_validate_json;
+    if (args.len == 2 and std.mem.eql(u8, args[0], "doctor") and std.mem.eql(u8, args[1], "--json")) return .doctor_json;
     return error.InvalidArguments;
 }
 
@@ -61,6 +66,10 @@ pub const HostControl = struct {
     }
 };
 
+pub fn updateAllowed(outcome: HostOutcome) bool {
+    return outcome == .idle;
+}
+
 pub const Presentation = struct { exit_code: u8, stdout: []const u8 = "", stderr: []const u8 = "" };
 
 pub const usage_presentation: Presentation = .{ .exit_code = 2, .stderr = help };
@@ -75,7 +84,7 @@ pub fn execute(command: Command, version: []const u8, host: HostControl) Present
         .version => .{ .exit_code = 0, .stdout = version },
         .status => present(host.status()),
         .toggle => present(host.toggle()),
-        .config_init, .config_validate, .config_validate_json => unreachable,
+        .config_init, .config_validate, .config_validate_json, .doctor, .doctor_json, .update => unreachable,
     };
 }
 
@@ -123,12 +132,15 @@ test "canonical grammar accepts only exact commands" {
     try std.testing.expectEqual(Command.config_init, try parse(&.{ "config", "init" }));
     try std.testing.expectEqual(Command.config_validate, try parse(&.{ "config", "validate" }));
     try std.testing.expectEqual(Command.config_validate_json, try parse(&.{ "config", "validate", "--json" }));
-    for ([_][]const []const u8{ &.{}, &.{ "status", "extra" }, &.{"start"}, &.{"stop"}, &.{"config"}, &.{ "config", "init", "extra" }, &.{ "config", "validate", "--raw" } }) |args|
+    try std.testing.expectEqual(Command.doctor, try parse(&.{"doctor"}));
+    try std.testing.expectEqual(Command.doctor_json, try parse(&.{ "doctor", "--json" }));
+    try std.testing.expectEqual(Command.update, try parse(&.{"update"}));
+    for ([_][]const []const u8{ &.{}, &.{ "status", "extra" }, &.{"start"}, &.{"stop"}, &.{"config"}, &.{ "config", "init", "extra" }, &.{ "config", "validate", "--raw" }, &.{ "doctor", "--raw" }, &.{ "update", "extra" } }) |args|
         try std.testing.expectError(error.InvalidArguments, parse(args));
 }
 
 test "help contains only the canonical public surface" {
-    for ([_][]const u8{ " daemon", " service", " setup", " restart", " update", " stop", " start" }) |hidden|
+    for ([_][]const u8{ " daemon", " service", " setup", " restart", " stop", " start" }) |hidden|
         try std.testing.expect(std.mem.indexOf(u8, help, hidden) == null);
     try std.testing.expect(std.mem.indexOf(u8, help, " transcribe") != null);
 }
@@ -175,6 +187,13 @@ test "typed adapters have identical presentation and one operation" {
     _ = execute(.status, "unused", status_fake.adapter());
     try std.testing.expectEqual(@as(usize, 1), status_fake.status_calls);
     try std.testing.expectEqual(@as(usize, 0), status_fake.toggle_calls);
+}
+
+test "updates require an idle native host" {
+    try std.testing.expect(updateAllowed(.idle));
+    try std.testing.expect(!updateAllowed(.recording));
+    try std.testing.expect(!updateAllowed(.processing));
+    try std.testing.expect(!updateAllowed(.unavailable));
 }
 
 test "deployed host outcomes preserve stdout stderr and exit contracts" {

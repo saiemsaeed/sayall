@@ -27,6 +27,6 @@ test "Darwin and Windows product integrations are explicitly unsupported" {
         try std.testing.expectError(error.UnsupportedPlatform, unsupported.prepareUpdate(std.testing.allocator, std.testing.io));
         try std.testing.expectError(error.UnsupportedPlatform, unsupported.shortcut(std.testing.allocator, std.testing.io, &env, .show));
         try std.testing.expectError(error.UnsupportedPlatform, unsupported.environmentDiagnostic(&env));
-        try std.testing.expectError(error.UnsupportedPlatform, unsupported.diagnostics(std.testing.allocator, std.testing.io, null));
+        try std.testing.expectError(error.UnsupportedPlatform, unsupported.diagnostics(std.testing.allocator, std.testing.io, null, null));
     }
 }
