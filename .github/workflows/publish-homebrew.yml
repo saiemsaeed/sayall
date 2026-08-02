@@ -22,6 +22,7 @@ jobs:
   publish:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: macos-15
+    environment: homebrew-publication
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -76,6 +77,16 @@ jobs:
           bash scripts/generate-homebrew-cask.sh "$version" "$dmg_sha" "$RUNNER_TEMP/sayall.rb"
           ruby -c "$RUNNER_TEMP/sayall.rb"
           printf 'VERSION=%s\n' "$version" >> "$GITHUB_ENV"
+      - name: Audit exact Cask without publication credentials
+        run: |
+          set -euo pipefail
+          brew tap saiemsaeed/sayall
+          tap=$(brew --repo saiemsaeed/sayall)
+          git -C "$tap" ls-files --error-unmatch Casks/sayall.rb >/dev/null
+          install -m644 "$RUNNER_TEMP/sayall.rb" "$tap/Casks/sayall.rb"
+          brew style saiemsaeed/sayall/sayall
+          brew audit --cask --online --strict saiemsaeed/sayall/sayall
+          git -C "$tap" restore -- Casks/sayall.rb
       - name: Publish exact Cask to the dedicated tap
         env:
           TAP_SSH_PRIVATE_KEY: ${{ secrets.HOMEBREW_TAP_SSH_PRIVATE_KEY }}
@@ -94,16 +105,23 @@ jobs:
           test "$actual_fingerprint" = "$EXPECTED_KEY_FINGERPRINT"
           ssh-keyscan -t ed25519 github.com 2>/dev/null > "$known_hosts"
           host_fingerprint=$(ssh-keygen -lf "$known_hosts" -E sha256 | awk '{print $2}')
-          test "$host_fingerprint" = 'SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPtv1M3qFlh4'
+          test "$host_fingerprint" = 'SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU'
           export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o UserKnownHostsFile=$known_hosts"
 
-          brew tap saiemsaeed/sayall
           tap=$(brew --repo saiemsaeed/sayall)
           git -C "$tap" remote set-url origin git@github.com:saiemsaeed/homebrew-sayall.git
-          install -d "$tap/Casks"
+          git -C "$tap" fetch origin main
+          git -C "$tap" merge --ff-only origin/main
+          current_version=$(sed -n 's/^  version "\([^"]*\)"$/\1/p' "$tap/Casks/sayall.rb")
+          [[ $current_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          python3 - "$current_version" "$VERSION" <<'PY'
+          import sys
+          current = tuple(map(int, sys.argv[1].split(".")))
+          candidate = tuple(map(int, sys.argv[2].split(".")))
+          if candidate < current:
+              raise SystemExit(f"refusing Cask downgrade from {sys.argv[1]} to {sys.argv[2]}")
+          PY
           install -m644 "$RUNNER_TEMP/sayall.rb" "$tap/Casks/sayall.rb"
-          brew style saiemsaeed/sayall/sayall
-          brew audit --cask --online --strict saiemsaeed/sayall/sayall
           if [[ -z $(git -C "$tap" status --porcelain -- Casks/sayall.rb) ]]; then
             echo "SayAll $VERSION Cask is already current"
             exit 0
