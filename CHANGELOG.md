@@ -13,6 +13,10 @@ follows [Semantic Versioning](https://semver.org/).
   no experimental mode or public legacy daemon commands.
 - Added native X11 typing, paste, and clipboard delivery alongside the existing
   Wayland path, with runtime session selection and matching diagnostics.
+- Linux release archives and all AUR variants now install one complete product:
+  the public CLI and application, private processing worker, native-host service,
+  desktop launcher, and application icon. The CLI, host, and worker versions are
+  validated together, including dynamically versioned `sayall-git` builds.
 
 ## [0.1.8] - 2026-08-01
 

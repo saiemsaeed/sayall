@@ -1,5 +1,5 @@
 pkgbase = sayall
-	pkgdesc = Wayland voice dictation daemon and recording HUD
+	pkgdesc = Linux voice dictation application and CLI
 	pkgver = 0.1.2
 	pkgrel = 1
 	url = https://github.com/saiemsaeed/sayall
@@ -19,6 +19,8 @@ pkgbase = sayall
 	depends = pipewire-audio
 	depends = wl-clipboard
 	depends = wtype
+	depends = xdotool
+	depends = xsel
 	conflicts = sayall-bin
 	conflicts = sayall-src
 	conflicts = sayall-git

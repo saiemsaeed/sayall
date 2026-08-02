@@ -281,11 +281,11 @@ failure diagnostics.
 
 ### Install a release archive
 
-Release archives contain both executables, documentation, the license, and
-systemd user-service files. AUR installation is preferred on Arch Linux. Do
-not combine this manual installation with an AUR package. After downloading
-and verifying the archive's entry in `SHA256SUMS`, install it for the current
-user:
+Release archives contain the public CLI and application, private worker,
+desktop launcher and icon, documentation, licenses, and systemd user-service
+file. AUR installation is preferred on Arch Linux. Do not combine this manual
+installation with an AUR package. After downloading and verifying the archive's
+entry in `SHA256SUMS`, install it for the current user:
 
 ```sh
 sudo pacman -S --needed pipewire-audio wtype wl-clipboard xdotool xsel libnotify gtk4 gtk4-layer-shell
@@ -296,6 +296,9 @@ cd sayall-VERSION-linux-x86_64
 install -Dm755 -t ~/.local/bin bin/sayall bin/sayall-hud
 install -Dm755 lib/sayall/sayall-process ~/.local/lib/sayall/sayall-process
 install -Dm644 -t ~/.config/systemd/user share/systemd/user/*.service
+install -Dm644 -t ~/.local/share/applications share/applications/*.desktop
+install -Dm644 -t ~/.local/share/icons/hicolor/scalable/apps \
+  share/icons/hicolor/scalable/apps/*.svg
 systemctl --user daemon-reload
 systemctl --user enable --now sayall-hud.service
 ```

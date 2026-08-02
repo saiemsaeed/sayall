@@ -30,6 +30,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const APP_ID: &str = "dev.sayall.Hud";
+const BUILD_VERSION: &str = match option_env!("SAYALL_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
 const BAR_COUNT: usize = 14;
 const HUD_WIDTH: i32 = 244;
 const HUD_HEIGHT: i32 = 48;
@@ -275,6 +279,10 @@ impl Model {
 }
 
 fn main() -> glib::ExitCode {
+    if env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--version")) {
+        println!("sayall-hud {BUILD_VERSION}");
+        return glib::ExitCode::SUCCESS;
+    }
     let autostart = env::args_os().skip(1).any(|arg| arg == "--autostart");
     let app = Application::builder().application_id(APP_ID).build();
     let settings_action = gio::SimpleAction::new("settings", None);

@@ -3,7 +3,7 @@
 pkgname=sayall-bin
 pkgver=0.1.2
 pkgrel=1
-pkgdesc='Wayland voice dictation daemon and recording HUD (prebuilt)'
+pkgdesc='Linux voice dictation application and CLI (prebuilt)'
 arch=('x86_64')
 url='https://github.com/saiemsaeed/sayall'
 license=('MIT')
@@ -30,12 +30,20 @@ sha256sums=('f6a7dd272687c488df7ce361b358ee367d594e69c139b3969f5a0f0e9549c3b8')
 package() {
   local src="$srcdir/sayall-$pkgver-linux-x86_64"
 
+  [[ $("$src/bin/sayall" --version) == "sayall $pkgver" ]]
+  [[ $("$src/bin/sayall-hud" --version) == "sayall-hud $pkgver" ]]
+  [[ $("$src/lib/sayall/sayall-process" --version) == "sayall-process $pkgver" ]]
+
   install -Dm755 -t "$pkgdir/usr/bin" \
     "$src/bin/sayall" \
     "$src/bin/sayall-hud"
   install -Dm755 "$src/lib/sayall/sayall-process" \
     "$pkgdir/usr/lib/sayall/sayall-process"
 
+  install -Dm644 "$src/share/applications/dev.sayall.Hud.desktop" \
+    "$pkgdir/usr/share/applications/dev.sayall.Hud.desktop"
+  install -Dm644 "$src/share/icons/hicolor/scalable/apps/dev.sayall.Hud.svg" \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/dev.sayall.Hud.svg"
   install -Dm644 "$src/share/systemd/user/sayall-hud.service" \
     "$pkgdir/usr/lib/systemd/user/sayall-hud.service"
   sed -i 's|ExecStart=%h/.local/bin/|ExecStart=/usr/bin/|' \
