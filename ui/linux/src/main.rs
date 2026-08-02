@@ -4,6 +4,7 @@ mod control;
 mod protocol;
 mod runtime;
 mod session;
+mod worker;
 
 use gtk::cairo;
 use gtk::glib;
@@ -262,8 +263,8 @@ fn shutdown_native_host() {
             mut server,
             updates: _,
         } = native;
-        server.shutdown_and_join();
         controller.shutdown_and_join();
+        server.shutdown_and_join();
         drop(_ownership);
     }
 }
@@ -272,12 +273,7 @@ fn start_native_host() -> io::Result<()> {
     let ownership = runtime::Ownership::acquire(socket_path()?)?;
     let root = runtime::session_root()?;
     let (tx, rx) = mpsc::channel();
-    let controller = session::Controller::spawn(
-        root,
-        session::PreviewProcessor,
-        session::PreviewDelivery,
-        tx,
-    );
+    let controller = session::Controller::spawn(root, session::PreviewDelivery, tx);
     let socket = ownership.socket.clone();
     let server = match control::Server::bind(&socket, controller.clone()) {
         Ok(server) => server,

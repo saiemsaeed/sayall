@@ -1,4 +1,4 @@
-use crate::{capture, config};
+use crate::{capture, config, worker};
 use serde::Serialize;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -43,17 +43,8 @@ impl Default for Snapshot {
     }
 }
 
-pub trait Processor: Send + 'static {
-    fn process(&mut self, wav: &Path) -> Result<String, String>;
-}
 pub trait Delivery: Send + 'static {
     fn deliver(&mut self, text: &str) -> Result<(), String>;
-}
-pub struct PreviewProcessor;
-impl Processor for PreviewProcessor {
-    fn process(&mut self, _: &Path) -> Result<String, String> {
-        Err("native preview processing is not ready (SAY-44)".into())
-    }
 }
 pub struct PreviewDelivery;
 impl Delivery for PreviewDelivery {
@@ -86,29 +77,27 @@ struct Inner {
     tx: mpsc::Sender<Command>,
     snapshot: Arc<Mutex<Snapshot>>,
     admitted: Arc<AtomicBool>,
+    shutdown: Arc<AtomicBool>,
     join: Mutex<Option<JoinHandle<()>>>,
 }
 #[derive(Clone)]
 pub struct Controller(Arc<Inner>);
 impl Controller {
-    pub fn spawn(
-        root: PathBuf,
-        processor: impl Processor,
-        delivery: impl Delivery,
-        updates: mpsc::Sender<Snapshot>,
-    ) -> Self {
+    pub fn spawn(root: PathBuf, delivery: impl Delivery, updates: mpsc::Sender<Snapshot>) -> Self {
         let (tx, rx) = mpsc::channel();
         let snapshot = Arc::new(Mutex::new(Snapshot::default()));
         let shared = snapshot.clone();
         let admitted = Arc::new(AtomicBool::new(false));
         let worker_admitted = admitted.clone();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let worker_shutdown = shutdown.clone();
         let join = std::thread::spawn(move || {
             run(
                 rx,
                 shared,
                 worker_admitted,
+                worker_shutdown,
                 root,
-                Box::new(processor),
                 Box::new(delivery),
                 updates,
             )
@@ -117,6 +106,7 @@ impl Controller {
             tx,
             snapshot,
             admitted,
+            shutdown,
             join: Mutex::new(Some(join)),
         }))
     }
@@ -150,6 +140,7 @@ impl Controller {
         result
     }
     pub fn shutdown_and_join(&self) {
+        self.0.shutdown.store(true, Ordering::Release);
         let _ = self.0.tx.send(Command::Shutdown);
         if let Some(j) = self.0.join.lock().unwrap().take() {
             let _ = j.join();
@@ -161,13 +152,18 @@ fn run(
     rx: mpsc::Receiver<Command>,
     shared: Arc<Mutex<Snapshot>>,
     admitted: Arc<AtomicBool>,
+    shutdown: Arc<AtomicBool>,
     root: PathBuf,
-    mut processor: Box<dyn Processor>,
     mut delivery: Box<dyn Delivery>,
     updates: mpsc::Sender<Snapshot>,
 ) {
     let mut generation = 0;
-    let mut active: Option<(capture::Capture, Instant, config::RecordingConfig)> = None;
+    let mut active: Option<(
+        capture::Capture,
+        worker::Worker,
+        Instant,
+        config::RecordingConfig,
+    )> = None;
     let mut terminal_until: Option<Instant> = None;
     let publish = |state, g, started: Option<Instant>, message| {
         let s = Snapshot {
@@ -184,7 +180,8 @@ fn run(
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Command::Shutdown) => {
-                if let Some((c, _, _)) = active.take() {
+                if let Some((c, w, _, _)) = active.take() {
+                    w.cancel();
                     c.cancel();
                 }
                 break;
@@ -196,12 +193,24 @@ fn run(
                 } else if expected == State::Idle && active.is_none() {
                     generation += 1;
                     publish(State::Starting, generation, None, None);
-                    match config::load().and_then(|cfg| {
-                        capture::Capture::start(&root, generation, &cfg.source).map(|c| (c, cfg))
-                    }) {
-                        Ok((c, cfg)) => {
+                    let started = config::load().map_err(|e| e.to_string()).and_then(|cfg| {
+                        let c = capture::Capture::start(&root, generation, &cfg.recording.source)
+                            .map_err(|e| e.to_string())?;
+                        let (pcm, wav) = c.paths();
+                        let path = worker::resolve().map_err(|e| e.to_string())?;
+                        let w = worker::Worker::start(
+                            &path,
+                            wav,
+                            pcm,
+                            &cfg.provider,
+                            shutdown.clone(),
+                        )?;
+                        Ok((c, w, cfg.recording))
+                    });
+                    match started {
+                        Ok((c, w, cfg)) => {
                             let now = Instant::now();
-                            active = Some((c, now, cfg));
+                            active = Some((c, w, now, cfg));
                             Ok(publish(State::Recording, generation, Some(now), None))
                         }
                         Err(e) => {
@@ -212,13 +221,7 @@ fn run(
                         }
                     }
                 } else if expected == State::Recording && active.is_some() {
-                    let result = finish_active(
-                        &mut active,
-                        generation,
-                        &publish,
-                        &mut *processor,
-                        &mut *delivery,
-                    );
+                    let result = finish_active(&mut active, generation, &publish, &mut *delivery);
                     terminal_until = Some(Instant::now() + Duration::from_secs(2));
                     result
                 } else {
@@ -232,9 +235,10 @@ fn run(
                     terminal_until = None;
                     publish(State::Idle, generation, None, None);
                 }
-                if let Some((c, started, cfg)) = active.as_mut() {
+                if let Some((c, _, started, cfg)) = active.as_mut() {
                     if !c.alive().unwrap_or(false) {
-                        let (c, _, _) = active.take().unwrap();
+                        let (c, w, _, _) = active.take().unwrap();
+                        w.cancel();
                         c.cancel();
                         publish(
                             State::Error,
@@ -248,13 +252,8 @@ fn run(
                             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                             .is_ok()
                         {
-                            let _ = finish_active(
-                                &mut active,
-                                generation,
-                                &publish,
-                                &mut *processor,
-                                &mut *delivery,
-                            );
+                            let _ =
+                                finish_active(&mut active, generation, &publish, &mut *delivery);
                             terminal_until = Some(Instant::now() + Duration::from_secs(2));
                             admitted.store(false, Ordering::Release);
                         }
@@ -271,16 +270,20 @@ fn run(
 }
 
 fn finish_active<F>(
-    active: &mut Option<(capture::Capture, Instant, config::RecordingConfig)>,
+    active: &mut Option<(
+        capture::Capture,
+        worker::Worker,
+        Instant,
+        config::RecordingConfig,
+    )>,
     generation: u64,
     publish: &F,
-    processor: &mut dyn Processor,
     delivery: &mut dyn Delivery,
 ) -> Result<Snapshot, ToggleError>
 where
     F: Fn(State, u64, Option<Instant>, Option<String>) -> Snapshot,
 {
-    let (capture, started, cfg) = active.take().expect("active capture");
+    let (capture, worker, started, cfg) = active.take().expect("active capture");
     publish(State::Stopping, generation, Some(started), None);
     let outcome = (|| -> Result<(), String> {
         let wav = capture
@@ -300,9 +303,9 @@ where
             return Err("no audio signal detected".into());
         }
         publish(State::Processing, generation, Some(started), None);
-        let text = processor.process(&cleanup.0)?;
-        publish(State::Delivering, generation, Some(started), None);
-        delivery.deliver(&text)
+        deliver_outcome(worker.finish(Duration::from_secs(45))?, delivery, || {
+            publish(State::Delivering, generation, Some(started), None)
+        })
     })();
     match outcome {
         Ok(()) => Ok(publish(
@@ -315,6 +318,22 @@ where
             let s = publish(State::Error, generation, None, Some(message.clone()));
             let _ = s;
             Err(ToggleError::Failed(message))
+        }
+    }
+}
+fn deliver_outcome<F>(
+    outcome: worker::Outcome,
+    delivery: &mut dyn Delivery,
+    delivering: F,
+) -> Result<(), String>
+where
+    F: FnOnce() -> Snapshot,
+{
+    match outcome {
+        worker::Outcome::NoSpeech => Ok(()),
+        worker::Outcome::Transcript(text) => {
+            delivering();
+            delivery.deliver(&text)
         }
     }
 }
@@ -332,6 +351,28 @@ mod tests {
     use super::*;
     use std::sync::{Barrier, atomic::AtomicUsize};
 
+    struct CountingDelivery(usize);
+    impl Delivery for CountingDelivery {
+        fn deliver(&mut self, _: &str) -> Result<(), String> {
+            self.0 += 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn no_speech_bypasses_delivery_and_transcript_delivers_once() {
+        let mut delivery = CountingDelivery(0);
+        deliver_outcome(worker::Outcome::NoSpeech, &mut delivery, Snapshot::default).unwrap();
+        assert_eq!(delivery.0, 0);
+        deliver_outcome(
+            worker::Outcome::Transcript("hello".into()),
+            &mut delivery,
+            Snapshot::default,
+        )
+        .unwrap();
+        assert_eq!(delivery.0, 1);
+    }
+
     #[test]
     fn concurrent_toggles_admit_exactly_one_mutation() {
         let (tx, rx) = mpsc::channel();
@@ -339,6 +380,7 @@ mod tests {
             tx,
             snapshot: Arc::new(Mutex::new(Snapshot::default())),
             admitted: Arc::new(AtomicBool::new(false)),
+            shutdown: Arc::new(AtomicBool::new(false)),
             join: Mutex::new(None),
         });
         let controller = Controller(inner);
