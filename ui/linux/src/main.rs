@@ -1,4 +1,9 @@
+mod capture;
+mod config;
+mod control;
 mod protocol;
+mod runtime;
+mod session;
 
 use gtk::cairo;
 use gtk::glib;
@@ -16,6 +21,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -66,7 +72,16 @@ enum UiMessage {
     Snapshot(StateSnapshot),
     Event(ProtocolEvent),
     Disconnected,
+    Native(session::Snapshot),
 }
+
+struct NativeContext {
+    _ownership: runtime::Ownership,
+    controller: session::Controller,
+    server: control::Server,
+    updates: Mutex<Option<Receiver<session::Snapshot>>>,
+}
+static NATIVE: OnceLock<Mutex<Option<NativeContext>>> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HudState {
@@ -79,6 +94,7 @@ enum HudState {
 }
 
 struct Model {
+    native_generation: Option<u64>,
     state: HudState,
     history: VecDeque<f64>,
     displayed: [f64; BAR_COUNT],
@@ -94,6 +110,7 @@ struct Model {
 impl Default for Model {
     fn default() -> Self {
         Self {
+            native_generation: None,
             state: HudState::Idle,
             history: VecDeque::from(vec![0.0; BAR_COUNT]),
             displayed: [0.0; BAR_COUNT],
@@ -205,9 +222,83 @@ impl Model {
 }
 
 fn main() -> glib::ExitCode {
-    let app = Application::builder().application_id(APP_ID).build();
+    let native = env::args_os()
+        .skip(1)
+        .any(|arg| arg == "--native-host-preview");
+    if native {
+        if let Err(error) = start_native_host() {
+            eprintln!("sayall-hud: native host preview unavailable: {error}");
+            return glib::ExitCode::FAILURE;
+        }
+    }
+    let application_id = if native {
+        "dev.sayall.Hud.NativePreview"
+    } else {
+        APP_ID
+    };
+    let app = Application::builder()
+        .application_id(application_id)
+        .build();
     app.connect_activate(build_ui);
-    app.run()
+    app.connect_shutdown(|_| shutdown_native_host());
+    let exit = if native {
+        let program = env::args_os()
+            .next()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "sayall-hud".to_owned());
+        app.run_with_args(&[program])
+    } else {
+        app.run()
+    };
+    shutdown_native_host();
+    exit
+}
+
+fn shutdown_native_host() {
+    if let Some(native) = NATIVE.get().and_then(|slot| slot.lock().unwrap().take()) {
+        let NativeContext {
+            _ownership,
+            controller,
+            mut server,
+            updates: _,
+        } = native;
+        server.shutdown_and_join();
+        controller.shutdown_and_join();
+        drop(_ownership);
+    }
+}
+
+fn start_native_host() -> io::Result<()> {
+    let ownership = runtime::Ownership::acquire(socket_path()?)?;
+    let root = runtime::session_root()?;
+    let (tx, rx) = mpsc::channel();
+    let controller = session::Controller::spawn(
+        root,
+        session::PreviewProcessor,
+        session::PreviewDelivery,
+        tx,
+    );
+    let socket = ownership.socket.clone();
+    let server = match control::Server::bind(&socket, controller.clone()) {
+        Ok(server) => server,
+        Err(error) => {
+            controller.shutdown_and_join();
+            return Err(error);
+        }
+    };
+    NATIVE
+        .set(Mutex::new(Some(NativeContext {
+            _ownership: ownership,
+            controller,
+            server,
+            updates: Mutex::new(Some(rx)),
+        })))
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "native host already initialized",
+            )
+        })
 }
 
 fn build_ui(app: &Application) {
@@ -250,7 +341,25 @@ fn build_ui(app: &Application) {
     });
 
     let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || connection_loop(sender));
+    if let Some(native) = NATIVE.get().and_then(|slot| {
+        slot.lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|native| native.updates.lock().unwrap().take())
+    }) {
+        {
+            let updates = native;
+            thread::spawn(move || {
+                while let Ok(snapshot) = updates.recv() {
+                    if sender.send(UiMessage::Native(snapshot)).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    } else {
+        thread::spawn(move || connection_loop(sender));
+    }
     install_tick(&window, &drawing, model, receiver);
     window.set_visible(false);
 }
@@ -274,6 +383,70 @@ fn install_tick(
                         model.state = HudState::Error;
                         model.error = "SayAll daemon disconnected".to_owned();
                         model.hide_at = Some(Instant::now() + Duration::from_secs(2));
+                    }
+                }
+                UiMessage::Native(snapshot) => {
+                    let mut model = model.borrow_mut();
+                    if model.native_generation != Some(snapshot.generation) {
+                        model.native_generation = Some(snapshot.generation);
+                        model.recording_started = None;
+                        model.processing_started = None;
+                        model.hide_at = None;
+                        model.clipping_until = None;
+                        model.error.clear();
+                        for value in &mut model.history {
+                            *value = 0.0;
+                        }
+                        model.displayed.fill(0.0);
+                    }
+                    if snapshot.state == session::State::Idle
+                        && matches!(model.state, HudState::Success | HudState::Error)
+                        && model
+                            .hide_at
+                            .is_some_and(|deadline| deadline > Instant::now())
+                    {
+                        continue;
+                    }
+                    model.state = match snapshot.state {
+                        session::State::Idle => HudState::Idle,
+                        session::State::Starting | session::State::Recording => HudState::Recording,
+                        session::State::Stopping => HudState::Stopping,
+                        session::State::Processing | session::State::Delivering => {
+                            HudState::Processing
+                        }
+                        session::State::Success => HudState::Success,
+                        session::State::Error | session::State::Cancelled => HudState::Error,
+                    };
+                    if let Some(message) = snapshot.message {
+                        model.error = message;
+                    }
+                    if matches!(
+                        snapshot.state,
+                        session::State::Success | session::State::Error | session::State::Cancelled
+                    ) {
+                        model.hide_at = Some(Instant::now() + Duration::from_secs(2));
+                    }
+                    if matches!(
+                        snapshot.state,
+                        session::State::Processing | session::State::Delivering
+                    ) && model.processing_started.is_none()
+                    {
+                        model.processing_started = Some(Instant::now());
+                    }
+                    if let Some(level) = snapshot.level {
+                        let value = (level.rms * 2.2).max(level.peak * 0.72).clamp(0.0, 1.0);
+                        model.history.pop_front();
+                        model.history.push_back(value);
+                        if level.clipping {
+                            model.clipping_until =
+                                Some(Instant::now() + Duration::from_millis(350));
+                        }
+                    }
+                    if snapshot.state == session::State::Recording
+                        && model.recording_started.is_none()
+                    {
+                        model.recording_started =
+                            Instant::now().checked_sub(Duration::from_millis(snapshot.elapsed_ms));
                     }
                 }
             }
