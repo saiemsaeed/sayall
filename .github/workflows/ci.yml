@@ -17,6 +17,8 @@ jobs:
         run: zig build test
       - name: Compile readiness / unsupported runtime — Darwin core
         run: zig build check-darwin-core
+      - name: Compile canonical Zig CLI frontend — Darwin
+        run: zig build check-darwin-cli
       - name: Compile readiness / unsupported runtime — Windows core
         run: zig build check-windows-core
       - name: Test Rust HUD

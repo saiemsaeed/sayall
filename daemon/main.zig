@@ -2,6 +2,8 @@ const std = @import("std");
 const Io = std.Io;
 const build_options = @import("build_options");
 
+const cli = @import("cli.zig");
+const host_control = @import("host_control.zig");
 const config = @import("config.zig");
 const keywords = @import("keywords.zig");
 const ipc = @import("ipc.zig");
@@ -34,19 +36,38 @@ fn run(init: std.process.Init) !u8 {
 
     const argv = init.minimal.args.vector;
     if (argv.len < 2) {
-        usage();
-        return 2;
+        return writePresentation(io, cli.usage_presentation);
     }
 
     const cmd = std.mem.span(argv[1]);
 
-    if (std.mem.eql(u8, cmd, "--version") or std.mem.eql(u8, cmd, "version")) {
-        if (argv.len != 2) return invalidArguments(cmd);
-        try printLine(io, "sayall " ++ build_options.version);
-        return 0;
+    const canonical_candidate = std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "--help") or
+        std.mem.eql(u8, cmd, "-h") or std.mem.eql(u8, cmd, "version") or
+        std.mem.eql(u8, cmd, "--version") or std.mem.eql(u8, cmd, "status") or
+        (std.mem.eql(u8, cmd, "toggle") and !(argv.len == 3 and std.mem.eql(u8, std.mem.span(argv[2]), "--raw"))) or
+        std.mem.eql(u8, cmd, "config");
+    if (canonical_candidate) {
+        var args: [2][]const u8 = undefined;
+        if (argv.len - 1 > args.len) return writePresentation(io, cli.invalid_presentation);
+        for (argv[1..], 0..) |arg, index| args[index] = std.mem.span(arg);
+        const command = cli.parse(args[0 .. argv.len - 1]) catch return writePresentation(io, cli.invalid_presentation);
+        if (command == .config_init) {
+            const path = config.initDefault(arena, io, env) catch |err| {
+                std.debug.print("sayall: cannot initialize configuration ({s})\n", .{@errorName(err)});
+                return if (err == error.PathAlreadyExists) 1 else 1;
+            };
+            try printLine(io, try std.fmt.allocPrint(arena, "Created {s}", .{path}));
+            return 0;
+        }
+        var linux_host: host_control.Linux = .{ .arena = arena, .io = io, .env = env };
+        const version = "sayall " ++ build_options.version ++ "\n";
+        const result = cli.execute(command, version, linux_host.adapter());
+        try writeOutput(io, .stdout(), result.stdout);
+        try writeOutput(io, .stderr(), result.stderr);
+        return result.exit_code;
     }
 
-    if (std.mem.eql(u8, cmd, "daemon")) {
+    if (std.mem.eql(u8, cmd, "daemon") or std.mem.eql(u8, cmd, "__service")) {
         if (argv.len > 3) return invalidArguments("daemon");
         const verbose = if (argv.len == 3) flag(std.mem.span(argv[2]), "--verbose", "-v") else false;
         if (argv.len == 3 and !verbose) return invalidArguments("daemon");
@@ -279,8 +300,7 @@ fn run(init: std.process.Init) !u8 {
         return 0;
     }
 
-    usage();
-    return 2;
+    return writePresentation(io, cli.invalid_presentation);
 }
 
 fn flag(value: []const u8, long: []const u8, short: []const u8) bool {
@@ -435,6 +455,20 @@ fn printLine(io: Io, text: []const u8) !void {
     try w.interface.writeAll(text);
     try w.interface.writeByte('\n');
     try w.interface.flush();
+}
+
+fn writeOutput(io: Io, file: Io.File, text: []const u8) !void {
+    if (text.len == 0) return;
+    var buf: [1024]u8 = undefined;
+    var writer = file.writer(io, &buf);
+    try writer.interface.writeAll(text);
+    try writer.interface.flush();
+}
+
+fn writePresentation(io: Io, presentation: cli.Presentation) !u8 {
+    try writeOutput(io, .stdout(), presentation.stdout);
+    try writeOutput(io, .stderr(), presentation.stderr);
+    return presentation.exit_code;
 }
 
 fn shortcutCommand(
@@ -771,37 +805,12 @@ fn printStats(io: Io, summary: metrics.Summary) !void {
 }
 
 fn usage() void {
-    std.debug.print(
-        \\sayall — voice dictation daemon
-        \\
-        \\usage:
-        \\  sayall --version                     print the installed version
-        \\  sayall setup                         enable and restart user services
-        \\  sayall update                        update the installed AUR package
-        \\  sayall doctor                        check installation and runtime health
-        \\  sayall shortcut [show]               show the saved global shortcut
-        \\  sayall shortcut set CTRL+SLASH       set and activate a global shortcut
-        \\  sayall shortcut reset                restore the CTRL+SLASH default
-        \\  sayall shortcut disable              disable the global shortcut
-        \\  sayall daemon [--verbose]            run the daemon in the foreground
-        \\  sayall restart                       restart the systemd user service and reload config
-        \\  sayall toggle [--raw]                toggle recording (raw = skip LLM cleanup)
-        \\  sayall stop                          cancel an active recording
-        \\  sayall status                        print daemon state
-        \\  sayall transcribe <file.wav> [--raw] transcribe a file (debugging)
-        \\  sayall mic-test [source]             record 3 seconds and report mic level
-        \\  sayall stats [--json]                show persistent STT metrics
-        \\  sayall keywords list                list configured keywords
-        \\  sayall keywords search <text>       search configured keywords
-        \\  sayall keywords add <keyword>...    add words or quoted phrases
-        \\  sayall keywords update <old> <new>  rename one exact keyword
-        \\  sayall keywords delete <keyword>    delete one exact keyword
-        \\  sayall keywords clear --confirm     delete every keyword
-        \\
-    , .{});
+    std.debug.print("{s}", .{cli.help});
 }
 
 test {
+    _ = cli;
+    _ = host_control;
     _ = config;
     _ = daemon;
     _ = events;
