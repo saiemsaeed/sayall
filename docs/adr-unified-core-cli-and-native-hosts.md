@@ -132,6 +132,24 @@ CLI automatically. The private worker is never linked into `PATH` or updated
 independently. Nested macOS executables are signed before the outer app and the
 complete bundle is notarized and stapled.
 
+## Linux native-host preview settings (SAY-45)
+
+The explicit `sayall-hud --native-host-preview` path owns a small GTK settings
+window. Canonical initialization and read-only validation remain Zig-owned and
+are requested through bounded private `sayall-process` operations; the UI does
+not execute or parse the public `sayall` CLI and never displays credentials.
+Preview login startup is opt-in through the user XDG autostart entry and uses
+the installed `/usr/bin/sayall-hud --native-host-preview --autostart` path. The
+explicit autostart role starts silently; a later interactive preview invocation
+is forwarded through GApplication and opens the singleton Settings window. It refuses an
+unrelated entry and refuses enablement while legacy `sayall.service` is active
+or enabled, preventing two session owners.
+
+This is preview-only: packages do not enable it, legacy units and the default
+Zig owner remain, and the default-host cutover is deferred to SAY-48. A portable
+global-shortcut decision is also still required; the current Hyprland-specific
+shortcut is not expanded by this slice.
+
 ## Rejected alternatives
 
 - **A persistent cross-platform Zig daemon:** adds launchd/systemd lifecycle,

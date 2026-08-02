@@ -124,7 +124,89 @@ pub fn load(gpa: Allocator, io: Io, env: *const std.process.Environ.Map) !Config
 /// Loads and validates configuration without performing legacy keyword
 /// migration or any other filesystem write.
 pub fn loadReadOnly(gpa: Allocator, io: Io, env: *const std.process.Environ.Map) !Config {
-    return loadWithPolicy(gpa, io, env, false);
+    return (try loadReadOnlyWithPresence(gpa, io, env)).config;
+}
+
+pub const ReadOnlyResult = struct {
+    config: Config,
+    present: bool,
+};
+
+/// Reads config and keywords through no-follow descriptors rooted in one
+/// pinned, private directory, so validation cannot race a second pathname open.
+pub fn loadReadOnlyWithPresence(gpa: Allocator, io: Io, env: *const std.process.Environ.Map) !ReadOnlyResult {
+    if (comptime builtin.os.tag != .linux and builtin.os.tag != .macos)
+        return error.UnsupportedPlatform;
+    const path = try paths.Config.file(gpa, env) orelse return readOnlyDefaults(gpa, env);
+    const parent_path = std.fs.path.dirname(path) orelse return error.InvalidConfigPath;
+    var parent = Io.Dir.openDirAbsolute(io, parent_path, .{ .iterate = true, .follow_symlinks = false }) catch |err| switch (err) {
+        error.FileNotFound => return readOnlyDefaults(gpa, env),
+        else => return err,
+    };
+    defer parent.close(io);
+    const parent_stat = try parent.stat(io);
+    if (parent_stat.kind != .directory or parent_stat.permissions.toMode() & 0o077 != 0)
+        return error.UnsafeConfigDirectory;
+    try validateDirectoryOwner(parent.handle);
+
+    const config_bytes = try readPrivateFile(gpa, io, parent, std.fs.path.basename(path), 1024 * 1024);
+    var cfg: Config = if (config_bytes) |bytes|
+        try std.json.parseFromSliceLeaky(Config, gpa, bytes, .{ .allocate = .alloc_always })
+    else
+        .{};
+    applyEnvironment(&cfg, env);
+
+    if (try readPrivateFile(gpa, io, parent, "keywords.json", 64 * 1024)) |bytes|
+        cfg.stt.keyterms = try keywords.parseFileContents(gpa, bytes)
+    else
+        cfg.stt.keyterms = try keywords.normalizeLegacy(gpa, cfg.stt.keyterms);
+    try validate(&cfg);
+    return .{ .config = cfg, .present = config_bytes != null };
+}
+
+fn readOnlyDefaults(gpa: Allocator, env: *const std.process.Environ.Map) !ReadOnlyResult {
+    var cfg: Config = .{};
+    applyEnvironment(&cfg, env);
+    cfg.stt.keyterms = try keywords.normalizeLegacy(gpa, cfg.stt.keyterms);
+    try validate(&cfg);
+    return .{ .config = cfg, .present = false };
+}
+
+fn applyEnvironment(cfg: *Config, env: *const std.process.Environ.Map) void {
+    cfg.stt.api_key = resolveEnvRef(env, cfg.stt.api_key);
+    cfg.llm.api_key = resolveEnvRef(env, cfg.llm.api_key);
+    if (env.get("DEEPGRAM_API_KEY")) |key| cfg.stt.api_key = key;
+    if (env.get("GROQ_API_KEY")) |key| cfg.llm.api_key = key;
+    if (env.get("SAYALL_STT_MODEL")) |model| cfg.stt.model = model;
+    if (env.get("SAYALL_LLM_MODEL")) |model| cfg.llm.model = model;
+    if (env.get("SAYALL_VERBOSE")) |value|
+        if (value.len > 0 and value[0] != '0') {
+            cfg.verbose = true;
+        };
+}
+
+fn readPrivateFile(gpa: Allocator, io: Io, parent: Io.Dir, name: []const u8, limit: usize) !?[]u8 {
+    if (comptime builtin.os.tag != .linux and builtin.os.tag != .macos)
+        return error.UnsupportedPlatform;
+    const handle = std.posix.openat(parent.handle, name, .{
+        .NONBLOCK = true,
+        .NOFOLLOW = true,
+        .CLOEXEC = true,
+    }, 0) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    var file: Io.File = .{ .handle = handle, .flags = .{ .nonblocking = true } };
+    defer file.close(io);
+    const stat = try file.stat(io);
+    if (stat.kind != .file or stat.permissions.toMode() & 0o077 != 0)
+        return error.UnsafeConfigFile;
+    try validateDirectoryOwner(file.handle);
+    var storage: [4096]u8 = undefined;
+    var reader = file.reader(io, &storage);
+    const bytes = try reader.interface.allocRemaining(gpa, .limited(limit + 1));
+    if (bytes.len > limit) return error.ConfigFileTooLarge;
+    return bytes;
 }
 
 fn loadWithPolicy(gpa: Allocator, io: Io, env: *const std.process.Environ.Map, migrate_keywords: bool) !Config {
@@ -139,18 +221,7 @@ fn loadWithPolicy(gpa: Allocator, io: Io, env: *const std.process.Environ.Map, m
         }
     }
 
-    // Resolve "$ENV_VAR" references for secrets.
-    cfg.stt.api_key = resolveEnvRef(env, cfg.stt.api_key);
-    cfg.llm.api_key = resolveEnvRef(env, cfg.llm.api_key);
-
-    // Explicit environment variables win over the config file.
-    if (env.get("DEEPGRAM_API_KEY")) |k| cfg.stt.api_key = k;
-    if (env.get("GROQ_API_KEY")) |k| cfg.llm.api_key = k;
-    if (env.get("SAYALL_STT_MODEL")) |m| cfg.stt.model = m;
-    if (env.get("SAYALL_LLM_MODEL")) |m| cfg.llm.model = m;
-    if (env.get("SAYALL_VERBOSE")) |v| {
-        if (v.len > 0 and v[0] != '0') cfg.verbose = true;
-    }
+    applyEnvironment(&cfg, env);
 
     if (try paths.Config.keywords(gpa, env)) |keywords_path| {
         const store = keywords.Store.init(keywords_path);
@@ -233,7 +304,7 @@ fn safeSecret(value: []const u8) bool {
 }
 
 fn safeToken(value: []const u8) bool {
-    if (value.len == 0) return false;
+    if (value.len == 0 or value.len > 64) return false;
     for (value) |c| if (!std.ascii.isAlphanumeric(c) and c != '.' and c != '-' and c != '_') return false;
     return true;
 }
@@ -359,6 +430,16 @@ test "validation accepts paste output method" {
     try validate(&cfg);
 }
 
+test "provider tokens are bounded consistently with worker protocol" {
+    var cfg: Config = .{};
+    var accepted: [64]u8 = @splat('a');
+    cfg.stt.model = &accepted;
+    try validate(&cfg);
+    var rejected: [65]u8 = @splat('a');
+    cfg.stt.model = &rejected;
+    try std.testing.expectError(error.InvalidConfig, validate(&cfg));
+}
+
 test "validation accepts phrases and rejects invalid keyterms" {
     var cfg: Config = .{};
     cfg.stt.keyterms = &.{ "SayAll", "Model Context Protocol" };
@@ -385,7 +466,11 @@ test "config load migrates legacy exact duplicates without startup failure" {
     defer std.testing.allocator.free(absolute_base);
     const config_dir = try std.fmt.allocPrint(std.testing.allocator, "{s}/sayall", .{absolute_base});
     defer std.testing.allocator.free(config_dir);
-    const dir = try Io.Dir.cwd().createDirPathOpen(std.testing.io, config_dir, .{});
+    const dir = try Io.Dir.cwd().createDirPathOpen(std.testing.io, config_dir, .{
+        .open_options = .{ .iterate = true },
+        .permissions = .fromMode(0o700),
+    });
+    try dir.setPermissions(std.testing.io, .fromMode(0o700));
     dir.close(std.testing.io);
     const config_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/config.json", .{config_dir});
     defer std.testing.allocator.free(config_path);
@@ -395,6 +480,9 @@ test "config load migrates legacy exact duplicates without startup failure" {
         \\{"stt":{"keyterms":["SayAll","München","SayAll","sayall","München"," spaced "]}}
         ,
     });
+    const config_file = try Io.Dir.cwd().openFile(std.testing.io, config_path, .{ .mode = .read_write });
+    try config_file.setPermissions(std.testing.io, .fromMode(0o600));
+    config_file.close(std.testing.io);
 
     var env = std.process.Environ.Map.init(std.testing.allocator);
     defer env.deinit();
