@@ -6,13 +6,11 @@ let package = Package(
     platforms: [.macOS(.v15)],
     products: [
         .executable(name: "SayAllApp", targets: ["SayAll"]),
-        .executable(name: "sayall", targets: ["SayAllCLI"]),
     ],
     targets: [
         .target(name: "SayAllControl"),
         .executableTarget(name: "SayAll", dependencies: ["SayAllControl"]),
-        .executableTarget(name: "SayAllCLI", dependencies: ["SayAllControl"], path: "CLI"),
-        .testTarget(name: "SayAllTests", dependencies: ["SayAll", "SayAllCLI", "SayAllControl"]),
+        .testTarget(name: "SayAllTests", dependencies: ["SayAll", "SayAllControl"]),
     ],
     swiftLanguageModes: [.v5]
 )
