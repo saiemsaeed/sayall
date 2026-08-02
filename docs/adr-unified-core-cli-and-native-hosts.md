@@ -159,7 +159,8 @@ complete bundle is notarized and stapled.
 ## Public CLI syntax during the 0.2.0 migration
 
 The cross-platform public surface currently consists of `help`, `version`,
-`status`, `toggle`, `config init`, `config validate [--json]`, and:
+`status`, `toggle`, `config init`, `config validate [--json]`,
+`doctor [--json]`, `update`, and:
 
 ```text
 sayall transcribe <WAV> [--raw] [--json]
@@ -171,3 +172,12 @@ worker's stdin protocol. Human output is transcript-only; `--json` emits the
 canonical worker result for automation, and `--raw` disables optional LLM
 cleanup. Status diagnostics go to stderr and never include credentials or
 transcript text. The native UI does not invoke this command.
+
+`doctor` performs read-only configuration, packaged-worker/protocol,
+executable, native-host status, and platform checks. Its bounded JSON output
+contains no credentials or transcripts and exits 1 when a check fails. The
+macOS host protocol cannot expose Accessibility or microphone authorization,
+so doctor does not claim to diagnose those permissions. `update` refuses while
+the host is non-idle. Linux retains its AUR channel; macOS upgrades only a
+detected Homebrew Cask installation and directs DMG installations to update
+manually.

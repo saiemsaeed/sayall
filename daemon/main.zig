@@ -4,6 +4,7 @@ const build_options = @import("build_options");
 
 const cli = @import("cli.zig");
 const cli_config_validate = @import("cli_config_validate.zig");
+const cli_doctor = @import("cli_doctor.zig");
 const cli_transcribe = @import("cli_transcribe.zig");
 const host_control = @import("host_control.zig");
 const config = @import("config.zig");
@@ -45,7 +46,7 @@ fn run(init: std.process.Init) !u8 {
 
     const canonical_candidate = std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "--help") or
         std.mem.eql(u8, cmd, "-h") or std.mem.eql(u8, cmd, "version") or
-        std.mem.eql(u8, cmd, "--version") or std.mem.eql(u8, cmd, "status") or
+        std.mem.eql(u8, cmd, "--version") or std.mem.eql(u8, cmd, "status") or std.mem.eql(u8, cmd, "doctor") or std.mem.eql(u8, cmd, "update") or
         (std.mem.eql(u8, cmd, "toggle") and !(argv.len == 3 and std.mem.eql(u8, std.mem.span(argv[2]), "--raw"))) or
         std.mem.eql(u8, cmd, "config");
     if (canonical_candidate) {
@@ -64,12 +65,43 @@ fn run(init: std.process.Init) !u8 {
         if (command == .config_validate or command == .config_validate_json) {
             return cli_config_validate.run(arena, io, env, command == .config_validate_json);
         }
-        var linux_host: host_control.Linux = .{ .arena = arena, .io = io, .env = env };
-        const version = "sayall " ++ build_options.version ++ "\n";
-        const result = cli.execute(command, version, linux_host.adapter());
-        try writeOutput(io, .stdout(), result.stdout);
-        try writeOutput(io, .stderr(), result.stderr);
-        return result.exit_code;
+        if (command == .doctor or command == .doctor_json) {
+            var doctor_host: host_control.Linux = .{ .arena = arena, .io = io, .env = env };
+            var platform_items: [8]product_contract.Diagnostic = undefined;
+            var platform_len: usize = 0;
+            platform_items[platform_len] = product.environmentDiagnostic(env) catch |err| .{ .status = .fail, .label = "Environment", .detail = @errorName(err) };
+            platform_len += 1;
+            const loaded = if (cli_doctor.configPathSafe(arena, io, env)) config.loadReadOnly(arena, io, env) catch null else null;
+            const platform_diagnostics = product.diagnostics(arena, io, if (loaded) |cfg| cfg.notifications else null, if (loaded) |cfg| cfg.output.method else null) catch |err| {
+                platform_items[platform_len] = .{ .status = .fail, .label = "Platform diagnostics", .detail = @errorName(err) };
+                platform_len += 1;
+                return cli_doctor.run(arena, io, env, doctor_host.adapter(), build_options.version, command == .doctor_json, platform_items[0..platform_len]);
+            };
+            for (platform_diagnostics.commands) |item| {
+                platform_items[platform_len] = item;
+                platform_len += 1;
+            }
+            if (platform_diagnostics.notification) |item| {
+                platform_items[platform_len] = item;
+                platform_len += 1;
+            }
+            for (platform_diagnostics.services) |item| {
+                platform_items[platform_len] = item;
+                platform_len += 1;
+            }
+            return cli_doctor.run(arena, io, env, doctor_host.adapter(), build_options.version, command == .doctor_json, platform_items[0..platform_len]);
+        }
+        // Linux update remains in the product-specific implementation below.
+        if (command == .update) {
+            // Continue after the canonical parser has established exact grammar.
+        } else {
+            var linux_host: host_control.Linux = .{ .arena = arena, .io = io, .env = env };
+            const version = "sayall " ++ build_options.version ++ "\n";
+            const result = cli.execute(command, version, linux_host.adapter());
+            try writeOutput(io, .stdout(), result.stdout);
+            try writeOutput(io, .stderr(), result.stderr);
+            return result.exit_code;
+        }
     }
 
     if (std.mem.eql(u8, cmd, "daemon") or std.mem.eql(u8, cmd, "__service")) {
@@ -130,13 +162,11 @@ fn run(init: std.process.Init) !u8 {
 
     if (std.mem.eql(u8, cmd, "update")) {
         if (argv.len != 2) return invalidArguments("update");
-        const runtime = try paths.Runtime.discover(arena, env);
-        if (ipc.sendCommand(arena, io, runtime.endpoint, "status")) |state| {
-            if (!updateAllowed(state)) {
-                std.debug.print("sayall: cannot update while the daemon is {s}; wait for it to become idle\n", .{state});
-                return 1;
-            }
-        } else |_| {}
+        var update_host: host_control.Linux = .{ .arena = arena, .io = io, .env = env };
+        if (!cli.updateAllowed(update_host.adapter().status())) {
+            std.debug.print("sayall: cannot update unless the native host is reachable and idle\n", .{});
+            return 1;
+        }
         const preparation = product.prepareUpdate(arena, io) catch |err| return productError("update", err);
         const package = switch (preparation) {
             .package_missing => {
@@ -556,10 +586,6 @@ fn reportShortcutResult(arena: std.mem.Allocator, io: Io, result: product_contra
     }
 }
 
-fn updateAllowed(daemon_state: []const u8) bool {
-    return std.mem.eql(u8, daemon_state, "idle");
-}
-
 fn doctor(arena: std.mem.Allocator, io: Io, env: *const std.process.Environ.Map) !u8 {
     var failures: u8 = 0;
     var warnings: u8 = 0;
@@ -594,7 +620,7 @@ fn doctor(arena: std.mem.Allocator, io: Io, env: *const std.process.Environ.Map)
             },
         }
 
-        if (config.load(arena, io, env)) |cfg| {
+        if (config.loadReadOnly(arena, io, env)) |cfg| {
             loaded_config = cfg;
             if (cfg.stt.api_key.len > 0) {
                 try diagnostic(arena, io, "ok", "Deepgram credentials", "configured");
@@ -617,7 +643,7 @@ fn doctor(arena: std.mem.Allocator, io: Io, env: *const std.process.Environ.Map)
         try diagnostic(arena, io, "fail", "Configuration", "HOME and XDG_CONFIG_HOME are unavailable");
     }
 
-    const platform_diagnostics = product.diagnostics(arena, io, if (loaded_config) |cfg| cfg.notifications else null) catch |err|
+    const platform_diagnostics = product.diagnostics(arena, io, if (loaded_config) |cfg| cfg.notifications else null, if (loaded_config) |cfg| cfg.output.method else null) catch |err|
         return productError("doctor", err);
     for (platform_diagnostics.commands) |item|
         try presentDiagnostic(arena, io, item, &failures, &warnings);
@@ -782,10 +808,10 @@ test {
 }
 
 test "updates only restart an idle daemon" {
-    try std.testing.expect(updateAllowed("idle"));
-    try std.testing.expect(!updateAllowed("recording"));
-    try std.testing.expect(!updateAllowed("processing"));
-    try std.testing.expect(!updateAllowed("stopping"));
+    try std.testing.expect(cli.updateAllowed(.idle));
+    try std.testing.expect(!cli.updateAllowed(.recording));
+    try std.testing.expect(!cli.updateAllowed(.processing));
+    try std.testing.expect(!cli.updateAllowed(.stopping));
 }
 
 test "keyword search preserves values and folds ASCII case" {
