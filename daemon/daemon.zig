@@ -12,6 +12,7 @@ const protocol = @import("protocol.zig");
 const recorder_mod = @import("recorder.zig");
 const deepgram_stream = @import("stt/deepgram_stream.zig");
 const groq = @import("llm/groq.zig");
+const provider_processing = @import("provider_processing.zig");
 const typer = @import("typer.zig");
 const notify = @import("notify.zig");
 
@@ -25,6 +26,46 @@ const PipelineJob = struct {
     stopped_at_awake_ms: i64,
     stream: ?*deepgram_stream.Session,
 };
+
+const ProviderContext = struct {
+    daemon: *Daemon,
+    wav: []const u8,
+    audio_ms: u64,
+    stopped_at_awake_ms: i64,
+    rest_latency_ms: u64 = 0,
+};
+
+fn providerRest(context_ptr: ?*anyopaque, gpa: Allocator) ![]u8 {
+    const context: *ProviderContext = @ptrCast(@alignCast(context_ptr.?));
+    const d = context.daemon;
+    const tracked = try metrics.transcribeTracked(
+        gpa,
+        d.io,
+        d.metrics_store,
+        &d.cfg.stt,
+        context.wav,
+        d.cfg.verbose,
+        "daemon",
+        context.audio_ms,
+        context.stopped_at_awake_ms,
+    );
+    context.rest_latency_ms = tracked.latency_ms;
+    d.log("REST STT in {d}ms ({d} bytes)", .{ tracked.latency_ms, tracked.transcript.len });
+    return tracked.transcript;
+}
+
+fn providerCleanup(context_ptr: ?*anyopaque, gpa: Allocator, raw: []const u8) ![]u8 {
+    const context: *ProviderContext = @ptrCast(@alignCast(context_ptr.?));
+    const d = context.daemon;
+    d.setStage(.cleaning);
+    const started = d.nowMs();
+    const cleaned = groq.cleanup(gpa, d.io, &d.cfg.llm, d.cfg.stt.keyterms, raw, d.cfg.verbose) catch |err| {
+        d.log("llm cleanup failed: {s} — using raw transcript", .{@errorName(err)});
+        return err;
+    };
+    d.log("llm cleanup in {d}ms ({d} bytes)", .{ d.nowMs() - started, cleaned.len });
+    return cleaned;
+}
 
 pub fn run(gpa: Allocator, io: Io, cfg: *config.Config, runtime: paths.Runtime, metrics_path: []const u8) !void {
     try runtime.endpoint.validateParent(io);
@@ -654,54 +695,42 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
         }
     }
 
-    if (maybe_transcript == null) {
-        const tracked = metrics.transcribeTracked(
-            gpa,
-            io,
-            d.metrics_store,
-            &d.cfg.stt,
-            wav,
-            d.cfg.verbose,
-            "daemon",
-            @intFromFloat(seconds * 1000.0),
-            job.stopped_at_awake_ms,
-        ) catch |err| {
-            completion_reason = "transcription_failed";
-            d.publishError("transcription_failed", "Transcription failed");
-            d.inform("SayAll", "Transcription failed");
-            d.log("stt failed: {s}", .{@errorName(err)});
-            return;
-        };
-        stt_latency_ms = tracked.latency_ms;
-        maybe_transcript = tracked.transcript;
-        d.log("REST STT in {d}ms ({d} bytes)", .{ tracked.latency_ms, tracked.transcript.len });
-    }
-    const transcript = maybe_transcript.?;
-    defer gpa.free(transcript);
-
-    if (transcript.len == 0) {
-        completion_reason = "no_speech";
-        d.publishError("no_speech", "No speech detected");
-        d.inform("SayAll", "No speech detected");
+    defer if (maybe_transcript) |transcript| gpa.free(transcript);
+    var provider_context: ProviderContext = .{
+        .daemon = d,
+        .wav = wav,
+        .audio_ms = @intFromFloat(seconds * 1000.0),
+        .stopped_at_awake_ms = job.stopped_at_awake_ms,
+    };
+    const needs_rest = maybe_transcript == null;
+    const transcript_owned = maybe_transcript;
+    maybe_transcript = null;
+    const outcome = provider_processing.process(gpa, transcript_owned, !job.raw and d.cfg.llm.enabled, .{
+        .max_bytes = null,
+        .require_utf8 = false,
+    }, .{
+        .context = &provider_context,
+        .rest = providerRest,
+        .cleanup = providerCleanup,
+    }) catch |err| {
+        completion_reason = "transcription_failed";
+        d.publishError("transcription_failed", "Transcription failed");
+        d.inform("SayAll", "Transcription failed");
+        d.log("stt failed: {s}", .{@errorName(err)});
         return;
-    }
-
-    var final: []const u8 = transcript;
+    };
+    if (needs_rest) stt_latency_ms = provider_context.rest_latency_ms;
+    const final = switch (outcome) {
+        .no_speech => {
+            completion_reason = "no_speech";
+            d.publishError("no_speech", "No speech detected");
+            d.inform("SayAll", "No speech detected");
+            return;
+        },
+        .success => |success| success.text,
+    };
+    defer gpa.free(final);
     completion_phase = .post_stt;
-    var cleaned: ?[]u8 = null;
-    defer if (cleaned) |c| gpa.free(c);
-
-    if (!job.raw and d.cfg.llm.enabled) {
-        d.setStage(.cleaning);
-        const t_llm = d.nowMs();
-        if (groq.cleanup(gpa, io, &d.cfg.llm, d.cfg.stt.keyterms, transcript, d.cfg.verbose)) |c| {
-            cleaned = c;
-            final = c;
-            d.log("llm cleanup in {d}ms ({d} bytes)", .{ d.nowMs() - t_llm, c.len });
-        } else |err| {
-            d.log("llm cleanup failed: {s} — using raw transcript", .{@errorName(err)});
-        }
-    }
 
     var typed = final;
     var with_space: ?[]u8 = null;
