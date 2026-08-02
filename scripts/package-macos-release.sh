@@ -38,6 +38,8 @@ esac
 swift test --package-path ui/macos
 zig build test-batch
 zig build process -Doptimize=ReleaseFast -Dtarget=aarch64-macos.15.0
+zig build darwin-cli -Doptimize=ReleaseFast --sysroot "$(xcrun --sdk macosx --show-sdk-path)"
+zig build test-darwin-cli
 swift build --package-path ui/macos -c release --arch arm64
 swift_bin=$(swift build --package-path ui/macos -c release --arch arm64 --show-bin-path)
 
@@ -46,7 +48,7 @@ archive="$root/dist/sayall-$version-macos-arm64$artifact_suffix.zip"
 rm -rf -- "$root/dist/macos" "$archive"
 install -d "$app/Contents/MacOS" "$app/Contents/Helpers" "$app/Contents/Resources"
 install -m755 "$swift_bin/SayAllApp" "$app/Contents/MacOS/SayAll"
-install -m755 "$swift_bin/sayall" "$app/Contents/Helpers/sayall"
+install -m755 "$root/zig-out/bin/sayall-macos" "$app/Contents/Helpers/sayall"
 install -m755 "$root/zig-out/bin/sayall-process" "$app/Contents/Helpers/sayall-process"
 install -m644 ui/macos/Info.plist "$app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$app/Contents/Info.plist"

@@ -80,7 +80,7 @@ pub const Linux = struct {
         const runtime = paths.Runtime.discover(self.arena, self.env) catch |err| return .{ .transport_error = diagnostic(self.arena, err) };
         const parsed = exchange(self.arena, self.io, runtime.endpoint, method) catch |err| return mapExchangeError(self.arena, err);
         defer parsed.deinit();
-        return mapResponse(self.arena, parsed.value);
+        return mapResponsePublic(self.arena, parsed.value);
     }
 };
 
@@ -96,7 +96,7 @@ fn mapExchangeError(arena: Allocator, err: anyerror) cli.HostOutcome {
         .{ .transport_error = diagnostic(arena, err) };
 }
 
-fn mapResponse(arena: Allocator, response: Response) cli.HostOutcome {
+pub fn mapResponsePublic(arena: Allocator, response: Response) cli.HostOutcome {
     if (!response.ok) {
         const failure = response.@"error".?;
         const line = std.fmt.allocPrint(arena, "{s}: {s}\n", .{ failure.code, failure.message }) catch "sayall: out of memory\n";
@@ -167,16 +167,16 @@ test "structured response strings are owned independently of input" {
 
 test "adapter maps every closed state and structured failures" {
     inline for (std.meta.tags(State)) |state| {
-        const mapped = mapResponse(std.testing.allocator, .{ .version = 2, .ok = true, .state = state });
+        const mapped = mapResponsePublic(std.testing.allocator, .{ .version = 2, .ok = true, .state = state });
         try std.testing.expect(std.mem.eql(u8, @tagName(state), switch (mapped) {
             .host_error => "error",
             else => @tagName(mapped),
         }));
     }
-    const busy = mapResponse(std.testing.allocator, .{ .version = 2, .ok = false, .state = .processing, .@"error" = .{ .code = "busy", .message = "SayAll is processing" } });
+    const busy = mapResponsePublic(std.testing.allocator, .{ .version = 2, .ok = false, .state = .processing, .@"error" = .{ .code = "busy", .message = "SayAll is processing" } });
     defer std.testing.allocator.free(busy.busy);
     try std.testing.expectEqualStrings("busy: SayAll is processing\n", busy.busy);
-    const denied = mapResponse(std.testing.allocator, .{ .version = 2, .ok = false, .state = .idle, .@"error" = .{ .code = "denied", .message = "No access" } });
+    const denied = mapResponsePublic(std.testing.allocator, .{ .version = 2, .ok = false, .state = .idle, .@"error" = .{ .code = "denied", .message = "No access" } });
     defer std.testing.allocator.free(denied.operation_error);
     try std.testing.expectEqualStrings("denied: No access\n", denied.operation_error);
 
