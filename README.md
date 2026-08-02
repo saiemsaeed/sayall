@@ -46,9 +46,12 @@ files or replaces an existing unrelated path. Choose **Remove Command Line
 Tool…** before deleting a directly installed app; removal revalidates that the
 link still belongs to that exact app before requesting administrator access.
 
-After the external SayAll Homebrew tap is published, its Cask will install the
-same app and expose its bundled CLI using Homebrew's managed binary shim. The
-exact command will be announced when that tap is live.
+The official Homebrew Cask installs the same app and exposes its bundled CLI
+using Homebrew's managed binary shim:
+
+```sh
+brew install --cask saiemsaeed/sayall/sayall
+```
 Ordinary Cask uninstall quits SayAll and removes only the app and Homebrew CLI
 shim; it retains `~/.config/sayall`. Use `brew uninstall --zap --cask sayall`
 only when configuration and Application Support data should also be removed.

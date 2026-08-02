@@ -23,6 +23,8 @@ jobs:
         run: zig build check-windows-core
       - name: Test Rust HUD
         run: cargo test --locked --manifest-path ui/linux/Cargo.toml
+      - name: Test Homebrew Cask generation
+        run: bash tests/homebrew-cask.sh
       - name: Verify release assembly
         run: bash scripts/package-release.sh
 

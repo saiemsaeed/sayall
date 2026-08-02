@@ -1,0 +1,117 @@
+name: Publish Homebrew Cask
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Immutable GitHub release version to publish (for example, 0.2.0)
+        required: true
+        type: string
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+
+concurrency:
+  group: homebrew-publishing
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Verify immutable release and generate Cask
+        env:
+          TRIGGER_EVENT: ${{ github.event_name }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RETRY_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ $TRIGGER_EVENT == workflow_dispatch ]]; then
+            version=$RETRY_VERSION
+            [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            HEAD_BRANCH="release/$version"
+            HEAD_SHA=$(gh api "repos/${{ github.repository }}/git/ref/heads/$HEAD_BRANCH" --jq .object.sha)
+          else
+            case "$HEAD_BRANCH" in
+              release/*) version=${HEAD_BRANCH#release/} ;;
+              *) echo "unexpected release branch: $HEAD_BRANCH" >&2; exit 1 ;;
+            esac
+          fi
+          release=$(gh api "repos/${{ github.repository }}/releases/tags/v$version")
+          test "$(jq -r .draft <<<"$release")" = false
+          test "$(jq -r .immutable <<<"$release")" = true
+          tag_sha=$(gh api "repos/${{ github.repository }}/commits/v$version" --jq .sha)
+          test "$tag_sha" = "$HEAD_SHA"
+
+          release_generator="$RUNNER_TEMP/generate-homebrew-cask.sh"
+          curl --fail --silent --show-error --location \
+            "https://raw.githubusercontent.com/${{ github.repository }}/$HEAD_SHA/scripts/generate-homebrew-cask.sh" \
+            --output "$release_generator"
+          cmp scripts/generate-homebrew-cask.sh "$release_generator"
+
+          dmg_name="sayall-$version-macos-arm64.dmg"
+          dmg_id=$(jq -r --arg name "$dmg_name" '.assets[] | select(.name == $name) | .id' <<<"$release")
+          sums_id=$(jq -r '.assets[] | select(.name == "SHA256SUMS") | .id' <<<"$release")
+          test -n "$dmg_id"
+          test -n "$sums_id"
+          mkdir "$RUNNER_TEMP/release-assets"
+          gh api -H 'Accept: application/octet-stream' \
+            "repos/${{ github.repository }}/releases/assets/$dmg_id" > "$RUNNER_TEMP/release-assets/$dmg_name"
+          gh api -H 'Accept: application/octet-stream' \
+            "repos/${{ github.repository }}/releases/assets/$sums_id" > "$RUNNER_TEMP/release-assets/SHA256SUMS"
+          dmg_sha=$(awk -v file="$dmg_name" '$2 == file { print $1 }' "$RUNNER_TEMP/release-assets/SHA256SUMS")
+          [[ $dmg_sha =~ ^[0-9a-f]{64}$ ]]
+          actual_sha=$(shasum -a 256 "$RUNNER_TEMP/release-assets/$dmg_name" | awk '{print $1}')
+          test "$actual_sha" = "$dmg_sha"
+          bash scripts/generate-homebrew-cask.sh "$version" "$dmg_sha" "$RUNNER_TEMP/sayall.rb"
+          ruby -c "$RUNNER_TEMP/sayall.rb"
+          printf 'VERSION=%s\n' "$version" >> "$GITHUB_ENV"
+      - name: Publish exact Cask to the dedicated tap
+        env:
+          TAP_SSH_PRIVATE_KEY: ${{ secrets.HOMEBREW_TAP_SSH_PRIVATE_KEY }}
+          EXPECTED_KEY_FINGERPRINT: ${{ vars.HOMEBREW_TAP_SSH_KEY_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/homebrew-tap-key"
+          known_hosts="$RUNNER_TEMP/homebrew-known-hosts"
+          cleanup() { rm -f "$key" "$key.pub" "$known_hosts"; }
+          trap cleanup EXIT
+          umask 077
+          printf '%s\n' "$TAP_SSH_PRIVATE_KEY" > "$key"
+          ssh-keygen -y -f "$key" > "$key.pub"
+          actual_fingerprint=$(ssh-keygen -lf "$key.pub" -E sha256 | awk '{print $2}')
+          test -n "$EXPECTED_KEY_FINGERPRINT"
+          test "$actual_fingerprint" = "$EXPECTED_KEY_FINGERPRINT"
+          ssh-keyscan -t ed25519 github.com 2>/dev/null > "$known_hosts"
+          host_fingerprint=$(ssh-keygen -lf "$known_hosts" -E sha256 | awk '{print $2}')
+          test "$host_fingerprint" = 'SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPtv1M3qFlh4'
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o UserKnownHostsFile=$known_hosts"
+
+          brew tap saiemsaeed/sayall
+          tap=$(brew --repo saiemsaeed/sayall)
+          git -C "$tap" remote set-url origin git@github.com:saiemsaeed/homebrew-sayall.git
+          install -d "$tap/Casks"
+          install -m644 "$RUNNER_TEMP/sayall.rb" "$tap/Casks/sayall.rb"
+          brew style saiemsaeed/sayall/sayall
+          brew audit --cask --online --strict saiemsaeed/sayall/sayall
+          if [[ -z $(git -C "$tap" status --porcelain -- Casks/sayall.rb) ]]; then
+            echo "SayAll $VERSION Cask is already current"
+            exit 0
+          fi
+          git -C "$tap" config user.name sayall-release-bot
+          git -C "$tap" config user.email 25232e7a+sayall-release-bot@users.noreply.github.com
+          git -C "$tap" add Casks/sayall.rb
+          git -C "$tap" commit -m "Update SayAll to $VERSION"
+          git -C "$tap" fetch origin main
+          test "$(git -C "$tap" rev-parse HEAD^)" = "$(git -C "$tap" rev-parse origin/main)"
+          git -C "$tap" push origin HEAD:main

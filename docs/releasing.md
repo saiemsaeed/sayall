@@ -135,26 +135,26 @@ Treat a successfully published release branch as frozen. If publication
 succeeds and a defect is found afterward, prepare a new patch version rather
 than pushing replacement artifacts to the same branch.
 
-## Homebrew Cask publication gate
+## Automated Homebrew Cask publishing
 
 The release workflow generates `sayall.rb` from the approved DMG version and
-SHA-256 and retains it as the `homebrew-cask` workflow artifact. The Cask uses
-the immutable GitHub release DMG, installs `SayAll.app`, and lets Homebrew expose
-`Contents/Helpers/sayall`; it never uses `sha256 :no_check`. Normal uninstall
-quits bundle ID `pro.leets.sayall` and removes Homebrew's app and binary shim.
-Shared configuration is removed only by explicit `--zap`.
+SHA-256 and retains it as the `homebrew-cask` workflow artifact. After the
+release is published, the default-branch `Publish Homebrew Cask` workflow
+independently downloads the immutable DMG and checksum manifest, verifies the
+tag and release commit, regenerates the exact Cask, runs `brew style` and
+`brew audit --cask`, and pushes `Casks/sayall.rb` to the dedicated
+[`saiemsaeed/homebrew-sayall`](https://github.com/saiemsaeed/homebrew-sayall)
+tap. It uses a write-enabled deploy key scoped only to that tap; the private key
+is `HOMEBREW_TAP_SSH_PRIVATE_KEY` and its expected public fingerprint is
+`HOMEBREW_TAP_SSH_KEY_FINGERPRINT`. It does not share Apple credentials or a
+general-purpose GitHub token.
 
-Publishing to a tap is intentionally gated until an external tap repository
-exists. Create `saiemsaeed/homebrew-sayall` (or document the final intended
-owner/name), grant a dedicated fine-grained GitHub token **Contents: read and
-write** access to only that repository, protect its main branch as appropriate,
-and add the token as a secret in a separate protected Homebrew-publication
-environment. Only then add a default-branch workflow that downloads generated
-`sayall.rb`, verifies its DMG checksum and release URL, writes it to
-`Casks/sayall.rb`, runs `brew style` and `brew audit --cask`, and pushes it. Do
-not place that token in `release.yml` or share Apple credentials. Until this
-gate is completed, test generation with `bash tests/homebrew-cask.sh` and do
-not advertise the tap as live.
+The Cask uses the immutable GitHub release DMG, installs `SayAll.app`, and lets
+Homebrew expose `Contents/Helpers/sayall`; it never uses `sha256 :no_check`.
+Normal uninstall quits bundle ID `pro.leets.sayall` and removes Homebrew's app
+and binary shim. Shared configuration is removed only by explicit `--zap`.
+Manual retries require the immutable version and verify the matching release
+branch, tag, asset, checksum, and generator before accessing the deploy key.
 
 ## Automated AUR publishing
 
