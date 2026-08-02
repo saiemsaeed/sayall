@@ -22,7 +22,7 @@ fi
 
 mode=${MACOS_SIGN_MODE:-adhoc}
 case "$mode" in
-    adhoc) identity=-; artifact_suffix=-unsigned ;;
+    adhoc) identity=- ;;
     developer-id)
         : "${APPLE_DEVELOPER_ID_APPLICATION:?set the Developer ID Application identity}"
         : "${APPLE_TEAM_ID:?set the expected Apple signing Team ID}"
@@ -30,7 +30,6 @@ case "$mode" in
         : "${APPLE_NOTARY_KEY_ID:?set the App Store Connect key ID}"
         : "${APPLE_NOTARY_ISSUER_ID:?set the App Store Connect issuer ID}"
         identity=$APPLE_DEVELOPER_ID_APPLICATION
-        artifact_suffix=
         ;;
     *) printf 'unsupported MACOS_SIGN_MODE: %s\n' "$mode" >&2; exit 1 ;;
 esac
@@ -44,8 +43,9 @@ swift build --package-path ui/macos -c release --arch arm64
 swift_bin=$(swift build --package-path ui/macos -c release --arch arm64 --show-bin-path)
 
 app="$root/dist/macos/SayAll.app"
-archive="$root/dist/sayall-$version-macos-arm64$artifact_suffix.zip"
-rm -rf -- "$root/dist/macos" "$archive"
+unsigned_archive="$root/dist/sayall-$version-macos-arm64-unsigned.zip"
+dmg="$root/dist/sayall-$version-macos-arm64.dmg"
+rm -rf -- "$root/dist/macos" "$unsigned_archive" "$dmg"
 install -d "$app/Contents/MacOS" "$app/Contents/Helpers" "$app/Contents/Resources"
 install -m755 "$swift_bin/SayAllApp" "$app/Contents/MacOS/SayAll"
 install -m755 "$root/zig-out/bin/sayall-macos" "$app/Contents/Helpers/sayall"
@@ -92,8 +92,31 @@ if [[ "$mode" == developer-id ]]; then
     xcrun stapler staple "$app"
     xcrun stapler validate "$app"
     spctl --assess --type execute --verbose=2 "$app"
+    dmg_root="$root/dist/macos/dmg"
+    install -d "$dmg_root"
+    ditto "$app" "$dmg_root/SayAll.app"
+    ln -s /Applications "$dmg_root/Applications"
+    # A fixed filesystem, volume name, layout, and compression settings keep
+    # repeated packaging stable enough for approval to bind one exact image.
+    hdiutil create -quiet -fs HFS+ -format UDZO -imagekey zlib-level=9 \
+        -volname SayAll -srcfolder "$dmg_root" "$dmg"
+    codesign --force --sign "$identity" --timestamp "$dmg"
+    codesign --verify --strict --verbose=2 "$dmg"
+    xcrun notarytool submit "$dmg" \
+        --key "$APPLE_NOTARY_KEY_PATH" \
+        --key-id "$APPLE_NOTARY_KEY_ID" \
+        --issuer "$APPLE_NOTARY_ISSUER_ID" \
+        --wait
+    xcrun stapler staple "$dmg"
+    xcrun stapler validate "$dmg"
+    spctl --assess --type open --context context:primary-signature \
+        --verbose=2 "$dmg"
+    bash scripts/verify-macos-dmg.sh "$dmg" "$version" developer-id
+    artifact=$dmg
+else
+    # This ZIP is an internal handoff only. It is never a public release asset.
+    ditto -c -k --sequesterRsrc --keepParent "$app" "$unsigned_archive"
+    artifact=$unsigned_archive
 fi
-
-ditto -c -k --sequesterRsrc --keepParent "$app" "$archive"
-(cd dist && shasum -a 256 "$(basename "$archive")" > SHA256SUMS.macos)
-printf 'created %s\ncreated %s\n' "$archive" "$root/dist/SHA256SUMS.macos"
+(cd dist && shasum -a 256 "$(basename "$artifact")" > SHA256SUMS.macos)
+printf 'created %s\ncreated %s\n' "$artifact" "$root/dist/SHA256SUMS.macos"

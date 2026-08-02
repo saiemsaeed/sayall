@@ -64,7 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func trigger() { coordinator.trigger() }
     @objc private func installCommandLineTool() {
         guard cliInstaller == nil else {
-            showInstallResult("Command line tool installation is already in progress.")
+            showInstallResult("A command line tool operation is already in progress.")
             return
         }
         let cli = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/sayall").path
@@ -101,9 +101,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                       let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: target),
                       self.installedCLIIsCurrent(destination: destination, target: target, cli: cli) else {
                     self.showInstallResult("The command line tool was not installed or could not be verified.")
+                    self.rebuildMenu()
                     return
                 }
                 self.showInstallResult("Installed \(target). Open a new Terminal window and run ‘sayall version’.")
+                self.rebuildMenu()
+            }
+        }
+        do {
+            cliInstaller = process
+            try process.run()
+        } catch {
+            cliInstaller = nil
+            showInstallResult("Could not start the macOS administrator authorization prompt.")
+        }
+    }
+    @objc private func removeCommandLineTool() {
+        guard cliInstaller == nil else {
+            showInstallResult("A command line tool operation is already in progress.")
+            return
+        }
+        let cli = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/sayall").path
+        let target = "/usr/local/bin/sayall"
+        guard let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: target),
+              destination == cli else {
+            showInstallResult("\(target) is not the command line tool installed by this SayAll app and was not changed.")
+            return
+        }
+        let script = """
+        on run argv
+          set sourcePath to item 1 of argv
+          set targetPath to item 2 of argv
+          do shell script "/bin/test -L " & quoted form of targetPath & " && /bin/test \"$(/usr/bin/readlink " & quoted form of targetPath & ")\" = " & quoted form of sourcePath & " && /bin/rm " & quoted form of targetPath with administrator privileges
+        end run
+        """
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script, cli, target]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        process.terminationHandler = { [weak self] process in
+            Task { @MainActor in
+                guard let self else { return }
+                self.cliInstaller = nil
+                if process.terminationStatus == 0 && !FileManager.default.fileExists(atPath: target) {
+                    self.showInstallResult("Removed \(target).")
+                } else {
+                    self.showInstallResult("The command line tool was not removed or could not be verified.")
+                }
+                self.rebuildMenu()
             }
         }
         do {
@@ -160,7 +206,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         menu.addItem(withTitle: coordinator.state == .recording ? "Stop Dictation" : "Start Dictation", action: #selector(trigger), keyEquivalent: "")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Install Command Line Tool…", action: #selector(installCommandLineTool), keyEquivalent: "")
+        let cli = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/sayall").path
+        let target = "/usr/local/bin/sayall"
+        if let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: target), destination == cli {
+            menu.addItem(withTitle: "Remove Command Line Tool…", action: #selector(removeCommandLineTool), keyEquivalent: "")
+        } else {
+            menu.addItem(withTitle: "Install Command Line Tool…", action: #selector(installCommandLineTool), keyEquivalent: "")
+        }
         menu.addItem(.separator())
         let mic = AVCaptureDevice.authorizationStatus(for: .audio)
         menu.addItem(withTitle: "Microphone: \(String(describing: mic)) — Open Settings", action: #selector(openMicSettings), keyEquivalent: "")
