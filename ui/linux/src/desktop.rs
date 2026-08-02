@@ -12,7 +12,16 @@ const NOTIFY_TIMEOUT: Duration = Duration::from_secs(2);
 const WTYPE: [&str; 2] = ["/usr/bin/wtype", "/bin/wtype"];
 const WLCOPY: [&str; 2] = ["/usr/bin/wl-copy", "/bin/wl-copy"];
 const WLPASTE: [&str; 2] = ["/usr/bin/wl-paste", "/bin/wl-paste"];
+const XDOTOOL: [&str; 2] = ["/usr/bin/xdotool", "/bin/xdotool"];
+const XSEL: [&str; 2] = ["/usr/bin/xsel", "/bin/xsel"];
 const NOTIFY: [&str; 2] = ["/usr/bin/notify-send", "/bin/notify-send"];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Backend {
+    Wayland,
+    X11,
+    Unavailable,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DeliveryOutcome {
@@ -26,7 +35,8 @@ trait OwnedChild: Send {}
 
 trait Runner: Send {
     fn run(&mut self, program: &[&str], args: &[&str], stdin: Option<&str>) -> io::Result<()>;
-    fn start_clipboard(&mut self, input: &str) -> io::Result<Box<dyn OwnedChild>>;
+    fn start_clipboard(&mut self, backend: Backend, input: &str)
+    -> io::Result<Box<dyn OwnedChild>>;
 }
 struct Supervisor;
 impl Runner for Supervisor {
@@ -41,16 +51,40 @@ impl Runner for Supervisor {
         supervise(&program, args, input, TIMEOUT)
     }
 
-    fn start_clipboard(&mut self, input: &str) -> io::Result<Box<dyn OwnedChild>> {
-        let program = find_program(&WLCOPY)?;
-        let paste = find_program(&WLPASTE)?;
+    fn start_clipboard(
+        &mut self,
+        backend: Backend,
+        input: &str,
+    ) -> io::Result<Box<dyn OwnedChild>> {
+        let (programs, owner_args, verify_programs, verify_args): (
+            &[&str],
+            &[&str],
+            &[&str],
+            &[&str],
+        ) = match backend {
+            Backend::Wayland => (&WLCOPY, &["--foreground"], &WLPASTE, &["--no-newline"]),
+            Backend::X11 => (
+                &XSEL,
+                &["--clipboard", "--input", "--nodetach"],
+                &XSEL,
+                &["--clipboard", "--output"],
+            ),
+            Backend::Unavailable => {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "no supported graphical session is available",
+                ));
+            }
+        };
+        let program = find_program(programs)?;
+        let paste = find_program(verify_programs)?;
         let deadline = Instant::now() + TIMEOUT;
-        let mut child = spawn(&program, &["--foreground"], Some(input), deadline)?;
+        let mut child = spawn(&program, owner_args, Some(input), deadline)?;
         let verified = verify_clipboard(
             input.as_bytes(),
             deadline,
             || owner_state(&mut child),
-            || capture_bounded(&paste, &["--no-newline"], input.len() + 64, deadline),
+            || capture_bounded(&paste, verify_args, input.len() + 64, deadline),
         );
         match verified {
             Ok(true) => Ok(Box::new(ManagedChild(Some(child)))),
@@ -64,12 +98,14 @@ impl Runner for Supervisor {
 }
 
 pub struct NativeDelivery {
+    backend: Backend,
     runner: Box<dyn Runner>,
     clipboard_owner: Option<Box<dyn OwnedChild>>,
 }
 impl NativeDelivery {
     pub fn new() -> Self {
         Self {
+            backend: detect_backend(),
             runner: Box::new(Supervisor),
             clipboard_owner: None,
         }
@@ -89,12 +125,15 @@ impl NativeDelivery {
             OutputMethod::Clipboard => self.copy(&text).map(|_| DeliveryOutcome::Clipboard),
             OutputMethod::Paste => {
                 self.copy(&text)?;
-                self.runner
-                    .run(&WTYPE, &["-M", "ctrl", "-k", "v", "-m", "ctrl"], None)
-                    .map_err(err)?;
+                let (program, args): (&[&str], &[&str]) = match self.backend {
+                    Backend::Wayland => (&WTYPE, &["-M", "ctrl", "-k", "v", "-m", "ctrl"]),
+                    Backend::X11 => (&XDOTOOL, &["key", "--clearmodifiers", "ctrl+v"]),
+                    Backend::Unavailable => return Err(unavailable()),
+                };
+                self.runner.run(program, args, None).map_err(err)?;
                 Ok(DeliveryOutcome::Pasted)
             }
-            OutputMethod::Type => match self.runner.run(&WTYPE, &["--", &text], None) {
+            OutputMethod::Type => match self.type_text(&text) {
                 Ok(()) => Ok(DeliveryOutcome::Typed),
                 Err(_) => {
                     self.copy(&text)?;
@@ -104,14 +143,55 @@ impl NativeDelivery {
         }
     }
     fn copy(&mut self, text: &str) -> Result<(), String> {
-        // --foreground keeps wl-copy from daemonizing away from our supervision.
-        let owner = self.runner.start_clipboard(text).map_err(err)?;
+        // The selected backend stays in the foreground so ownership remains supervised.
+        let owner = self
+            .runner
+            .start_clipboard(self.backend, text)
+            .map_err(err)?;
         self.clipboard_owner = Some(owner);
         Ok(())
+    }
+    fn type_text(&mut self, text: &str) -> io::Result<()> {
+        match self.backend {
+            Backend::Wayland => self.runner.run(&WTYPE, &["--", text], None),
+            Backend::X11 => self.runner.run(
+                &XDOTOOL,
+                &["type", "--clearmodifiers", "--delay", "0", "--", text],
+                None,
+            ),
+            Backend::Unavailable => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "no supported graphical session is available",
+            )),
+        }
     }
 }
 fn err(e: io::Error) -> String {
     format!("desktop delivery failed: {e}")
+}
+fn unavailable() -> String {
+    err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "no supported graphical session is available",
+    ))
+}
+
+fn detect_backend() -> Backend {
+    select_backend(
+        std::env::var("XDG_SESSION_TYPE").ok().as_deref(),
+        std::env::var_os("WAYLAND_DISPLAY").is_some(),
+        std::env::var_os("DISPLAY").is_some(),
+    )
+}
+
+fn select_backend(session_type: Option<&str>, wayland: bool, x11: bool) -> Backend {
+    match session_type {
+        Some(value) if value.eq_ignore_ascii_case("wayland") && wayland => Backend::Wayland,
+        Some(value) if value.eq_ignore_ascii_case("x11") && x11 => Backend::X11,
+        _ if wayland => Backend::Wayland,
+        _ if x11 => Backend::X11,
+        _ => Backend::Unavailable,
+    }
 }
 
 pub fn notify(enabled: bool, title: &str, body: &str) {
@@ -179,9 +259,11 @@ fn base_command(program: &Path, args: &[&str]) -> Command {
     let mut command = Command::new(program);
     command.args(args).env_clear().stderr(Stdio::null());
     for name in [
+        "HOME",
         "XDG_RUNTIME_DIR",
         "WAYLAND_DISPLAY",
         "DISPLAY",
+        "XAUTHORITY",
         "DBUS_SESSION_BUS_ADDRESS",
     ] {
         if let Some(value) = std::env::var_os(name) {
@@ -449,18 +531,34 @@ mod tests {
                 a.iter().map(|x| x.to_string()).collect(),
                 s.map(str::to_owned),
             ));
-            if self.1 && p == WTYPE && a.first() == Some(&"--") {
+            if self.1
+                && ((p == WTYPE && a.first() == Some(&"--"))
+                    || (p == XDOTOOL && a.first() == Some(&"type")))
+            {
                 Err(io::Error::other("crash"))
             } else {
                 Ok(())
             }
         }
-        fn start_clipboard(&mut self, input: &str) -> io::Result<Box<dyn OwnedChild>> {
-            self.0.lock().unwrap().push((
-                WLCOPY[0].into(),
-                vec!["--foreground".into()],
-                Some(input.into()),
-            ));
+        fn start_clipboard(
+            &mut self,
+            backend: Backend,
+            input: &str,
+        ) -> io::Result<Box<dyn OwnedChild>> {
+            let (program, args) = match backend {
+                Backend::Wayland => (WLCOPY[0], vec!["--foreground".into()]),
+                Backend::X11 => (
+                    XSEL[0],
+                    vec!["--clipboard".into(), "--input".into(), "--nodetach".into()],
+                ),
+                Backend::Unavailable => {
+                    return Err(io::Error::new(io::ErrorKind::NotFound, "unavailable"));
+                }
+            };
+            self.0
+                .lock()
+                .unwrap()
+                .push((program.into(), args, Some(input.into())));
             Ok(Box::new(FakeOwner(self.2.clone())))
         }
     }
@@ -469,6 +567,7 @@ mod tests {
         let calls = Arc::new(Mutex::new(vec![]));
         let drops = Arc::new(AtomicUsize::new(0));
         let mut d = NativeDelivery {
+            backend: Backend::Wayland,
             runner: Box::new(Fake(calls.clone(), true, drops)),
             clipboard_owner: None,
         };
@@ -494,6 +593,7 @@ mod tests {
             let calls = Arc::new(Mutex::new(vec![]));
             let drops = Arc::new(AtomicUsize::new(0));
             let mut d = NativeDelivery {
+                backend: Backend::Wayland,
                 runner: Box::new(Fake(calls.clone(), false, drops)),
                 clipboard_owner: None,
             };
@@ -514,6 +614,7 @@ mod tests {
         let calls = Arc::new(Mutex::new(vec![]));
         let drops = Arc::new(AtomicUsize::new(0));
         let mut delivery = NativeDelivery {
+            backend: Backend::Wayland,
             runner: Box::new(Fake(calls, false, drops.clone())),
             clipboard_owner: None,
         };
@@ -523,6 +624,84 @@ mod tests {
         assert_eq!(drops.load(Ordering::SeqCst), 1);
         drop(delivery);
         assert_eq!(drops.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn session_type_selects_native_delivery_backend() {
+        assert_eq!(
+            select_backend(Some("wayland"), true, true),
+            Backend::Wayland
+        );
+        assert_eq!(select_backend(Some("x11"), true, true), Backend::X11);
+        assert_eq!(select_backend(None, true, true), Backend::Wayland);
+        assert_eq!(select_backend(None, false, true), Backend::X11);
+        assert_eq!(
+            select_backend(Some("tty"), false, false),
+            Backend::Unavailable
+        );
+    }
+
+    #[test]
+    fn x11_uses_xdotool_and_xsel() {
+        let calls = Arc::new(Mutex::new(vec![]));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut delivery = NativeDelivery {
+            backend: Backend::X11,
+            runner: Box::new(Fake(calls.clone(), false, drops)),
+            clipboard_owner: None,
+        };
+        delivery
+            .deliver(
+                "hello",
+                &OutputConfig {
+                    method: OutputMethod::Type,
+                    trailing_space: false,
+                },
+            )
+            .unwrap();
+        delivery
+            .deliver(
+                "world",
+                &OutputConfig {
+                    method: OutputMethod::Paste,
+                    trailing_space: false,
+                },
+            )
+            .unwrap();
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls[0].0, XDOTOOL[0]);
+        assert_eq!(calls[0].1[0], "type");
+        assert_eq!(calls[1].0, XSEL[0]);
+        assert_eq!(calls[2].0, XDOTOOL[0]);
+        assert_eq!(calls[2].1, ["key", "--clearmodifiers", "ctrl+v"]);
+    }
+
+    #[test]
+    fn x11_type_failure_falls_back_to_clipboard_once() {
+        let calls = Arc::new(Mutex::new(vec![]));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut delivery = NativeDelivery {
+            backend: Backend::X11,
+            runner: Box::new(Fake(calls.clone(), true, drops)),
+            clipboard_owner: None,
+        };
+        assert_eq!(
+            delivery
+                .deliver(
+                    "hello",
+                    &OutputConfig {
+                        method: OutputMethod::Type,
+                        trailing_space: false,
+                    },
+                )
+                .unwrap(),
+            DeliveryOutcome::ClipboardFallback
+        );
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, XDOTOOL[0]);
+        assert_eq!(calls[1].0, XSEL[0]);
+        assert_eq!(calls[1].2.as_deref(), Some("hello"));
     }
 
     #[test]
@@ -546,17 +725,27 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert!(start.elapsed() < Duration::from_secs(1));
+        let previous_xauthority = std::env::var_os("XAUTHORITY");
         unsafe {
             std::env::set_var("SAYALL_ENV_CLEAR_TEST", "present");
+            std::env::set_var("XAUTHORITY", "/tmp/sayall-test-xauthority");
         }
         let result = supervise(
             Path::new("/bin/sh"),
-            &["-c", "test -z \"$SAYALL_ENV_CLEAR_TEST\""],
+            &[
+                "-c",
+                "test -z \"$SAYALL_ENV_CLEAR_TEST\" && test -n \"$HOME\" && test \"$XAUTHORITY\" = /tmp/sayall-test-xauthority",
+            ],
             None,
             Duration::from_secs(1),
         );
         unsafe {
             std::env::remove_var("SAYALL_ENV_CLEAR_TEST");
+            if let Some(value) = previous_xauthority {
+                std::env::set_var("XAUTHORITY", value);
+            } else {
+                std::env::remove_var("XAUTHORITY");
+            }
         }
         result.unwrap();
     }

@@ -17,6 +17,8 @@ depends=(
   'pipewire-audio'
   'wl-clipboard'
   'wtype'
+  'xdotool'
+  'xsel'
 )
 makedepends=('cargo' 'git' 'pkgconf' 'python' 'zig')
 provides=("sayall=$pkgver")
