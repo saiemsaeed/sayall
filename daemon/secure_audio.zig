@@ -57,7 +57,7 @@ pub fn sameFile(a: Identity, b: Identity) bool {
 }
 
 test "secure growing audio accepts empty file and preserves descriptor identity" {
-    var tmp = std.testing.tmpDir(.{});
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     try tmp.dir.setPermissions(std.testing.io, .fromMode(0o700));
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "audio.pcm", .data = "" });
@@ -80,7 +80,7 @@ test "secure growing audio accepts empty file and preserves descriptor identity"
 }
 
 test "secure audio rejects oversize and insecure final file mode" {
-    var tmp = std.testing.tmpDir(.{});
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     try tmp.dir.setPermissions(std.testing.io, .fromMode(0o700));
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "audio.pcm", .data = "12" });
