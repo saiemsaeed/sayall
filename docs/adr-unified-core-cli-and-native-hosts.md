@@ -146,9 +146,18 @@ unrelated entry and refuses enablement while legacy `sayall.service` is active
 or enabled, preventing two session owners.
 
 This is preview-only: packages do not enable it, legacy units and the default
-Zig owner remain, and the default-host cutover is deferred to SAY-48. A portable
-global-shortcut decision is also still required; the current Hyprland-specific
-shortcut is not expanded by this slice.
+Zig owner remain, and the default-host cutover is deferred to SAY-48. The
+explicit Rust native-host preview offers an interactive Settings action to bind
+an XDG GlobalShortcuts portal session. Autostart never performs the first bind;
+even after the private consent marker exists, restoration is reported as needing
+setup because ashpd/portal behavior cannot guarantee a prompt-free bind. Session
+loss and removal of the accepted shortcut immediately remove Active status. The
+host registers `dev.sayall.Hud.NativePreview` on the same dedicated D-Bus
+connection used for the portal session; physical portal identity remains an
+acceptance gate, and no preview desktop file is installed until that can be
+validated without changing package ownership. Missing portal support does not
+prevent startup. The existing Hyprland `sayall toggle` binding remains the
+wlroots fallback and is not rewritten by the native host.
 
 ## Rejected alternatives
 

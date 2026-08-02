@@ -3,6 +3,7 @@ mod capture;
 mod config;
 mod control;
 mod desktop;
+mod global_shortcut;
 mod protocol;
 mod runtime;
 mod session;
@@ -83,6 +84,7 @@ enum UiMessage {
 struct NativeContext {
     _ownership: runtime::Ownership,
     controller: session::Controller,
+    shortcut: global_shortcut::Host,
     server: control::Server,
     updates: Mutex<Option<Receiver<session::Snapshot>>>,
 }
@@ -290,7 +292,8 @@ fn main() -> glib::ExitCode {
     if native {
         let settings_action = gio::SimpleAction::new("settings", None);
         let settings_app = app.clone();
-        settings_action.connect_activate(move |_, _| settings::show(&settings_app));
+        settings_action
+            .connect_activate(move |_, _| settings::show(&settings_app, portal_status()));
         app.add_action(&settings_action);
     }
     let built = Rc::new(Cell::new(false));
@@ -301,10 +304,9 @@ fn main() -> glib::ExitCode {
         }
         let silent = suppress_settings_once.replace(false);
         if native && !silent {
-            settings::show(app);
+            settings::show(app, portal_status());
         }
     });
-    app.connect_shutdown(|_| shutdown_native_host());
     let exit = if native {
         if let Err(error) = app.register(None::<&gio::Cancellable>) {
             eprintln!("sayall-hud: application registration failed: {error}");
@@ -336,12 +338,25 @@ fn shutdown_native_host() {
         let NativeContext {
             _ownership,
             controller,
+            mut shortcut,
             mut server,
             updates: _,
         } = native;
+        shortcut.request_stop();
+        server.request_stop();
         controller.shutdown_and_join();
-        server.shutdown_and_join();
+        shortcut.shutdown_and_join();
+        server.join();
         drop(_ownership);
+    }
+}
+
+fn enable_portal_shortcut() {
+    if let Some(slot) = NATIVE.get()
+        && let Ok(guard) = slot.lock()
+        && let Some(native) = guard.as_ref()
+    {
+        native.shortcut.enable();
     }
 }
 
@@ -350,10 +365,13 @@ fn start_native_host() -> io::Result<()> {
     let root = runtime::session_root()?;
     let (tx, rx) = mpsc::channel();
     let controller = session::Controller::spawn(root, desktop::NativeDelivery::new(), tx);
+    let shortcut = global_shortcut::Host::spawn(controller.clone());
     let socket = ownership.socket.clone();
     let server = match control::Server::bind(&socket, controller.clone()) {
         Ok(server) => server,
         Err(error) => {
+            let mut shortcut = shortcut;
+            shortcut.shutdown_and_join();
             controller.shutdown_and_join();
             return Err(error);
         }
@@ -362,6 +380,7 @@ fn start_native_host() -> io::Result<()> {
         .set(Mutex::new(Some(NativeContext {
             _ownership: ownership,
             controller,
+            shortcut,
             server,
             updates: Mutex::new(Some(rx)),
         })))
@@ -371,6 +390,18 @@ fn start_native_host() -> io::Result<()> {
                 "native host already initialized",
             )
         })
+}
+
+fn portal_status() -> global_shortcut::Status {
+    NATIVE
+        .get()
+        .and_then(|slot| {
+            slot.lock()
+                .ok()?
+                .as_ref()
+                .map(|native| native.shortcut.status())
+        })
+        .unwrap_or(global_shortcut::Status::Unavailable)
 }
 
 fn build_ui(app: &Application) {
