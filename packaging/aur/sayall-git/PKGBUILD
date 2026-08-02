@@ -69,11 +69,7 @@ package() {
   install -Dm755 "$src/zig-out/bin/sayall-process" \
     "$pkgdir/usr/lib/sayall/sayall-process"
 
-  install -Dm644 -t "$pkgdir/usr/lib/systemd/user" \
-    "$src/sayall.service" \
-    "$src/sayall-hud.service"
-  sed -i 's|%h/.local/bin/|/usr/bin/|g' \
-    "$pkgdir/usr/lib/systemd/user/sayall.service" \
+  install -Dm644 "$src/sayall-hud.service" \
     "$pkgdir/usr/lib/systemd/user/sayall-hud.service"
 
   install -Dm644 -t "$pkgdir/usr/share/doc/sayall" \

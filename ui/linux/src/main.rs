@@ -17,13 +17,11 @@ use gtk::prelude::*;
 use gtk::{Application, ApplicationWindow, DrawingArea};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use protocol::{EventKind, OutputMethod, ProtocolEvent, State, StateSnapshot};
-use serde_json::json;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::env;
-use std::io::{self, BufReader, Write};
+use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -277,25 +275,12 @@ impl Model {
 }
 
 fn main() -> glib::ExitCode {
-    let native = env::args_os()
-        .skip(1)
-        .any(|arg| arg == "--native-host-preview");
     let autostart = env::args_os().skip(1).any(|arg| arg == "--autostart");
-    let application_id = if native {
-        "dev.sayall.Hud.NativePreview"
-    } else {
-        APP_ID
-    };
-    let app = Application::builder()
-        .application_id(application_id)
-        .build();
-    if native {
-        let settings_action = gio::SimpleAction::new("settings", None);
-        let settings_app = app.clone();
-        settings_action
-            .connect_activate(move |_, _| settings::show(&settings_app, portal_status()));
-        app.add_action(&settings_action);
-    }
+    let app = Application::builder().application_id(APP_ID).build();
+    let settings_action = gio::SimpleAction::new("settings", None);
+    let settings_app = app.clone();
+    settings_action.connect_activate(move |_, _| settings::show(&settings_app, portal_status()));
+    app.add_action(&settings_action);
     let built = Rc::new(Cell::new(false));
     let suppress_settings_once = Rc::new(Cell::new(autostart));
     app.connect_activate(move |app| {
@@ -303,32 +288,28 @@ fn main() -> glib::ExitCode {
             build_ui(app);
         }
         let silent = suppress_settings_once.replace(false);
-        if native && !silent {
+        if !silent {
             settings::show(app, portal_status());
         }
     });
-    let exit = if native {
-        if let Err(error) = app.register(None::<&gio::Cancellable>) {
-            eprintln!("sayall-hud: application registration failed: {error}");
+    if let Err(error) = app.register(None::<&gio::Cancellable>) {
+        eprintln!("sayall-hud: application registration failed: {error}");
+        return glib::ExitCode::FAILURE;
+    }
+    if app.is_remote() && autostart {
+        return glib::ExitCode::SUCCESS;
+    }
+    if !app.is_remote() {
+        if let Err(error) = start_native_host() {
+            eprintln!("sayall-hud: host unavailable: {error}");
             return glib::ExitCode::FAILURE;
         }
-        if app.is_remote() && autostart {
-            return glib::ExitCode::SUCCESS;
-        }
-        if !app.is_remote() {
-            if let Err(error) = start_native_host() {
-                eprintln!("sayall-hud: native host preview unavailable: {error}");
-                return glib::ExitCode::FAILURE;
-            }
-        }
-        let program = env::args_os()
-            .next()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "sayall-hud".to_owned());
-        app.run_with_args(&[program])
-    } else {
-        app.run()
-    };
+    }
+    let program = env::args_os()
+        .next()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "sayall-hud".to_owned());
+    let exit = app.run_with_args(&[program]);
     shutdown_native_host();
     exit
 }
@@ -460,8 +441,6 @@ fn build_ui(app: &Application) {
                 }
             });
         }
-    } else {
-        thread::spawn(move || connection_loop(sender));
     }
     install_tick(&window, &drawing, model, receiver);
     window.set_visible(false);
@@ -480,14 +459,7 @@ fn install_tick(
             match message {
                 UiMessage::Snapshot(snapshot) => model.borrow_mut().apply_state(&snapshot),
                 UiMessage::Event(event) => model.borrow_mut().apply_event(event),
-                UiMessage::Disconnected => {
-                    let mut model = model.borrow_mut();
-                    if model.state != HudState::Idle {
-                        model.state = HudState::Error;
-                        model.error = "SayAll daemon disconnected".to_owned();
-                        model.hide_at = Some(Instant::now() + Duration::from_secs(2));
-                    }
-                }
+                UiMessage::Disconnected => {}
                 UiMessage::Native(snapshot) => {
                     let mut model = model.borrow_mut();
                     if !model.apply_native_terminal(&snapshot) {
@@ -526,43 +498,6 @@ fn install_tick(
         }
         glib::ControlFlow::Continue
     });
-}
-
-fn connection_loop(sender: Sender<UiMessage>) {
-    let mut backoff = Duration::from_millis(200);
-    loop {
-        match subscribe(&sender) {
-            Ok(()) => backoff = Duration::from_millis(200),
-            Err(_) => {
-                let _ = sender.send(UiMessage::Disconnected);
-                thread::sleep(backoff);
-                backoff = (backoff * 2).min(Duration::from_secs(5));
-            }
-        }
-    }
-}
-
-fn subscribe(sender: &Sender<UiMessage>) -> std::io::Result<()> {
-    const REQUEST_ID: u64 = 1;
-
-    let mut stream = UnixStream::connect(socket_path()?)?;
-    let request = json!({"v":1,"type":"request","id":REQUEST_ID,"method":"subscribe","params":{}});
-    writeln!(stream, "{request}")?;
-    let mut reader = BufReader::new(stream);
-    let mut storage = [0; protocol::MAX_FRAME_LEN];
-    let mut decoder = protocol::SubscriptionDecoder::new(REQUEST_ID);
-    loop {
-        let frame = protocol::read_frame(&mut reader, &mut storage)?;
-        let message = match decoder.decode(frame)? {
-            protocol::SubscriptionMessage::Snapshot(snapshot) => {
-                UiMessage::Snapshot(snapshot.state)
-            }
-            protocol::SubscriptionMessage::Event(event) => UiMessage::Event(event),
-        };
-        if sender.send(message).is_err() {
-            return Ok(());
-        }
-    }
 }
 
 fn socket_path() -> io::Result<PathBuf> {

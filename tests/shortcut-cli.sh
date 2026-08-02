@@ -22,6 +22,15 @@ bindings=$test_dir/config/hypr/bindings.conf
 systemctl_log=$test_dir/systemctl.log
 output=$test_dir/output
 
+for retired in 'daemon' '__service' 'stop' 'toggle --raw'; do
+  if HOME=$test_dir/home XDG_CONFIG_HOME=$test_dir/config \
+      sh -c 'exec "$1" $2' _ "$sayall" "$retired" >"$output" 2>&1; then
+    echo "retired CLI route unexpectedly succeeded: $retired" >&2
+    exit 1
+  fi
+  grep -q 'usage:' "$output"
+done
+
 printf '%s\n' 'source = bindings.conf' >"$root"
 printf '%s\n' 'bind = CTRL, SLASH, exec, sayall toggle' >"$bindings"
 cp "$root" "$test_dir/root.before"
@@ -38,7 +47,7 @@ cmp "$test_dir/bindings.before" "$bindings"
 test ! -e "$test_dir/config/hypr/sayall.conf"
 test ! -e "$test_dir/config/sayall/shortcut.json"
 grep -q 'leaving the existing binding unchanged' "$output"
-test "$(wc -l <"$systemctl_log")" -eq 3
+test "$(wc -l <"$systemctl_log")" -eq 6
 
 variable_config=$test_dir/variable-config
 mkdir -p "$variable_config/hypr"
@@ -141,7 +150,7 @@ XDG_CONFIG_HOME=$managed_config \
 PATH=$test_dir/bin:$PATH \
 env -u HYPRLAND_INSTANCE_SIGNATURE "$sayall" setup >"$output" 2>&1
 grep -q '"shortcut": "SUPER+H"' "$managed_config/sayall/shortcut.json"
-test "$(wc -l <"$systemctl_log")" -eq 3
+test "$(wc -l <"$systemctl_log")" -eq 6
 
 HOME=$test_dir/home XDG_CONFIG_HOME=$managed_config \
   env -u HYPRLAND_INSTANCE_SIGNATURE "$sayall" shortcut disable >"$output" 2>&1
@@ -194,8 +203,8 @@ if SAYALL_TEST_SYSTEMCTL_LOG=$systemctl_log \
 fi
 
 grep -q 'shortcut conflicts with' "$output"
-grep -q 'services were enabled and restarted' "$output"
-test "$(wc -l <"$systemctl_log")" -eq 3
+grep -q 'host service was enabled and restarted' "$output"
+test "$(wc -l <"$systemctl_log")" -eq 6
 test ! -e "$test_dir/config/hypr/sayall.conf"
 test ! -e "$test_dir/config/sayall/shortcut.json"
 

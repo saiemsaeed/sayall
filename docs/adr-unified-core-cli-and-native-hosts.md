@@ -132,32 +132,25 @@ CLI automatically. The private worker is never linked into `PATH` or updated
 independently. Nested macOS executables are signed before the outer app and the
 complete bundle is notarized and stapled.
 
-## Linux native-host migration settings (SAY-45)
+## Linux native-host settings and startup
 
-The temporary `sayall-hud --native-host-preview` implementation path owns a small GTK settings
+The Rust `sayall-hud` process is the sole Linux session owner and provides a small GTK settings
 window. Canonical initialization and read-only validation remain Zig-owned and
 are requested through bounded private `sayall-process` operations; the UI does
 not execute or parse the public `sayall` CLI and never displays credentials.
-Preview login startup is opt-in through the user XDG autostart entry and uses
-the installed `/usr/bin/sayall-hud --native-host-preview --autostart` path. The
-explicit autostart role starts silently; a later interactive preview invocation
-is forwarded through GApplication and opens the singleton Settings window. It refuses an
-unrelated entry and refuses enablement while legacy `sayall.service` is active
-or enabled, preventing two session owners.
+The package-managed `sayall-hud.service` is the only login startup mechanism.
+Its `--autostart` activation is silent; a later interactive invocation is
+forwarded through GApplication and opens the singleton Settings window. Settings
+enables or disables that user unit without stopping its own running process.
 
-This flag is migration scaffolding, not a supported product mode. The 0.2.0
-cutover removes the flag and preview wording and makes the Rust host the only
-Linux session owner; packages will not ship selectable legacy/native modes.
-Until that atomic cutover in SAY-48, packages do not enable this path and the
-default Zig owner remains. The explicit Rust migration path offers an interactive Settings action to bind
+The Settings action can bind
 an XDG GlobalShortcuts portal session. Autostart never performs the first bind;
 even after the private consent marker exists, restoration is reported as needing
 setup because ashpd/portal behavior cannot guarantee a prompt-free bind. Session
 loss and removal of the accepted shortcut immediately remove Active status. The
-host registers `dev.sayall.Hud.NativePreview` on the same dedicated D-Bus
+host registers stable app ID `dev.sayall.Hud` on the same dedicated D-Bus
 connection used for the portal session; physical portal identity remains an
-acceptance gate, and no preview desktop file is installed until that can be
-validated without changing package ownership. Missing portal support does not
+acceptance gate. Missing portal support does not
 prevent startup. The existing Hyprland `sayall toggle` binding remains the
 wlroots fallback and is not rewritten by the native host.
 

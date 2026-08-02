@@ -25,6 +25,6 @@ pub fn environmentDiagnostic(_: *const std.process.Environ.Map) !contract.Diagno
     return error.UnsupportedPlatform;
 }
 
-pub fn diagnostics(_: std.mem.Allocator, _: std.Io, _: ?bool, _: ?[]const u8) !contract.Diagnostics {
+pub fn diagnostics(_: std.mem.Allocator, _: std.Io, _: *const std.process.Environ.Map, _: ?bool, _: ?[]const u8) !contract.Diagnostics {
     return error.UnsupportedPlatform;
 }

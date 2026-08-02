@@ -181,6 +181,7 @@ pub fn resolve() -> io::Result<PathBuf> {
     let exe = std::env::current_exe()?;
     let candidates = [
         exe.parent().unwrap().join("sayall-process"),
+        exe.parent().unwrap().join("../lib/sayall/sayall-process"),
         PathBuf::from("/usr/lib/sayall/sayall-process"),
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../zig-out/bin/sayall-process"),
     ];

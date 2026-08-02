@@ -9,8 +9,8 @@ cleanup is configured, filler words and false starts are removed before output.
   false starts, stutters; fixes grammar and punctuation without changing meaning
 - **Zig dependencies:** one pinned WebSocket library; otherwise Zig's standard
   library
-- **Runtime dependencies:** PipeWire `pw-record`, `wtype`, `wl-copy`, and
-  `notify-send`
+- **Runtime dependencies:** PipeWire `pw-record`, `notify-send`, and either
+  Wayland (`wtype`, `wl-copy`) or X11 (`xdotool`, `xsel`) delivery tools
 - **Linux HUD:** Rust, GTK4, and gtk4-layer-shell
 - **Requires:** Zig 0.16.x
 
@@ -18,7 +18,7 @@ cleanup is configured, filler words and false starts are removed before output.
 
 | Platform / target | Current status |
 | --- | --- |
-| x86-64 Arch Linux with Omarchy (Wayland/Hyprland) | Supported and tested; daemon/CLI/HUD and AUR or archive distribution |
+| x86-64 Arch Linux with Omarchy (Wayland/Hyprland) | Supported and tested; native host/CLI and AUR or archive distribution |
 | Apple Silicon (`arm64`), macOS 15.0 or later | Supported since 0.1.7 as a signed, notarized, and stapled native app |
 | Windows (`x86_64-windows` compile target) | Core compile readiness only; no app, runtime, package, or installable output |
 
@@ -27,8 +27,8 @@ release remains gated on signing, notarization, and physical qualification;
 unsigned CI candidates are never distributed. Windows readiness does not
 constitute product or runtime support. The accepted
 [`0.1.6 macOS architecture ADR`](docs/adr-macos-0.1.6.md) selects the macOS
-topology; the current Linux control and HUD compatibility API remains the
-Linux-only [`protocol-v1 contract`](docs/protocol-v1.md).
+topology. Linux and macOS use the shared version-2 native-host control contract
+defined in [`tests/contracts-0.2`](tests/contracts-0.2/).
 
 ## Getting Started
 
@@ -98,7 +98,7 @@ chmod 600 ~/.config/sayall/config.json
 sayall setup
 ```
 
-`sayall setup` enables and restarts the daemon and HUD services and installs the
+`sayall setup` enables and restarts the native host service and installs the
 default `Ctrl+Slash` Hyprland shortcut for `sayall toggle`. It preserves a
 shortcut previously selected or disabled through the SayAll CLI. If
 `Ctrl+Slash` is already manually bound to `sayall toggle`, setup recognizes it
@@ -135,7 +135,7 @@ evaluated: shortcut management stops and reports the exact file and line for
 manual resolution. A symlinked `hyprland.conf` is likewise rejected before any
 shortcut configuration is written.
 
-Update the installed AUR variant and restart both running processes with one
+Update the installed AUR variant and restart the native host with one
 command:
 
 ```sh
@@ -146,16 +146,22 @@ sayall doctor
 
 `sayall update` detects whether `sayall`, `sayall-bin`, or `sayall-git` owns
 the installation, asks `yay` to update that same package, and only restarts the
-services after the package operation succeeds. It deliberately uses the AUR
+host service after the package operation succeeds. It deliberately uses the AUR
 package rather than overwriting `/usr/bin` directly, preserving package
 ownership, dependency handling, checksums, and clean uninstallation. To avoid
-losing audio, it refuses to update while the daemon is recording or processing
-a clip. After a successful package operation it restarts both services and
+losing audio, it refuses to update while the host is recording or processing
+a clip. After a successful package operation it restarts `sayall-hud.service` and
 re-applies the saved custom, default, or disabled shortcut state. The retired
 `sayall-src` name remains recognized by the 0.1.5 and later CLI as a migration
 fallback. Installations still running the 0.1.4 `sayall-src` CLI must use the
 explicit one-time `yay -S sayall` command below; that older CLI cannot redirect
 itself to a package name introduced by a later release.
+
+The 0.1.8 updater continues running its old in-memory service logic after the
+package transaction, so the 0.1.8 → 0.2.0 migration is intentionally two-phase.
+After the package update finishes, run the newly installed `sayall setup` once.
+It verifies the retired daemon is stopped before starting the single native
+host; package hooks cannot safely alter every user's systemd manager as root.
 
 #### Migrate from the earlier AUR package names
 
@@ -184,7 +190,7 @@ so they cannot override the package-managed binaries and services. This does
 not remove `~/.config/sayall/config.json`:
 
 ```sh
-systemctl --user disable --now sayall sayall-hud
+systemctl --user disable --now sayall.service sayall-hud.service
 rm -f ~/.local/bin/sayall ~/.local/bin/sayall-hud
 rm -f ~/.config/systemd/user/sayall.service \
       ~/.config/systemd/user/sayall-hud.service
@@ -207,15 +213,15 @@ zig build -Doptimize=ReleaseFast
 cargo test --locked --manifest-path ui/linux/Cargo.toml
 cargo build --locked --release --manifest-path ui/linux/Cargo.toml
 
-# Stop the packaged daemon before running a checkout build; both use the same
+# Stop the packaged host before running a checkout build; both use the same
 # socket and configuration.
-systemctl --user stop sayall sayall-hud
-./zig-out/bin/sayall daemon --verbose
+systemctl --user stop sayall-hud.service
+./ui/linux/target/release/sayall-hud --autostart
 ```
 
-In another terminal, use `./zig-out/bin/sayall status`, `toggle`, and `stop`.
+In another terminal, use `./zig-out/bin/sayall status` and `toggle`.
 Restart the packaged installation afterwards with
-`systemctl --user start sayall sayall-hud`.
+`systemctl --user start sayall-hud.service`.
 
 Print the installed release version with `sayall --version`.
 
@@ -230,9 +236,7 @@ to load the new configuration:
 sayall restart
 ```
 
-The HUD reconnects automatically. This command requires the recommended
-systemd user-service setup above; if running `sayall daemon` directly, stop and
-start that foreground process instead.
+This command requires the recommended systemd user-service setup above.
 
 Manage recognition keywords locally with the CLI. Quote phrases and any value
 whose leading or trailing spaces are intentional:
@@ -250,7 +254,7 @@ sayall keywords clear --confirm
 Matching for updates and deletion is exact, including spelling, case, Unicode,
 and spaces. Search is a substring search with ASCII case folding. Mutating
 commands print the `sayall restart` command needed to activate the change in a
-running daemon; restart the foreground process instead when not using systemd.
+running host.
 
 View persistent transcription metrics:
 
@@ -272,8 +276,8 @@ sayall mic-test
 sayall mic-test 3687
 ```
 
-For debugging: `sayall daemon --verbose` in a terminal logs every stage with
-per-stage timings. `SAYALL_VERBOSE=1` works too.
+Use `journalctl --user -u sayall-hud.service` to inspect native-host startup and
+failure diagnostics.
 
 ### Install a release archive
 
@@ -284,15 +288,16 @@ and verifying the archive's entry in `SHA256SUMS`, install it for the current
 user:
 
 ```sh
-sudo pacman -S --needed pipewire-audio wtype wl-clipboard libnotify gtk4 gtk4-layer-shell
+sudo pacman -S --needed pipewire-audio wtype wl-clipboard xdotool xsel libnotify gtk4 gtk4-layer-shell
 sha256sum --check --ignore-missing SHA256SUMS
 # Replace VERSION with the published version from the archive filename.
 tar -xzf sayall-VERSION-linux-x86_64.tar.gz
 cd sayall-VERSION-linux-x86_64
 install -Dm755 -t ~/.local/bin bin/sayall bin/sayall-hud
+install -Dm755 lib/sayall/sayall-process ~/.local/lib/sayall/sayall-process
 install -Dm644 -t ~/.config/systemd/user share/systemd/user/*.service
 systemctl --user daemon-reload
-systemctl --user enable --now sayall sayall-hud
+systemctl --user enable --now sayall-hud.service
 ```
 
 Configuration and shortcut setup are the same as for an AUR installation; run
@@ -305,7 +310,7 @@ services and remove the package variant:
 
 ```sh
 sayall shortcut disable
-systemctl --user disable --now sayall sayall-hud
+systemctl --user disable --now sayall.service sayall-hud.service
 yay -Rns sayall # or sayall-bin / sayall-git
 ```
 
@@ -356,28 +361,21 @@ transcript is sent to Groq. SayAll collects no telemetry.
 ### Linux
 
 ```
-Hyprland bind ──exec──▶ sayall toggle ──unix socket──▶ sayall daemon
-                                                          │ JSON events
-                                                          ▼
-                                                  Rust/GTK recording HUD
-                                                          │ toggle ON
-                                                    spawn pw-record (raw PCM)
-                                                          │ 50-100 ms frames
-                                             WSS api.eu.deepgram.com/v1/listen
-                                                          │ toggle OFF
-                                                 CloseStream → final text
-                                                          │ REST fallback uses WAV
-                                                          │ raw transcript
-                                                    POST Groq chat/completions (cleanup)
-                                                          │ clean text
-                                                     wtype → focused window
+Hyprland/portal ──▶ Rust/GTK native host ◀──v2 socket── sayall CLI
+                            │ toggle ON
+                      spawn pw-record (raw PCM)
+                            │ private bounded protocol
+                      Zig sayall-process worker
+                            │ streaming + REST fallback
+                      Deepgram → optional Groq cleanup
+                            │ transcript result
+                      wtype/wl-copy or xdotool/xsel
 ```
 
-The Zig binary provides the daemon and CLI. The separate `sayall-hud` process
-subscribes to the versioned JSON API at `$XDG_RUNTIME_DIR/sayall.sock`. It
-receives state, processing-stage, error, completion, and normalized audio-level
-events; it never receives raw microphone audio or transcripts. The hotkey is
-owned by your compositor, so the HUD never steals focus.
+The Rust process owns capture, session state, UI, notifications, shortcuts, and
+delivery. It launches the private Zig worker for platform-neutral provider
+processing. The public Zig CLI controls the same host over the bounded,
+same-user socket at `$XDG_RUNTIME_DIR/sayall.sock`; the UI never invokes the CLI.
 
 ## Linux HUD
 
@@ -389,10 +387,8 @@ wlroots compositors, and KDE Wayland. It displays:
 - transcribing, cleanup, and typing stages;
 - short success and error states.
 
-It automatically reconnects after either process restarts. The wire protocol
-is documented in [`docs/protocol-v1.md`](docs/protocol-v1.md). Its current
-scope and the native-platform ownership boundaries are defined by the
-[`0.1.4 platform support ADR`](docs/adr-platform-ownership-and-support.md).
+The native-platform ownership boundaries and worker/control contracts are
+defined by the [unified architecture ADR](docs/adr-unified-core-cli-and-native-hosts.md).
 
 ## Provider Choices (and why)
 
@@ -419,7 +415,7 @@ API = plain JSON from Zig. Only the Groq provider is currently implemented.
 sayall/
 ├── build.zig                  # zig build, native target
 ├── build.zig.zon              # package metadata and minimum Zig version
-├── sayall.service             # optional systemd user unit
+├── sayall-hud.service         # native host systemd user unit
 ├── daemon/
 │   ├── main.zig               # CLI, mic-test, and transcribe commands
 │   ├── keywords.zig           # XDG keyword persistence and validation
@@ -441,8 +437,8 @@ sayall/
 
 ## Implemented Behavior
 
-1. **Daemon/IPC** — single-instance daemon, concurrent IPC clients, and a
-   state machine allowing one recording at a time.
+1. **Native host/control** — one Rust session owner, bounded same-user v2
+   control clients, and a state machine allowing one recording at a time.
 2. **Recording** — capture raw 16 kHz mono s16 PCM, publish live RMS/peak
    events, and generate a WAV for Deepgram after stopping. Reject clips below
    the configured minimum duration.
@@ -450,8 +446,8 @@ sayall/
    punctuation, spoken dictation commands, numerals, measurements, and keyterm
    prompting. REST responses parse
    `results.channels[0].alternatives[0].transcript`.
-4. **LLM cleanup** — Groq chat completions, temperature 0; config flag +
-   `sayall toggle --raw` for a bypass bind. System prompt:
+4. **LLM cleanup** — Groq chat completions, temperature 0, controlled by the
+   configuration. System prompt:
 
    > Rewrite the following speech transcript into clean written text. Remove
    > filler words (um, uh, like, you know), false starts, and stutters. Fix
@@ -608,16 +604,8 @@ SayAll stores shortcut intent in `~/.config/sayall/shortcut.json`, generates
 `~/.config/hypr/hyprland.conf`. Repeated setup and upgrade runs are idempotent
 and keep a custom or disabled state. A different existing binding is never
 silently replaced. Shortcut errors do not prevent `sayall setup` from enabling
-and restarting the daemon and HUD services, though setup exits unsuccessfully
+and restarting the native host service, though setup exits unsuccessfully
 until the shortcut conflict is resolved or the managed shortcut is disabled.
-
-The shortcut manager intentionally controls only the normal `sayall toggle`
-binding. To keep a second raw/no-cleanup shortcut, add it normally to
-`~/.config/hypr/bindings.conf`; for example:
-
-```conf
-bindd = SUPER SHIFT, F9, Raw SayAll dictation, exec, sayall toggle --raw
-```
 
 On upgrade from a manual `bind = CTRL, SLASH, exec, sayall toggle` line, setup
 recognizes the equivalent binding and does not take ownership of or rewrite
@@ -645,17 +633,15 @@ satisfied.
 
 Press bind → speak → press bind → text typed into the focused window. The
 current test suite covers configuration validation, strict WAV parsing and
-level analysis, and provider response parsing; daemon and HTTP integration
-tests remain roadmap work.
+level analysis, provider response parsing, worker framing, and native-host
+control behavior.
 
 ## Versioning and releases
 
-SayAll follows [Semantic Versioning](https://semver.org/). The Linux daemon,
-CLI, HUD, macOS app, and bundled macOS helper share one product version. macOS
+SayAll follows [Semantic Versioning](https://semver.org/). The Linux native host,
+CLI, macOS app, and bundled private workers share one product version. macOS
 release artifacts remain unpublished until they complete signing, notarization,
-and physical qualification. Protocol versions are independent: the documented
-[`protocol-v1 contract`](docs/protocol-v1.md) remains Linux-only, and the macOS
-helper contract is separate.
+and physical qualification. Protocol versions are independent of product versions.
 
 During the pre-1.0 period, patch releases remain backward-compatible whenever
 possible. A minor release may make a documented breaking change to
