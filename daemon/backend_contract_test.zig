@@ -79,4 +79,5 @@ test "shared host fixtures preserve status toggle and structured errors" {
     try std.testing.expect(!busy.value.ok);
     try std.testing.expectEqual(HostState.processing, busy.value.state);
     try std.testing.expectEqualStrings("busy", busy.value.@"error".?.code);
+    try std.testing.expectEqualStrings("SayAll is processing", busy.value.@"error".?.message);
 }

@@ -56,34 +56,40 @@ pub fn defaultTemplate(gpa: Allocator) ![]u8 {
 /// object. The final file is created exclusively, so readers never observe a
 /// replace of their configuration; a failed write removes the partial file.
 pub fn initDefault(gpa: Allocator, io: Io, env: *const std.process.Environ.Map) ![]const u8 {
-    const root = try configRoot(gpa, env);
-    defer gpa.free(root);
-    // Validate the complete environment policy before making directories.
-    const path = try std.fmt.allocPrint(gpa, "{s}/sayall/config.json", .{root});
-    errdefer gpa.free(path);
-    const base = try Io.Dir.cwd().createDirPathOpen(io, root, .{});
-    defer base.close(io);
-    base.createDir(io, "sayall", .fromMode(0o700)) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        else => return err,
-    };
-    const dir = try base.openDir(io, "sayall", .{ .follow_symlinks = false });
-    defer dir.close(io);
-    const parent_stat = try dir.stat(io);
-    if (parent_stat.kind != .directory) return error.UnsafeConfigDirectory;
-    try validateDirectoryOwner(dir.handle);
-    try dir.setPermissions(io, .fromMode(0o700));
+    if (comptime builtin.os.tag == .linux or builtin.os.tag == .macos) {
+        const root = try configRoot(gpa, env);
+        defer gpa.free(root);
+        // Validate the complete environment policy before making directories.
+        const path = try std.fmt.allocPrint(gpa, "{s}/sayall/config.json", .{root});
+        errdefer gpa.free(path);
+        const base = try Io.Dir.cwd().createDirPathOpen(io, root, .{});
+        defer base.close(io);
+        base.createDir(io, "sayall", .fromMode(0o700)) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+        // Linux needs a real readable directory descriptor (not O_PATH) for
+        // fchmod; `iterate` makes Zig open one while preserving no-follow.
+        const dir = try base.openDir(io, "sayall", .{ .iterate = true, .follow_symlinks = false });
+        defer dir.close(io);
+        const parent_stat = try dir.stat(io);
+        if (parent_stat.kind != .directory) return error.UnsafeConfigDirectory;
+        try validateDirectoryOwner(dir.handle);
+        try dir.setPermissions(io, .fromMode(0o700));
 
-    const template = try defaultTemplate(gpa);
-    defer gpa.free(template);
-    const file = try dir.createFile(io, "config.json", .{
-        .exclusive = true,
-        .permissions = @enumFromInt(0o600),
-    });
-    errdefer dir.deleteFile(io, "config.json") catch {};
-    defer file.close(io);
-    try file.writeStreamingAll(io, template);
-    return path;
+        const template = try defaultTemplate(gpa);
+        defer gpa.free(template);
+        const file = try dir.createFile(io, "config.json", .{
+            .exclusive = true,
+            .permissions = @enumFromInt(0o600),
+        });
+        errdefer dir.deleteFile(io, "config.json") catch {};
+        defer file.close(io);
+        try file.writeStreamingAll(io, template);
+        return path;
+    } else {
+        return error.UnsupportedPlatform;
+    }
 }
 
 fn configRoot(gpa: Allocator, env: *const std.process.Environ.Map) ![]u8 {
