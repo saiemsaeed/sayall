@@ -28,10 +28,13 @@ fn expectUnsupported(comptime runtime: type, comptime config_supported: bool) !v
         const path = (try runtime.configFile(std.testing.allocator, &env)).?;
         defer std.testing.allocator.free(path);
         try std.testing.expectEqualStrings("/tmp/home/.config/sayall/config.json", path);
+        const keywords_path = (try runtime.keywordsFile(std.testing.allocator, &env)).?;
+        defer std.testing.allocator.free(keywords_path);
+        try std.testing.expectEqualStrings("/tmp/home/.config/sayall/keywords.json", keywords_path);
     } else {
         try std.testing.expectError(error.UnsupportedPlatform, runtime.configFile(std.testing.allocator, &env));
+        try std.testing.expectError(error.UnsupportedPlatform, runtime.keywordsFile(std.testing.allocator, &env));
     }
-    try std.testing.expectError(error.UnsupportedPlatform, runtime.keywordsFile(std.testing.allocator, &env));
     try std.testing.expectError(error.UnsupportedPlatform, runtime.metricsFile(std.testing.allocator, &env));
     try std.testing.expectError(error.UnsupportedPlatform, runtime.runtimeRoot(&env));
     try std.testing.expectError(error.UnsupportedPlatform, runtime.effectiveUserId());

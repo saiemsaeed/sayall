@@ -9,10 +9,12 @@ pub const help =
     \\  sayall status         print recording state
     \\  sayall toggle         toggle recording
     \\  sayall config init    securely create the default configuration
+    \\  sayall config validate [--json]
+    \\  sayall transcribe <WAV> [--raw] [--json]
     \\
 ;
 
-pub const Command = enum { help, version, status, toggle, config_init };
+pub const Command = enum { help, version, status, toggle, config_init, config_validate, config_validate_json };
 pub const ParseError = error{InvalidArguments};
 
 pub fn parse(args: []const []const u8) ParseError!Command {
@@ -25,6 +27,8 @@ pub fn parse(args: []const []const u8) ParseError!Command {
         if (std.mem.eql(u8, arg, "toggle")) return .toggle;
     }
     if (args.len == 2 and std.mem.eql(u8, args[0], "config") and std.mem.eql(u8, args[1], "init")) return .config_init;
+    if (args.len == 2 and std.mem.eql(u8, args[0], "config") and std.mem.eql(u8, args[1], "validate")) return .config_validate;
+    if (args.len == 3 and std.mem.eql(u8, args[0], "config") and std.mem.eql(u8, args[1], "validate") and std.mem.eql(u8, args[2], "--json")) return .config_validate_json;
     return error.InvalidArguments;
 }
 
@@ -71,7 +75,7 @@ pub fn execute(command: Command, version: []const u8, host: HostControl) Present
         .version => .{ .exit_code = 0, .stdout = version },
         .status => present(host.status()),
         .toggle => present(host.toggle()),
-        .config_init => unreachable,
+        .config_init, .config_validate, .config_validate_json => unreachable,
     };
 }
 
@@ -117,13 +121,16 @@ test "canonical grammar accepts only exact commands" {
     try std.testing.expectEqual(Command.help, try parse(&.{"--help"}));
     try std.testing.expectEqual(Command.version, try parse(&.{"--version"}));
     try std.testing.expectEqual(Command.config_init, try parse(&.{ "config", "init" }));
-    for ([_][]const []const u8{ &.{}, &.{ "status", "extra" }, &.{"start"}, &.{"stop"}, &.{"config"}, &.{ "config", "init", "extra" } }) |args|
+    try std.testing.expectEqual(Command.config_validate, try parse(&.{ "config", "validate" }));
+    try std.testing.expectEqual(Command.config_validate_json, try parse(&.{ "config", "validate", "--json" }));
+    for ([_][]const []const u8{ &.{}, &.{ "status", "extra" }, &.{"start"}, &.{"stop"}, &.{"config"}, &.{ "config", "init", "extra" }, &.{ "config", "validate", "--raw" } }) |args|
         try std.testing.expectError(error.InvalidArguments, parse(args));
 }
 
 test "help contains only the canonical public surface" {
     for ([_][]const u8{ " daemon", " service", " setup", " restart", " update", " stop", " start" }) |hidden|
         try std.testing.expect(std.mem.indexOf(u8, help, hidden) == null);
+    try std.testing.expect(std.mem.indexOf(u8, help, " transcribe") != null);
 }
 
 test "canonical usage and invalid presentations are stable" {
