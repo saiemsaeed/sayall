@@ -1,6 +1,7 @@
 mod capture;
 mod config;
 mod control;
+mod desktop;
 mod protocol;
 mod runtime;
 mod session;
@@ -106,6 +107,7 @@ struct Model {
     output_method: Option<OutputMethod>,
     show_timer: bool,
     error: String,
+    success_message: String,
 }
 
 impl Default for Model {
@@ -122,11 +124,58 @@ impl Default for Model {
             output_method: None,
             show_timer: true,
             error: String::new(),
+            success_message: "Copied to clipboard".to_owned(),
         }
     }
 }
 
 impl Model {
+    fn apply_native_terminal(&mut self, snapshot: &session::Snapshot) -> bool {
+        if self.native_generation != Some(snapshot.generation) {
+            self.native_generation = Some(snapshot.generation);
+            self.recording_started = None;
+            self.processing_started = None;
+            self.hide_at = None;
+            self.clipping_until = None;
+            self.error.clear();
+            self.success_message = "Copied to clipboard".to_owned();
+            for value in &mut self.history {
+                *value = 0.0;
+            }
+            self.displayed.fill(0.0);
+        }
+        if snapshot.state == session::State::Idle
+            && matches!(self.state, HudState::Success | HudState::Error)
+            && self
+                .hide_at
+                .is_some_and(|deadline| deadline > Instant::now())
+        {
+            return false;
+        }
+        self.state = match snapshot.state {
+            session::State::Idle => HudState::Idle,
+            session::State::Starting | session::State::Recording => HudState::Recording,
+            session::State::Stopping => HudState::Stopping,
+            session::State::Processing | session::State::Delivering => HudState::Processing,
+            session::State::Success => HudState::Success,
+            session::State::Error | session::State::Cancelled => HudState::Error,
+        };
+        if let Some(message) = &snapshot.message {
+            if snapshot.state == session::State::Success {
+                self.success_message.clone_from(message);
+            } else {
+                self.error.clone_from(message);
+            }
+        }
+        if matches!(
+            snapshot.state,
+            session::State::Success | session::State::Error | session::State::Cancelled
+        ) {
+            self.hide_at = Some(Instant::now() + Duration::from_secs(2));
+        }
+        true
+    }
+
     fn apply_event(&mut self, event: ProtocolEvent) {
         match event.kind {
             EventKind::StateChanged(snapshot) => self.apply_state(&snapshot),
@@ -273,7 +322,7 @@ fn start_native_host() -> io::Result<()> {
     let ownership = runtime::Ownership::acquire(socket_path()?)?;
     let root = runtime::session_root()?;
     let (tx, rx) = mpsc::channel();
-    let controller = session::Controller::spawn(root, session::PreviewDelivery, tx);
+    let controller = session::Controller::spawn(root, desktop::NativeDelivery::new(), tx);
     let socket = ownership.socket.clone();
     let server = match control::Server::bind(&socket, controller.clone()) {
         Ok(server) => server,
@@ -383,44 +432,8 @@ fn install_tick(
                 }
                 UiMessage::Native(snapshot) => {
                     let mut model = model.borrow_mut();
-                    if model.native_generation != Some(snapshot.generation) {
-                        model.native_generation = Some(snapshot.generation);
-                        model.recording_started = None;
-                        model.processing_started = None;
-                        model.hide_at = None;
-                        model.clipping_until = None;
-                        model.error.clear();
-                        for value in &mut model.history {
-                            *value = 0.0;
-                        }
-                        model.displayed.fill(0.0);
-                    }
-                    if snapshot.state == session::State::Idle
-                        && matches!(model.state, HudState::Success | HudState::Error)
-                        && model
-                            .hide_at
-                            .is_some_and(|deadline| deadline > Instant::now())
-                    {
+                    if !model.apply_native_terminal(&snapshot) {
                         continue;
-                    }
-                    model.state = match snapshot.state {
-                        session::State::Idle => HudState::Idle,
-                        session::State::Starting | session::State::Recording => HudState::Recording,
-                        session::State::Stopping => HudState::Stopping,
-                        session::State::Processing | session::State::Delivering => {
-                            HudState::Processing
-                        }
-                        session::State::Success => HudState::Success,
-                        session::State::Error | session::State::Cancelled => HudState::Error,
-                    };
-                    if let Some(message) = snapshot.message {
-                        model.error = message;
-                    }
-                    if matches!(
-                        snapshot.state,
-                        session::State::Success | session::State::Error | session::State::Cancelled
-                    ) {
-                        model.hide_at = Some(Instant::now() + Duration::from_secs(2));
                     }
                     if matches!(
                         snapshot.state,
@@ -548,7 +561,7 @@ fn draw_hud(cr: &cairo::Context, width: i32, height: i32, model: &Model) {
     match model.state {
         HudState::Recording => draw_recording(cr, width, height, model),
         HudState::Stopping | HudState::Processing => draw_processing(cr, width, height, model),
-        HudState::Success => draw_success(cr, width, height),
+        HudState::Success => draw_success(cr, width, height, &model.success_message),
         HudState::Error => draw_center_text(cr, width, height, &model.error, DARK.error),
         HudState::Idle => {}
     }
@@ -639,11 +652,10 @@ fn draw_processing(cr: &cairo::Context, width: f64, height: f64, model: &Model) 
     }
 }
 
-fn draw_success(cr: &cairo::Context, width: f64, height: f64) {
-    const LABEL: &str = "Copied to clipboard";
+fn draw_success(cr: &cairo::Context, width: f64, height: f64, label: &str) {
     select_bold_font(cr, 13.0);
     let text_width = cr
-        .text_extents(LABEL)
+        .text_extents(label)
         .map_or(0.0, |extents| extents.x_advance());
     let gap = cr
         .text_extents("  ")
@@ -662,7 +674,7 @@ fn draw_success(cr: &cairo::Context, width: f64, height: f64) {
     let _ = cr.stroke();
 
     cr.move_to(start_x + check_width + gap, center_y + 4.5);
-    let _ = cr.show_text(LABEL);
+    let _ = cr.show_text(label);
 }
 
 fn draw_center_text(
@@ -869,6 +881,45 @@ mod tests {
         );
         model.apply_event(idle);
         assert_eq!(model.state, HudState::Error);
+    }
+
+    #[test]
+    fn native_success_uses_no_speech_generic_clipboard_and_fallback_labels() {
+        for (generation, message) in [
+            (1, "No speech detected"),
+            (2, "delivery completed"),
+            (3, "delivery completed"),
+            (4, "transcript copied to clipboard"),
+            (5, "typing failed; transcript copied to clipboard"),
+        ] {
+            let mut model = Model::default();
+            model.apply_native_terminal(&session::Snapshot {
+                state: session::State::Success,
+                generation,
+                message: Some(message.to_owned()),
+                ..session::Snapshot::default()
+            });
+            assert_eq!(model.state, HudState::Success);
+            assert_eq!(model.success_message, message);
+            assert!(model.error.is_empty());
+        }
+    }
+
+    #[test]
+    fn native_generation_resets_success_label_to_legacy_fallback() {
+        let mut model = Model::default();
+        model.apply_native_terminal(&session::Snapshot {
+            state: session::State::Success,
+            generation: 1,
+            message: Some("delivery completed".to_owned()),
+            ..session::Snapshot::default()
+        });
+        model.apply_native_terminal(&session::Snapshot {
+            state: session::State::Starting,
+            generation: 2,
+            ..session::Snapshot::default()
+        });
+        assert_eq!(model.success_message, "Copied to clipboard");
     }
 
     #[test]

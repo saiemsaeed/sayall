@@ -22,12 +22,51 @@ impl Default for RecordingConfig {
     }
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Deserialize)]
 #[serde(default)]
 struct Config {
     recording: RecordingConfig,
     stt: Stt,
     llm: Llm,
+    output: Output,
+    notifications: bool,
+}
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            recording: RecordingConfig::default(),
+            stt: Stt::default(),
+            llm: Llm::default(),
+            output: Output::default(),
+            notifications: true,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OutputMethod {
+    Type,
+    Clipboard,
+    Paste,
+}
+#[derive(Clone, Debug)]
+pub struct OutputConfig {
+    pub method: OutputMethod,
+    pub trailing_space: bool,
+}
+#[derive(Deserialize)]
+#[serde(default)]
+struct Output {
+    method: String,
+    trailing_space: bool,
+}
+impl Default for Output {
+    fn default() -> Self {
+        Self {
+            method: "type".into(),
+            trailing_space: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -48,6 +87,8 @@ pub struct ProviderConfig {
 pub struct SessionConfig {
     pub recording: RecordingConfig,
     pub provider: ProviderConfig,
+    pub output: OutputConfig,
+    pub notifications: bool,
 }
 #[derive(Default, Deserialize)]
 #[serde(default)]
@@ -144,6 +185,7 @@ pub fn load() -> io::Result<SessionConfig> {
         "https://api.groq.com/openai/v1/chat/completions",
     );
     let keyterms = load_keywords(parent, cfg.stt.keyterms)?;
+    let method = parse_output_method(&cfg.output.method)?;
     if deepgram_api_key.is_empty()
         || !safe_secret(&deepgram_api_key)
         || !safe_secret(&groq_api_key)
@@ -164,6 +206,11 @@ pub fn load() -> io::Result<SessionConfig> {
     }
     Ok(SessionConfig {
         recording: cfg.recording,
+        output: OutputConfig {
+            method,
+            trailing_space: cfg.output.trailing_space,
+        },
+        notifications: cfg.notifications,
         provider: ProviderConfig {
             deepgram_api_key,
             deepgram_model: model,
@@ -201,6 +248,16 @@ where
 
 fn defaulted(v: String, d: &str) -> String {
     if v.is_empty() { d.into() } else { v }
+}
+fn parse_output_method(value: &str) -> io::Result<OutputMethod> {
+    match value {
+        "type" => Ok(OutputMethod::Type),
+        "clipboard" => Ok(OutputMethod::Clipboard),
+        "paste" => Ok(OutputMethod::Paste),
+        _ => Err(invalid(
+            "output.method must be 'type', 'clipboard', or 'paste'",
+        )),
+    }
 }
 fn safe_secret(v: &str) -> bool {
     v.chars().all(|c| !c.is_whitespace() && !c.is_control())
@@ -302,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn full_config_ignores_unrelated_canonical_fields() {
+    fn full_config_loads_output_fields() {
         let cfg: Config = serde_json::from_str(
             r#"{"stt":{"provider":"deepgram"},"llm":{"enabled":true},"recording":{"max_seconds":5,"min_ms":200,"source":"node"},"output":{"method":"type"}}"#,
         )
@@ -310,6 +367,24 @@ mod tests {
         assert_eq!(cfg.recording.max_seconds, 5);
         assert_eq!(cfg.recording.min_ms, 200);
         assert_eq!(cfg.recording.source, "node");
+        assert_eq!(cfg.output.method, "type");
+        assert!(cfg.output.trailing_space);
+    }
+
+    #[test]
+    fn output_method_validation_accepts_defaults_and_rejects_unknown_values() {
+        let default: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            parse_output_method(&default.output.method).unwrap(),
+            OutputMethod::Type
+        );
+        assert_eq!(parse_output_method("type").unwrap(), OutputMethod::Type);
+        assert_eq!(
+            parse_output_method("clipboard").unwrap(),
+            OutputMethod::Clipboard
+        );
+        assert_eq!(parse_output_method("paste").unwrap(), OutputMethod::Paste);
+        assert!(parse_output_method("other").is_err());
     }
 
     #[test]

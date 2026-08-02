@@ -1,4 +1,4 @@
-use crate::{capture, config, worker};
+use crate::{capture, config, desktop, worker};
 use serde::Serialize;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -44,12 +44,19 @@ impl Default for Snapshot {
 }
 
 pub trait Delivery: Send + 'static {
-    fn deliver(&mut self, text: &str) -> Result<(), String>;
+    fn deliver(
+        &mut self,
+        text: &str,
+        output: &config::OutputConfig,
+    ) -> Result<desktop::DeliveryOutcome, String>;
 }
-pub struct PreviewDelivery;
-impl Delivery for PreviewDelivery {
-    fn deliver(&mut self, _: &str) -> Result<(), String> {
-        Err("native preview delivery is not ready (SAY-45)".into())
+impl Delivery for desktop::NativeDelivery {
+    fn deliver(
+        &mut self,
+        text: &str,
+        output: &config::OutputConfig,
+    ) -> Result<desktop::DeliveryOutcome, String> {
+        self.deliver(text, output)
     }
 }
 
@@ -163,6 +170,8 @@ fn run(
         worker::Worker,
         Instant,
         config::RecordingConfig,
+        config::OutputConfig,
+        bool,
     )> = None;
     let mut terminal_until: Option<Instant> = None;
     let publish = |state, g, started: Option<Instant>, message| {
@@ -180,7 +189,7 @@ fn run(
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Command::Shutdown) => {
-                if let Some((c, w, _, _)) = active.take() {
+                if let Some((c, w, _, _, _, _)) = active.take() {
                     w.cancel();
                     c.cancel();
                 }
@@ -193,7 +202,9 @@ fn run(
                 } else if expected == State::Idle && active.is_none() {
                     generation += 1;
                     publish(State::Starting, generation, None, None);
+                    let mut loaded_notifications = None;
                     let started = config::load().map_err(|e| e.to_string()).and_then(|cfg| {
+                        loaded_notifications = Some(cfg.notifications);
                         let c = capture::Capture::start(&root, generation, &cfg.recording.source)
                             .map_err(|e| e.to_string())?;
                         let (pcm, wav) = c.paths();
@@ -205,16 +216,23 @@ fn run(
                             &cfg.provider,
                             shutdown.clone(),
                         )?;
-                        Ok((c, w, cfg.recording))
+                        Ok((c, w, cfg.recording, cfg.output, cfg.notifications))
                     });
                     match started {
-                        Ok((c, w, cfg)) => {
+                        Ok((c, w, cfg, output, notifications)) => {
                             let now = Instant::now();
-                            active = Some((c, w, now, cfg));
+                            active = Some((c, w, now, cfg, output, notifications));
                             Ok(publish(State::Recording, generation, Some(now), None))
                         }
                         Err(e) => {
                             let msg = format!("capture failed: {e}");
+                            if let Some(enabled) = loaded_notifications {
+                                desktop::notify(
+                                    enabled,
+                                    "SayAll startup error",
+                                    "Speech session could not start; see the SayAll HUD for details",
+                                );
+                            }
                             publish(State::Error, generation, None, Some(msg.clone()));
                             terminal_until = Some(Instant::now() + Duration::from_secs(2));
                             Err(ToggleError::Failed(msg))
@@ -235,9 +253,9 @@ fn run(
                     terminal_until = None;
                     publish(State::Idle, generation, None, None);
                 }
-                if let Some((c, _, started, cfg)) = active.as_mut() {
+                if let Some((c, _, started, cfg, _, _)) = active.as_mut() {
                     if !c.alive().unwrap_or(false) {
-                        let (c, w, _, _) = active.take().unwrap();
+                        let (c, w, _, _, _, notifications) = active.take().unwrap();
                         w.cancel();
                         c.cancel();
                         publish(
@@ -245,6 +263,11 @@ fn run(
                             generation,
                             None,
                             Some("capture process exited early".into()),
+                        );
+                        desktop::notify(
+                            notifications,
+                            "SayAll capture error",
+                            "Audio capture stopped unexpectedly",
                         );
                         terminal_until = Some(Instant::now() + Duration::from_secs(2));
                     } else if started.elapsed() >= Duration::from_secs(cfg.max_seconds as u64) {
@@ -275,6 +298,8 @@ fn finish_active<F>(
         worker::Worker,
         Instant,
         config::RecordingConfig,
+        config::OutputConfig,
+        bool,
     )>,
     generation: u64,
     publish: &F,
@@ -283,9 +308,10 @@ fn finish_active<F>(
 where
     F: Fn(State, u64, Option<Instant>, Option<String>) -> Snapshot,
 {
-    let (capture, worker, started, cfg) = active.take().expect("active capture");
+    let (capture, worker, started, cfg, output, notifications) =
+        active.take().expect("active capture");
     publish(State::Stopping, generation, Some(started), None);
-    let outcome = (|| -> Result<(), String> {
+    let outcome = (|| -> Result<Option<desktop::DeliveryOutcome>, String> {
         let wav = capture
             .stop()
             .map_err(|e| format!("capture stop failed: {e}"))?;
@@ -303,37 +329,56 @@ where
             return Err("no audio signal detected".into());
         }
         publish(State::Processing, generation, Some(started), None);
-        deliver_outcome(worker.finish(Duration::from_secs(45))?, delivery, || {
-            publish(State::Delivering, generation, Some(started), None)
-        })
+        deliver_outcome(
+            worker.finish(Duration::from_secs(45))?,
+            delivery,
+            &output,
+            || publish(State::Delivering, generation, Some(started), None),
+        )
     })();
     match outcome {
-        Ok(()) => Ok(publish(
+        Ok(delivery_outcome) => Ok(publish(
             State::Success,
             generation,
             None,
-            Some("delivery completed".into()),
+            Some(terminal_message(delivery_outcome).into()),
         )),
         Err(message) => {
+            desktop::notify(
+                notifications,
+                "SayAll error",
+                "Speech session failed; see the SayAll HUD for details",
+            );
             let s = publish(State::Error, generation, None, Some(message.clone()));
             let _ = s;
             Err(ToggleError::Failed(message))
         }
     }
 }
+fn terminal_message(outcome: Option<desktop::DeliveryOutcome>) -> &'static str {
+    match outcome {
+        Some(desktop::DeliveryOutcome::ClipboardFallback) => {
+            "typing failed; transcript copied to clipboard"
+        }
+        Some(desktop::DeliveryOutcome::Clipboard) => "transcript copied to clipboard",
+        None => "No speech detected",
+        _ => "delivery completed",
+    }
+}
 fn deliver_outcome<F>(
     outcome: worker::Outcome,
     delivery: &mut dyn Delivery,
+    output: &config::OutputConfig,
     delivering: F,
-) -> Result<(), String>
+) -> Result<Option<desktop::DeliveryOutcome>, String>
 where
     F: FnOnce() -> Snapshot,
 {
     match outcome {
-        worker::Outcome::NoSpeech => Ok(()),
+        worker::Outcome::NoSpeech => Ok(None),
         worker::Outcome::Transcript(text) => {
             delivering();
-            delivery.deliver(&text)
+            delivery.deliver(&text, output).map(Some)
         }
     }
 }
@@ -353,20 +398,36 @@ mod tests {
 
     struct CountingDelivery(usize);
     impl Delivery for CountingDelivery {
-        fn deliver(&mut self, _: &str) -> Result<(), String> {
+        fn deliver(
+            &mut self,
+            _: &str,
+            _: &config::OutputConfig,
+        ) -> Result<desktop::DeliveryOutcome, String> {
             self.0 += 1;
-            Ok(())
+            Ok(desktop::DeliveryOutcome::Typed)
         }
     }
 
     #[test]
     fn no_speech_bypasses_delivery_and_transcript_delivers_once() {
         let mut delivery = CountingDelivery(0);
-        deliver_outcome(worker::Outcome::NoSpeech, &mut delivery, Snapshot::default).unwrap();
+        let output = config::OutputConfig {
+            method: config::OutputMethod::Type,
+            trailing_space: false,
+        };
+        deliver_outcome(
+            worker::Outcome::NoSpeech,
+            &mut delivery,
+            &output,
+            Snapshot::default,
+        )
+        .unwrap();
         assert_eq!(delivery.0, 0);
+        assert_eq!(terminal_message(None), "No speech detected");
         deliver_outcome(
             worker::Outcome::Transcript("hello".into()),
             &mut delivery,
+            &output,
             Snapshot::default,
         )
         .unwrap();
