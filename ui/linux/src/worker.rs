@@ -12,6 +12,104 @@ use std::time::{Duration, Instant};
 
 const CONTROL_MAX: usize = 64 * 1024;
 const RESULT_MAX: usize = 1024 * 1024;
+const SUPERVISED_MAX: usize = 4097;
+
+pub struct SupervisedOutput {
+    pub status: ExitStatus,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+/// Run a small, non-interactive helper with the same containment policy as the
+/// processing worker. Callers must run this off the GTK thread.
+pub fn supervised(
+    path: &Path,
+    args: &[&str],
+    env: &[(&str, &std::ffi::OsStr)],
+    timeout: Duration,
+) -> Result<SupervisedOutput, String> {
+    let parent = unsafe { libc::getpid() };
+    let mut cmd = Command::new(path);
+    cmd.args(args)
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::setpgid(0, 0) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            #[cfg(target_os = "linux")]
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if libc::getppid() != parent {
+                libc::raise(libc::SIGKILL);
+            }
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn().map_err(|_| "helper could not be started")?;
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let (output_tx, output_rx) = mpsc::channel();
+    let read = |index, mut stream: Box<dyn Read + Send>| {
+        let output_tx = output_tx.clone();
+        std::thread::spawn(move || {
+            let mut out = Vec::new();
+            let _ = stream
+                .by_ref()
+                .take(SUPERVISED_MAX as u64)
+                .read_to_end(&mut out);
+            let _ = output_tx.send((index, out));
+        })
+    };
+    let out_thread = read(0, Box::new(stdout));
+    let err_thread = read(1, Box::new(stderr));
+    drop(output_tx);
+    let process_group = child.id() as i32;
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            _ => {
+                unsafe { libc::kill(-process_group, libc::SIGKILL) };
+                let _ = child.wait();
+                let _ = out_thread.join();
+                let _ = err_thread.join();
+                return Err("helper timed out or could not be reaped".into());
+            }
+        }
+    };
+    let mut outputs = [Vec::new(), Vec::new()];
+    for _ in 0..2 {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let Ok((index, output)) = output_rx.recv_timeout(remaining) else {
+            unsafe { libc::kill(-process_group, libc::SIGKILL) };
+            let _ = out_thread.join();
+            let _ = err_thread.join();
+            return Err("helper output timed out".into());
+        };
+        outputs[index] = output;
+    }
+    let _ = out_thread.join();
+    let _ = err_thread.join();
+    let [stdout, stderr] = outputs;
+    if stdout.len() >= SUPERVISED_MAX || stderr.len() >= SUPERVISED_MAX {
+        unsafe { libc::kill(-process_group, libc::SIGKILL) };
+        return Err("helper output exceeded limit".into());
+    }
+    Ok(SupervisedOutput {
+        status,
+        stdout,
+        stderr,
+    })
+}
 
 #[derive(Debug, PartialEq)]
 pub enum Outcome {
@@ -722,6 +820,22 @@ mod tests {
 
     fn shutdown() -> Arc<AtomicBool> {
         Arc::new(AtomicBool::new(false))
+    }
+
+    #[test]
+    fn supervised_bounds_pipe_inheriting_descendants() {
+        let fixture = Fixture::new("/bin/sleep 30 &\nexit 0");
+        let started = Instant::now();
+        assert!(supervised(&fixture.worker, &[], &[], Duration::from_millis(100)).is_err());
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn supervised_kills_descendants_after_oversized_output() {
+        let fixture = Fixture::new("/bin/sleep 30 &\n/usr/bin/yes x | /usr/bin/head -c 5000");
+        let started = Instant::now();
+        assert!(supervised(&fixture.worker, &[], &[], Duration::from_secs(1)).is_err());
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     fn probe() -> String {

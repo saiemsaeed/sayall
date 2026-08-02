@@ -1,3 +1,4 @@
+mod autostart;
 mod capture;
 mod config;
 mod control;
@@ -5,16 +6,18 @@ mod desktop;
 mod protocol;
 mod runtime;
 mod session;
+mod settings;
 mod worker;
 
 use gtk::cairo;
+use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 use gtk::{Application, ApplicationWindow, DrawingArea};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use protocol::{EventKind, OutputMethod, ProtocolEvent, State, StateSnapshot};
 use serde_json::json;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::env;
 use std::io::{self, BufReader, Write};
@@ -275,12 +278,7 @@ fn main() -> glib::ExitCode {
     let native = env::args_os()
         .skip(1)
         .any(|arg| arg == "--native-host-preview");
-    if native {
-        if let Err(error) = start_native_host() {
-            eprintln!("sayall-hud: native host preview unavailable: {error}");
-            return glib::ExitCode::FAILURE;
-        }
-    }
+    let autostart = env::args_os().skip(1).any(|arg| arg == "--autostart");
     let application_id = if native {
         "dev.sayall.Hud.NativePreview"
     } else {
@@ -289,9 +287,38 @@ fn main() -> glib::ExitCode {
     let app = Application::builder()
         .application_id(application_id)
         .build();
-    app.connect_activate(build_ui);
+    if native {
+        let settings_action = gio::SimpleAction::new("settings", None);
+        let settings_app = app.clone();
+        settings_action.connect_activate(move |_, _| settings::show(&settings_app));
+        app.add_action(&settings_action);
+    }
+    let built = Rc::new(Cell::new(false));
+    let suppress_settings_once = Rc::new(Cell::new(autostart));
+    app.connect_activate(move |app| {
+        if !built.replace(true) {
+            build_ui(app);
+        }
+        let silent = suppress_settings_once.replace(false);
+        if native && !silent {
+            settings::show(app);
+        }
+    });
     app.connect_shutdown(|_| shutdown_native_host());
     let exit = if native {
+        if let Err(error) = app.register(None::<&gio::Cancellable>) {
+            eprintln!("sayall-hud: application registration failed: {error}");
+            return glib::ExitCode::FAILURE;
+        }
+        if app.is_remote() && autostart {
+            return glib::ExitCode::SUCCESS;
+        }
+        if !app.is_remote() {
+            if let Err(error) = start_native_host() {
+                eprintln!("sayall-hud: native host preview unavailable: {error}");
+                return glib::ExitCode::FAILURE;
+            }
+        }
         let program = env::args_os()
             .next()
             .map(|arg| arg.to_string_lossy().into_owned())

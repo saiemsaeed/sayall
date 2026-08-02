@@ -21,6 +21,15 @@ const FileContents = struct {
     keywords: []const []const u8 = &.{},
 };
 
+pub fn parseFileContents(gpa: Allocator, bytes: []const u8) ![]const []const u8 {
+    const contents = try std.json.parseFromSliceLeaky(FileContents, gpa, bytes, .{
+        .allocate = .alloc_always,
+    });
+    if (contents.version != 1) return error.UnsupportedKeywordFileVersion;
+    try validate(contents.keywords);
+    return contents.keywords;
+}
+
 pub const Store = struct {
     path: []const u8,
 
@@ -128,12 +137,7 @@ pub const Store = struct {
             error.FileNotFound => return null,
             else => return err,
         };
-        const contents = try std.json.parseFromSliceLeaky(FileContents, gpa, bytes, .{
-            .allocate = .alloc_always,
-        });
-        if (contents.version != 1) return error.UnsupportedKeywordFileVersion;
-        try validate(contents.keywords);
-        return contents.keywords;
+        return try parseFileContents(gpa, bytes);
     }
 
     fn atomicWrite(self: Store, gpa: Allocator, io: Io, values: []const []const u8) !void {
