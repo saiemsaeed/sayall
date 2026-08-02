@@ -132,9 +132,9 @@ CLI automatically. The private worker is never linked into `PATH` or updated
 independently. Nested macOS executables are signed before the outer app and the
 complete bundle is notarized and stapled.
 
-## Linux native-host preview settings (SAY-45)
+## Linux native-host migration settings (SAY-45)
 
-The explicit `sayall-hud --native-host-preview` path owns a small GTK settings
+The temporary `sayall-hud --native-host-preview` implementation path owns a small GTK settings
 window. Canonical initialization and read-only validation remain Zig-owned and
 are requested through bounded private `sayall-process` operations; the UI does
 not execute or parse the public `sayall` CLI and never displays credentials.
@@ -145,9 +145,11 @@ is forwarded through GApplication and opens the singleton Settings window. It re
 unrelated entry and refuses enablement while legacy `sayall.service` is active
 or enabled, preventing two session owners.
 
-This is preview-only: packages do not enable it, legacy units and the default
-Zig owner remain, and the default-host cutover is deferred to SAY-48. The
-explicit Rust native-host preview offers an interactive Settings action to bind
+This flag is migration scaffolding, not a supported product mode. The 0.2.0
+cutover removes the flag and preview wording and makes the Rust host the only
+Linux session owner; packages will not ship selectable legacy/native modes.
+Until that atomic cutover in SAY-48, packages do not enable this path and the
+default Zig owner remains. The explicit Rust migration path offers an interactive Settings action to bind
 an XDG GlobalShortcuts portal session. Autostart never performs the first bind;
 even after the private consent marker exists, restoration is reported as needing
 setup because ashpd/portal behavior cannot guarantee a prompt-free bind. Session

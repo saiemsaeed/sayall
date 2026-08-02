@@ -17,6 +17,8 @@ depends=(
   'pipewire-audio'
   'wl-clipboard'
   'wtype'
+  'xdotool'
+  'xsel'
 )
 makedepends=('cargo' 'pkgconf' 'python' 'zig')
 conflicts=('sayall-bin' 'sayall-src' 'sayall-git')
