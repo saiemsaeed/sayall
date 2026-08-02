@@ -2,7 +2,7 @@ const std = @import("std");
 const darwin = @import("darwin.zig");
 const windows = @import("windows.zig");
 
-fn expectUnsupported(comptime runtime: type) !void {
+fn expectUnsupported(comptime runtime: type, comptime config_supported: bool) !void {
     var env = std.process.Environ.Map.init(std.testing.allocator);
     defer env.deinit();
 
@@ -23,7 +23,14 @@ fn expectUnsupported(comptime runtime: type) !void {
         error.UnsupportedPlatform,
         runtime.sendNotification(std.testing.io, "title", "body"),
     );
-    try std.testing.expectError(error.UnsupportedPlatform, runtime.configFile(std.testing.allocator, &env));
+    if (config_supported) {
+        try env.put("HOME", "/tmp/home");
+        const path = (try runtime.configFile(std.testing.allocator, &env)).?;
+        defer std.testing.allocator.free(path);
+        try std.testing.expectEqualStrings("/tmp/home/.config/sayall/config.json", path);
+    } else {
+        try std.testing.expectError(error.UnsupportedPlatform, runtime.configFile(std.testing.allocator, &env));
+    }
     try std.testing.expectError(error.UnsupportedPlatform, runtime.keywordsFile(std.testing.allocator, &env));
     try std.testing.expectError(error.UnsupportedPlatform, runtime.metricsFile(std.testing.allocator, &env));
     try std.testing.expectError(error.UnsupportedPlatform, runtime.runtimeRoot(&env));
@@ -48,9 +55,9 @@ fn expectUnsupported(comptime runtime: type) !void {
 }
 
 test "Darwin runtime operations fail explicitly" {
-    try expectUnsupported(darwin);
+    try expectUnsupported(darwin, true);
 }
 
 test "Windows runtime operations fail explicitly" {
-    try expectUnsupported(windows);
+    try expectUnsupported(windows, false);
 }
