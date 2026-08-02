@@ -2,6 +2,33 @@ import Darwin
 import Foundation
 import SayAllControl
 
+enum ControlRoute: Equatable {
+    case v1(ControlMethod)
+    case v2(HostControlMethod)
+    case invalid
+}
+
+func decodeControlRoute(_ data: Data) -> ControlRoute {
+    guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let version = object["version"] as? Int else { return .invalid }
+    if version == 1, let request = try? JSONDecoder().decode(ControlRequest.self, from: data) {
+        return .v1(request.method)
+    }
+    if version == 2, let request = try? JSONDecoder().decode(HostControlRequest.self, from: data) {
+        return .v2(request.method)
+    }
+    return .invalid
+}
+
+@MainActor
+func dispatchControlRoute<T>(_ route: ControlRoute, handler: @MainActor (ControlMethod) -> T) -> T? {
+    switch route {
+    case .v1(let method): return handler(method)
+    case .v2(let method): return handler(method == .status ? .status : .toggle)
+    case .invalid: return nil
+    }
+}
+
 /// A same-login-session endpoint. Directory and socket modes plus getpeereid
 /// restrict control to this UID; processes already running as the user are trusted.
 final class ControlServer: @unchecked Sendable {
@@ -11,7 +38,8 @@ final class ControlServer: @unchecked Sendable {
     private var sourceStopped: DispatchSemaphore?
     private var ownsSocket = false
 
-    func start(handler: @escaping @MainActor (ControlMethod) -> ControlResponse) throws {
+    func start(state: @escaping @MainActor () -> HostControlState,
+               handler: @escaping @MainActor (ControlMethod) -> ControlResponse) throws {
         let directory = ControlSocket.directoryURL
         if FileManager.default.fileExists(atPath: directory.path) {
             var information = stat()
@@ -67,7 +95,7 @@ final class ControlServer: @unchecked Sendable {
             keepDescriptor = true
             let stopped = DispatchSemaphore(value: 0)
             let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
-            source.setEventHandler { [weak self] in self?.accept(on: fd, handler: handler) }
+            source.setEventHandler { [weak self] in self?.accept(on: fd, state: state, handler: handler) }
             source.setCancelHandler { close(fd); stopped.signal() }
             sourceStopped = stopped
             self.source = source
@@ -78,7 +106,8 @@ final class ControlServer: @unchecked Sendable {
         }
     }
 
-    private func accept(on listener: Int32, handler: @escaping @MainActor (ControlMethod) -> ControlResponse) {
+    private func accept(on listener: Int32, state: @escaping @MainActor () -> HostControlState,
+                        handler: @escaping @MainActor (ControlMethod) -> ControlResponse) {
         let client = Darwin.accept(listener, nil, nil)
         guard client >= 0 else { return }
         queue.async {
@@ -91,17 +120,51 @@ final class ControlServer: @unchecked Sendable {
             setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noPipe, socklen_t(MemoryLayout<Int32>.size))
             let deadline = ControlSocket.deadline(afterMilliseconds: 1_000)
             guard let line = try? ControlSocket.readLine(from: client, deadline: deadline),
-                  let request = try? JSONDecoder().decode(ControlRequest.self, from: line),
-                  request.version == 1 else { close(client); return }
-            Task { @MainActor in
-                let response = handler(request.method)
-                guard var output = try? JSONEncoder().encode(response) else { close(client); return }
-                output.append(0x0a)
-                self.queue.async {
-                    try? ControlSocket.writeAll(output, to: client, deadline: deadline)
+                  let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                  let requestVersion = object["version"] as? Int else { close(client); return }
+            let route = decodeControlRoute(line)
+            switch route {
+            case .v2:
+                Task { @MainActor in
+                    guard let legacy = dispatchControlRoute(route, handler: handler) else { close(client); return }
+                    let state = HostControlState(rawValue: legacy.state) ?? .error
+                    let response = HostControlResponse(ok: legacy.ok, state: state,
+                        error: legacy.ok ? nil : hostV2Failure(legacy.error ?? "Request failed"))
+                    self.writeV2(response, to: client, deadline: deadline)
+                }
+            case .v1:
+                Task { @MainActor in
+                    guard let response = dispatchControlRoute(route, handler: handler) else { close(client); return }
+                    guard let output = try? ControlSocket.encodeFrame(response) else { close(client); return }
+                    self.queue.async {
+                        try? ControlSocket.writeAll(output, to: client, deadline: deadline)
+                        close(client)
+                    }
+                }
+            case .invalid:
+                if requestVersion == 2 {
+                    Task { @MainActor in
+                        self.writeV2(.init(ok: false, state: state(),
+                            error: .init(code: "invalid_request", message: "Malformed request")), to: client, deadline: deadline)
+                    }
+                } else if requestVersion != 1 {
+                    Task { @MainActor in
+                        self.writeV2(.init(ok: false, state: state(),
+                            error: .init(code: "incompatible_version", message: "Unsupported control protocol version")),
+                            to: client, deadline: deadline)
+                    }
+                } else {
                     close(client)
                 }
             }
+        }
+    }
+
+    private func writeV2(_ response: HostControlResponse, to client: Int32, deadline: UInt64) {
+        guard let output = try? ControlSocket.encodeFrame(response) else { close(client); return }
+        queue.async {
+            try? ControlSocket.writeAll(output, to: client, deadline: deadline)
+            close(client)
         }
     }
 
@@ -119,4 +182,14 @@ final class ControlServer: @unchecked Sendable {
         if lockDescriptor >= 0 { flock(lockDescriptor, LOCK_UN); close(lockDescriptor); lockDescriptor = -1 }
     }
     deinit { stop() }
+}
+
+func hostV2Failure(_ legacy: String) -> HostControlError {
+    if legacy.hasPrefix("busy: ") {
+        return .init(code: "busy", message: String(legacy.dropFirst("busy: ".count)))
+    }
+    if legacy.hasPrefix("error: ") {
+        return .init(code: "unavailable", message: String(legacy.dropFirst("error: ".count)))
+    }
+    return .init(code: legacy.hasPrefix("busy") ? "busy" : "unavailable", message: legacy)
 }

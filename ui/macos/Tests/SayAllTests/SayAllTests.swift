@@ -52,6 +52,18 @@ final class CLIFoundationTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(ControlResponse.self, from: JSONEncoder().encode(response)), response)
     }
 
+    func testV2ControlCodecAcceptsAdditionsAndRejectsUnknownClosedState() throws {
+        let additive = Data(#"{"version":2,"ok":true,"state":"idle","future":true}"#.utf8)
+        let response = try JSONDecoder().decode(HostControlResponse.self, from: additive)
+        try response.validate()
+        XCTAssertEqual(response.state, .idle)
+        XCTAssertThrowsError(try JSONDecoder().decode(HostControlResponse.self,
+            from: Data(#"{"version":2,"ok":true,"state":"future"}"#.utf8)))
+        let invalid = try JSONDecoder().decode(HostControlResponse.self,
+            from: Data(#"{"version":2,"ok":false,"state":"idle"}"#.utf8))
+        XCTAssertThrowsError(try invalid.validate())
+    }
+
     func testControlFrameUsesOneAbsoluteDeadline() throws {
         var descriptors = [Int32](repeating: -1, count: 2)
         XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors), 0)
@@ -75,6 +87,52 @@ final class CLIFoundationTests: XCTestCase {
         let elapsed = Date().timeIntervalSince(started)
         writerFinished.wait()
         XCTAssertLessThan(elapsed, 0.3)
+    }
+
+    func testControlFrameInclusiveNewlineBoundaries() throws {
+        func read(_ payloadBytes: Int) throws -> Data {
+            var descriptors = [Int32](repeating: -1, count: 2)
+            XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors), 0)
+            defer { close(descriptors[0]); close(descriptors[1]) }
+            var frame = Data(repeating: 0x61, count: payloadBytes); frame.append(0x0a)
+            let writer = descriptors[1]
+            DispatchQueue.global().async {
+                try? ControlSocket.writeAll(frame, to: writer, deadline: ControlSocket.deadline(afterMilliseconds: 1_000))
+            }
+            return try ControlSocket.readLine(from: descriptors[0], deadline: ControlSocket.deadline(afterMilliseconds: 1_000))
+        }
+        XCTAssertEqual(try read(ControlSocket.maximumFrameBytes - 1).count, ControlSocket.maximumFrameBytes - 1)
+        XCTAssertThrowsError(try read(ControlSocket.maximumFrameBytes))
+
+        XCTAssertLessThanOrEqual(try ControlSocket.encodeFrame(HostControlResponse(ok: false, state: .error,
+            error: .init(code: "error", message: "failed"))).count, ControlSocket.maximumFrameBytes)
+        XCTAssertThrowsError(try ControlSocket.encodeFrame(HostControlResponse(ok: false, state: .error,
+            error: .init(code: "error", message: String(repeating: "x", count: ControlSocket.maximumFrameBytes)))))
+    }
+
+    func testV2FailureBoundaryRemovesOnlyExactLegacyPrefix() {
+        XCTAssertEqual(hostV2Failure("busy: SayAll is processing"),
+            HostControlError(code: "busy", message: "SayAll is processing"))
+        XCTAssertEqual(hostV2Failure("error: Failed"), HostControlError(code: "unavailable", message: "Failed"))
+        XCTAssertEqual(hostV2Failure("busywork"), HostControlError(code: "busy", message: "busywork"))
+    }
+
+    @MainActor
+    func testControlRouteDispatchesCompatibleEnvelopesExactlyOnce() throws {
+        let v1 = try JSONEncoder().encode(ControlRequest(method: .status))
+        let v2 = try JSONEncoder().encode(HostControlRequest(version: 2, method: .toggle))
+        XCTAssertEqual(decodeControlRoute(v1), .v1(.status))
+        XCTAssertEqual(decodeControlRoute(v2), .v2(.toggle))
+
+        var calls: [ControlMethod] = []
+        _ = dispatchControlRoute(decodeControlRoute(v1)) { calls.append($0) }
+        _ = dispatchControlRoute(decodeControlRoute(v2)) { calls.append($0) }
+        XCTAssertEqual(calls, [.status, .toggle])
+
+        _ = dispatchControlRoute(decodeControlRoute(Data("{broken".utf8))) { calls.append($0) }
+        _ = dispatchControlRoute(decodeControlRoute(Data("{\"version\":3,\"method\":\"toggle\"}".utf8))) { calls.append($0) }
+        _ = dispatchControlRoute(decodeControlRoute(Data("{\"version\":2,\"method\":\"future\"}".utf8))) { calls.append($0) }
+        XCTAssertEqual(calls, [.status, .toggle])
     }
 }
 
@@ -601,18 +659,6 @@ final class ProcessingOwnershipTests: XCTestCase {
 }
 
 final class SharedBackendContractTests: XCTestCase {
-    private struct HostRequest: Decodable {
-        enum Method: String, Decodable { case status, toggle }
-        let version: Int
-        let method: Method
-    }
-    private struct HostResponse: Decodable {
-        struct Failure: Decodable { let code: String; let message: String }
-        let version: Int
-        let ok: Bool
-        let state: String
-        let error: Failure?
-    }
     private struct WorkerReady: Decodable {
         let version: Int
         let event: String
@@ -652,19 +698,19 @@ final class SharedBackendContractTests: XCTestCase {
 
     func testFutureUnifiedHostFixturesAreLanguageNeutral() throws {
         let decoder = JSONDecoder()
-        let status = try decoder.decode(HostRequest.self, from: fixture("host-status-request"))
+        let status = try decoder.decode(HostControlRequest.self, from: fixture("host-status-request"))
         XCTAssertEqual(status.version, 2)
         XCTAssertEqual(status.method, .status)
-        XCTAssertEqual(try decoder.decode(HostRequest.self, from: fixture("host-toggle-request")).method, .toggle)
+        XCTAssertEqual(try decoder.decode(HostControlRequest.self, from: fixture("host-toggle-request")).method, .toggle)
 
-        let idle = try decoder.decode(HostResponse.self, from: fixture("host-status-response"))
+        let idle = try decoder.decode(HostControlResponse.self, from: fixture("host-status-response"))
         XCTAssertTrue(idle.ok)
-        XCTAssertEqual(idle.state, "idle")
+        XCTAssertEqual(idle.state, .idle)
         XCTAssertNil(idle.error)
 
-        let busy = try decoder.decode(HostResponse.self, from: fixture("host-busy-response"))
+        let busy = try decoder.decode(HostControlResponse.self, from: fixture("host-busy-response"))
         XCTAssertFalse(busy.ok)
-        XCTAssertEqual(busy.state, "processing")
+        XCTAssertEqual(busy.state, .processing)
         XCTAssertEqual(busy.error?.code, "busy")
         XCTAssertEqual(busy.error?.message, "SayAll is processing")
     }
