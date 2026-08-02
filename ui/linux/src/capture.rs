@@ -11,6 +11,7 @@ pub struct Capture {
     child: Child,
     dir: PathBuf,
     pcm: PathBuf,
+    wav: PathBuf,
     cleanup: bool,
 }
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -47,6 +48,15 @@ impl Capture {
             .create_new(true)
             .mode(0o600)
             .open(&pcm)?;
+        // The stream worker validates both distinct files before recording has
+        // produced samples.  Create the final inode now; stop() fills it in.
+        let wav = dir.join("audio.wav");
+        let mut wav_file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&wav)?;
+        write_wav(&mut wav_file, &[])?;
         let program = program?;
         let allowed: Vec<_> = ["XDG_RUNTIME_DIR", "PIPEWIRE_REMOTE"]
             .into_iter()
@@ -93,8 +103,12 @@ impl Capture {
             child,
             dir,
             pcm,
+            wav,
             cleanup: true,
         })
+    }
+    pub fn paths(&self) -> (&Path, &Path) {
+        (&self.pcm, &self.wav)
     }
     pub fn alive(&mut self) -> io::Result<bool> {
         Ok(self.child.try_wait()?.is_none())
@@ -107,9 +121,9 @@ impl Capture {
         if !status.success() {
             return Err(io::Error::other(format!("pw-record exited with {status}")));
         }
-        let wav = self.finish_wav()?;
+        self.finish_wav()?;
         self.cleanup = false;
-        Ok(wav)
+        Ok(self.wav.clone())
     }
     pub fn cancel(mut self) {
         let _ = self.terminate(Duration::from_millis(500));
@@ -148,7 +162,7 @@ impl Capture {
         }
         None
     }
-    fn finish_wav(&mut self) -> io::Result<PathBuf> {
+    fn finish_wav(&mut self) -> io::Result<()> {
         let mut pcm = Vec::new();
         File::open(&self.pcm)?.read_to_end(&mut pcm)?;
         if pcm.len() % 2 != 0 {
@@ -157,15 +171,15 @@ impl Capture {
                 "invalid s16 PCM",
             ));
         }
-        let wav = self.dir.join("audio.wav");
         let mut out = OpenOptions::new()
             .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&wav)?;
+            .truncate(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&self.wav)?;
         write_wav(&mut out, &pcm)?;
+        out.sync_all()?;
         fs::remove_file(&self.pcm)?;
-        Ok(wav)
+        Ok(())
     }
 }
 impl Drop for Capture {
