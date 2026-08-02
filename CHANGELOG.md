@@ -5,8 +5,28 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-02
+
+### Added
+
+- Added one cross-platform Zig CLI with consistent `version`, `status`,
+  `toggle`, file transcription, configuration initialization and validation,
+  diagnostics, and native package update operations. The public interface has
+  no start, stop, or legacy-daemon commands.
+- Added versioned, bounded private protocols for native-host control and Zig
+  processing, with same-user endpoint protection, worker compatibility checks,
+  supervised streaming, and exactly one REST fallback.
+- Added native Linux settings, autostart and shortcut controls, desktop error
+  notifications, X11 and Wayland delivery, and opt-in desktop-portal shortcuts.
+- Added a complete signed macOS product containing the native app, shared CLI,
+  and private worker, with DMG, menu CLI installation, and Homebrew Cask
+  delivery paths.
+
 ### Changed
 
+- Moved platform-neutral provider configuration, audio validation, Deepgram
+  streaming and REST transcription, and optional Groq cleanup into one Zig
+  processing core used by both native applications.
 - Replaced the split Linux Zig daemon and Rust HUD runtime with one native Rust
   session host controlled by the shared Zig CLI and backed by the private Zig
   processing worker. Linux now installs one package-managed user service, with
@@ -17,6 +37,17 @@ follows [Semantic Versioning](https://semver.org/).
   the public CLI and application, private processing worker, native-host service,
   desktop launcher, and application icon. The CLI, host, and worker versions are
   validated together, including dynamically versioned `sayall-git` builds.
+- Release publication now binds protected macOS and Linux approvals to exact
+  signed/notarized DMG and Linux manifest digests after physical qualification.
+
+### Fixed
+
+- Hardened Linux migration ordering, stale endpoint ownership, worker failure
+  recovery, and fail-closed retirement of the old daemon service.
+- Accepted Arch's trusted root-owned `/usr/bin/pw-record` symlink while still
+  rejecting writable or escaping capture executables.
+- Made private-worker permission tests portable across physical Arch kernels
+  and filesystems.
 
 ## [0.1.8] - 2026-08-01
 
@@ -198,7 +229,8 @@ Initial release, tested and supported on x86-64 Arch Linux with Omarchy.
 - Persistent privacy-safe transcription metrics and microphone diagnostics.
 - systemd user services and Hyprland hotkey integration.
 
-[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/saiemsaeed/sayall/compare/v0.1.8...v0.2.0
 [0.1.8]: https://github.com/saiemsaeed/sayall/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/saiemsaeed/sayall/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/saiemsaeed/sayall/compare/v0.1.5...v0.1.6
