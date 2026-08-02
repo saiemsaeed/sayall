@@ -13,7 +13,6 @@ const ipc = @import("ipc.zig");
 const metrics = @import("metrics.zig");
 const paths = @import("paths.zig");
 const platform = @import("platform.zig");
-const daemon = @import("daemon.zig");
 const events = @import("events.zig");
 const recorder = @import("recorder.zig");
 const protocol = @import("protocol.zig");
@@ -72,7 +71,7 @@ fn run(init: std.process.Init) !u8 {
             platform_items[platform_len] = product.environmentDiagnostic(env) catch |err| .{ .status = .fail, .label = "Environment", .detail = @errorName(err) };
             platform_len += 1;
             const loaded = if (cli_doctor.configPathSafe(arena, io, env)) config.loadReadOnly(arena, io, env) catch null else null;
-            const platform_diagnostics = product.diagnostics(arena, io, if (loaded) |cfg| cfg.notifications else null, if (loaded) |cfg| cfg.output.method else null) catch |err| {
+            const platform_diagnostics = product.diagnostics(arena, io, env, if (loaded) |cfg| cfg.notifications else null, if (loaded) |cfg| cfg.output.method else null) catch |err| {
                 platform_items[platform_len] = .{ .status = .fail, .label = "Platform diagnostics", .detail = @errorName(err) };
                 platform_len += 1;
                 return cli_doctor.run(arena, io, env, doctor_host.adapter(), build_options.version, command == .doctor_json, platform_items[0..platform_len]);
@@ -104,29 +103,6 @@ fn run(init: std.process.Init) !u8 {
         }
     }
 
-    if (std.mem.eql(u8, cmd, "daemon") or std.mem.eql(u8, cmd, "__service")) {
-        if (argv.len > 3) return invalidArguments("daemon");
-        const verbose = if (argv.len == 3) flag(std.mem.span(argv[2]), "--verbose", "-v") else false;
-        if (argv.len == 3 and !verbose) return invalidArguments("daemon");
-        var cfg = config.load(arena, io, env) catch |err| {
-            std.debug.print("sayall: cannot load configuration: {s}\n", .{@errorName(err)});
-            return 78; // EX_CONFIG; systemd is configured not to restart this.
-        };
-        if (verbose) cfg.verbose = true;
-        if (cfg.stt.api_key.len == 0) {
-            std.debug.print("sayall: error: no STT API key — set DEEPGRAM_API_KEY or stt.api_key in ~/.config/sayall/config.json\n", .{});
-            return 78;
-        }
-        if (cfg.llm.enabled and cfg.llm.api_key.len == 0) {
-            std.debug.print("sayall: warning: no LLM API key (GROQ_API_KEY) — cleanup pass disabled\n", .{});
-            cfg.llm.enabled = false;
-        }
-        const runtime = try paths.Runtime.discover(arena, env);
-        const metrics_path = try paths.PersistentState.metrics(arena, env);
-        try daemon.run(gpa, io, &cfg, runtime, metrics_path);
-        return 0;
-    }
-
     if (std.mem.eql(u8, cmd, "restart")) {
         if (argv.len != 2) return invalidArguments("restart");
         switch (product.restart(io) catch |err| return productError("restart", err)) {
@@ -149,14 +125,14 @@ fn run(init: std.process.Init) !u8 {
         if (argv.len != 2) return invalidArguments("setup");
         const result = product.setup(arena, io, env, reportShortcutResult) catch |err| return productError("setup", err);
         if (!result.services_ok) {
-            std.debug.print("sayall: could not configure the systemd user services\n", .{});
+            std.debug.print("sayall: could not configure the systemd user host service\n", .{});
             return 1;
         }
         if (!result.shortcut_ok) {
-            std.debug.print("sayall: services were enabled and restarted, but shortcut setup is incomplete; resolve the error above and retry 'sayall setup'.\n", .{});
+            std.debug.print("sayall: the host service was enabled and restarted, but shortcut setup is incomplete; resolve the error above and retry 'sayall setup'.\n", .{});
             return 1;
         }
-        try printLine(io, "SayAll services enabled and restarted.");
+        try printLine(io, "SayAll host service enabled and restarted.");
         return 0;
     }
 
@@ -186,19 +162,19 @@ fn run(init: std.process.Init) !u8 {
         }
         switch (product.finishUpdate(arena, io, env, package) catch |err| return productError("update", err)) {
             .package_failed => {
-                std.debug.print("sayall: package update failed; services were not restarted\n", .{});
+                std.debug.print("sayall: package update failed; the host service was not restarted\n", .{});
                 return 1;
             },
             .services_failed => {
-                std.debug.print("sayall: yay completed successfully, but the systemd user services could not be restarted\n", .{});
+                std.debug.print("sayall: yay completed successfully, but the systemd user host service could not be restarted\n", .{});
                 return 1;
             },
             .shortcut => |result| if (!try reportShortcutResult(arena, io, result)) {
-                std.debug.print("sayall: package updated and services restarted, but the saved shortcut could not be applied\n", .{});
+                std.debug.print("sayall: package updated and the host service restarted, but the saved shortcut could not be applied\n", .{});
                 return 1;
             },
         }
-        try printLine(io, "yay completed successfully; SayAll services enabled and restarted.");
+        try printLine(io, "yay completed successfully; SayAll host service enabled and restarted.");
         return 0;
     }
 
@@ -213,21 +189,6 @@ fn run(init: std.process.Init) !u8 {
 
     if (std.mem.eql(u8, cmd, "keyword") or std.mem.eql(u8, cmd, "keywords")) {
         return keywordCommand(arena, io, env, argv[2..]);
-    }
-
-    if (std.mem.eql(u8, cmd, "toggle") or std.mem.eql(u8, cmd, "stop")) {
-        const is_toggle = std.mem.eql(u8, cmd, "toggle");
-        if ((!is_toggle and argv.len != 2) or (is_toggle and argv.len > 3)) return invalidArguments(cmd);
-        const raw = is_toggle and argv.len == 3 and std.mem.eql(u8, std.mem.span(argv[2]), "--raw");
-        if (is_toggle and argv.len == 3 and !raw) return invalidArguments("toggle");
-        const runtime = try paths.Runtime.discover(arena, env);
-        const wire: []const u8 = if (raw) "toggle raw" else cmd;
-        const reply = ipc.sendCommand(arena, io, runtime.endpoint, wire) catch |err| {
-            std.debug.print("sayall: cannot reach daemon ({s}) — is 'sayall daemon' running?\n", .{@errorName(err)});
-            return 1;
-        };
-        try printLine(io, reply);
-        return if (std.mem.startsWith(u8, reply, "error") or std.mem.startsWith(u8, reply, "busy")) 1 else 0;
     }
 
     if (std.mem.eql(u8, cmd, "transcribe")) {
@@ -643,7 +604,7 @@ fn doctor(arena: std.mem.Allocator, io: Io, env: *const std.process.Environ.Map)
         try diagnostic(arena, io, "fail", "Configuration", "HOME and XDG_CONFIG_HOME are unavailable");
     }
 
-    const platform_diagnostics = product.diagnostics(arena, io, if (loaded_config) |cfg| cfg.notifications else null, if (loaded_config) |cfg| cfg.output.method else null) catch |err|
+    const platform_diagnostics = product.diagnostics(arena, io, env, if (loaded_config) |cfg| cfg.notifications else null, if (loaded_config) |cfg| cfg.output.method else null) catch |err|
         return productError("doctor", err);
     for (platform_diagnostics.commands) |item|
         try presentDiagnostic(arena, io, item, &failures, &warnings);
@@ -795,7 +756,6 @@ test {
     _ = cli;
     _ = host_control;
     _ = config;
-    _ = daemon;
     _ = events;
     _ = recorder;
     _ = deepgram;

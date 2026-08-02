@@ -1,2 +1,6 @@
 #!/bin/sh
 printf '%s\n' "$*" >>"$SAYALL_TEST_SYSTEMCTL_LOG"
+if [ "$*" = '--user is-active sayall.service' ]; then
+  printf '%s\n' inactive
+  exit 3
+fi

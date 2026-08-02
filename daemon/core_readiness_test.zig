@@ -102,6 +102,6 @@ test "selected runtime and product operations remain explicitly unsupported" {
     );
     try std.testing.expectError(
         error.UnsupportedPlatform,
-        unsupported_product.diagnostics(std.testing.allocator, std.testing.io, null, null),
+        unsupported_product.diagnostics(std.testing.allocator, std.testing.io, &env, null, null),
     );
 }

@@ -56,14 +56,14 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
     if let Some(window) = app
         .windows()
         .into_iter()
-        .find(|w| w.title().as_deref() == Some("SayAll Settings — Native Preview"))
+        .find(|w| w.title().as_deref() == Some("SayAll Settings"))
     {
         window.present();
         return;
     }
     let window = ApplicationWindow::builder()
         .application(app)
-        .title("SayAll Settings — Native Preview")
+        .title("SayAll Settings")
         .default_width(460)
         .default_height(220)
         .build();
@@ -72,7 +72,7 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
     column.set_margin_bottom(20);
     column.set_margin_start(20);
     column.set_margin_end(20);
-    let heading = Label::new(Some("Native Linux host preview"));
+    let heading = Label::new(Some("SayAll Linux host"));
     heading.set_xalign(0.0);
     let status = Label::new(None);
     status.set_xalign(0.0);
@@ -83,7 +83,7 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
     let init = Button::with_label("Initialize configuration");
     let enable_shortcut = Button::with_label("Enable/configure global shortcut");
     let reload = Button::with_label("Revalidate status");
-    let login = CheckButton::with_label("Start SayAll at login (preview)");
+    let login = CheckButton::with_label("Start SayAll at login");
     column.append(&heading);
     column.append(&status);
     column.append(&shortcut);
@@ -122,7 +122,7 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
             let (tx, rx) = mpsc::channel();
             std::thread::spawn(move || {
                 let config = config_operation("--config-validate");
-                let autostart = autostart::config_home().and_then(|root| autostart::state(&root));
+                let autostart = autostart::state();
                 let _ = tx.send((config, autostart));
             });
             let status = status.clone();
@@ -156,10 +156,7 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
                     match autostart_state {
                         autostart::State::Enabled => login.set_active(true),
                         autostart::State::Disabled => login.set_active(false),
-                        autostart::State::Conflict => {
-                            login.set_active(false);
-                            status.set_text("An unrelated sayall.desktop autostart entry exists; it will not be overwritten.")
-                        }
+                        autostart::State::Unavailable => login.set_sensitive(false),
                     }
                     changing.set(false);
                 }
@@ -200,16 +197,12 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
         let requested = toggle.is_active();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let result = autostart::config_home().and_then(|root| {
-                if requested {
-                    let legacy =
-                        autostart::legacy_service_present().map_err(std::io::Error::other)?;
-                    autostart::enable(&root, legacy)
-                } else {
-                    autostart::disable(&root)
-                }
-            });
-            let state = autostart::config_home().and_then(|root| autostart::state(&root));
+            let result = if requested {
+                autostart::enable()
+            } else {
+                autostart::disable()
+            };
+            let state = autostart::state();
             let _ = tx.send((result, state));
         });
         let toggle = toggle.clone();

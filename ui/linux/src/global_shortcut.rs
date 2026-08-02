@@ -14,7 +14,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 const SHORTCUT_ID: &str = "toggle-transcription";
-const APP_ID: &str = "dev.sayall.Hud.NativePreview";
+const APP_ID: &str = "dev.sayall.Hud";
 const OP_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const CONSENT: &[u8] = b"sayall-global-shortcut-consent-v1\n";
 static NONCE: AtomicU64 = AtomicU64::new(0);
@@ -333,7 +333,7 @@ fn consent_path() -> io::Result<PathBuf> {
     if !root.is_absolute() {
         return Err(io::Error::other("state directory is not absolute"));
     }
-    Ok(root.join("sayall/native-preview/global-shortcut-consent-v1"))
+    Ok(root.join("sayall/global-shortcut-consent-v1"))
 }
 fn safe_metadata(path: &std::path::Path, directory: bool) -> io::Result<bool> {
     let m = match fs::symlink_metadata(path) {

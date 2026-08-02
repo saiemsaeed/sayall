@@ -7,7 +7,7 @@ const Allocator = std.mem.Allocator;
 
 pub fn restart(io: Io) !contract.RestartResult {
     var child = std.process.spawn(io, .{
-        .argv = &.{ "systemctl", "--user", "restart", "sayall.service" },
+        .argv = &.{ "systemctl", "--user", "restart", "sayall-hud.service" },
         .stdin = .ignore,
         .stdout = .inherit,
         .stderr = .inherit,
@@ -26,7 +26,7 @@ pub fn setup(
     const shortcut_ok = try presentShortcut(arena, io, shortcut_result);
     return .{
         .shortcut_ok = shortcut_ok,
-        .services_ok = setupServices(io),
+        .services_ok = setupServices(arena, io),
     };
 }
 
@@ -38,7 +38,7 @@ pub fn prepareUpdate(arena: Allocator, io: Io) !contract.UpdatePreparation {
 
 pub fn finishUpdate(arena: Allocator, io: Io, env: *const std.process.Environ.Map, plan: contract.UpdatePlan) !contract.UpdateResult {
     if (!runInherited(io, &.{ "yay", "-S", "--needed", plan.update_target })) return .package_failed;
-    if (!setupServices(io)) return .services_failed;
+    if (!setupServices(arena, io)) return .services_failed;
     return .{ .shortcut = try shortcut_impl.apply(arena, io, env, .current) };
 }
 
@@ -59,21 +59,43 @@ pub fn shortcut(
     };
 }
 
-pub fn environmentDiagnostic(env: *const std.process.Environ.Map) !contract.Diagnostic {
-    return if (env.get("WAYLAND_DISPLAY")) |display|
-        .{ .status = .ok, .label = "Wayland", .detail = display }
-    else
-        .{ .status = .fail, .label = "Wayland", .detail = "WAYLAND_DISPLAY is not set" };
+const Session = enum { wayland, x11, unavailable };
+
+fn session(env: *const std.process.Environ.Map) Session {
+    const wayland = env.get("WAYLAND_DISPLAY") != null;
+    const x11 = env.get("DISPLAY") != null;
+    if (env.get("XDG_SESSION_TYPE")) |kind| {
+        if (std.ascii.eqlIgnoreCase(kind, "wayland") and wayland) return .wayland;
+        if (std.ascii.eqlIgnoreCase(kind, "x11") and x11) return .x11;
+    }
+    if (wayland) return .wayland;
+    if (x11) return .x11;
+    return .unavailable;
 }
 
-pub fn diagnostics(arena: Allocator, io: Io, notifications_enabled: ?bool, output_method: ?[]const u8) !contract.Diagnostics {
-    const required_commands = [_][]const u8{ "pw-record", "wtype", "wl-copy", "sayall-hud" };
+pub fn environmentDiagnostic(env: *const std.process.Environ.Map) !contract.Diagnostic {
+    return switch (session(env)) {
+        .wayland => .{ .status = .ok, .label = "Wayland", .detail = env.get("WAYLAND_DISPLAY").? },
+        .x11 => .{ .status = .ok, .label = "X11", .detail = env.get("DISPLAY").? },
+        .unavailable => .{ .status = .fail, .label = "Display", .detail = "neither WAYLAND_DISPLAY nor DISPLAY is set" },
+    };
+}
+
+pub fn diagnostics(arena: Allocator, io: Io, env: *const std.process.Environ.Map, notifications_enabled: ?bool, output_method: ?[]const u8) !contract.Diagnostics {
+    const selected = session(env);
+    const required_commands = [_][]const u8{
+        "pw-record",
+        if (selected == .x11) "xdotool" else "wtype",
+        if (selected == .x11) "xsel" else "wl-copy",
+        "sayall-hud",
+    };
     var commands: [required_commands.len]contract.Diagnostic = undefined;
     for (required_commands, 0..) |command, index| {
-        const required = !std.mem.eql(u8, command, "wtype") or output_method == null or
+        const type_command = std.mem.eql(u8, command, "wtype") or std.mem.eql(u8, command, "xdotool");
+        const required = !type_command or output_method == null or
             !std.mem.eql(u8, output_method.?, "clipboard");
         commands[index] = if (!required)
-            .{ .status = .ok, .label = "Command", .detail = "wtype not required for clipboard output" }
+            .{ .status = .ok, .label = "Command", .detail = "typing tool not required for clipboard output" }
         else if (try commandExists(arena, io, command))
             .{ .status = .ok, .label = "Command", .detail = command }
         else
@@ -88,15 +110,11 @@ pub fn diagnostics(arena: Allocator, io: Io, notifications_enabled: ?bool, outpu
     else
         null;
 
-    const services = [2]contract.Diagnostic{
-        if (try commandSucceeds(arena, io, &.{ "systemctl", "--user", "is-active", "--quiet", "sayall.service" }))
-            .{ .status = .ok, .label = "Service", .detail = "sayall.service is active" }
-        else
-            .{ .status = .fail, .label = "Service", .detail = "start with: systemctl --user enable --now sayall sayall-hud" },
+    const services = [1]contract.Diagnostic{
         if (try commandSucceeds(arena, io, &.{ "systemctl", "--user", "is-active", "--quiet", "sayall-hud.service" }))
-            .{ .status = .ok, .label = "HUD service", .detail = "sayall-hud.service is active" }
+            .{ .status = .ok, .label = "Host service", .detail = "sayall-hud.service is active" }
         else
-            .{ .status = .fail, .label = "HUD service", .detail = "start with: systemctl --user enable --now sayall-hud" },
+            .{ .status = .fail, .label = "Host service", .detail = "start with: systemctl --user enable --now sayall-hud.service" },
     };
 
     return .{
@@ -106,10 +124,26 @@ pub fn diagnostics(arena: Allocator, io: Io, notifications_enabled: ?bool, outpu
     };
 }
 
-fn setupServices(io: Io) bool {
+fn setupServices(arena: Allocator, io: Io) bool {
     if (!runInherited(io, &.{ "systemctl", "--user", "daemon-reload" })) return false;
-    if (!runInherited(io, &.{ "systemctl", "--user", "enable", "sayall.service", "sayall-hud.service" })) return false;
-    return runInherited(io, &.{ "systemctl", "--user", "restart", "sayall.service", "sayall-hud.service" });
+    if (!runInherited(io, &.{ "systemctl", "--user", "enable", "sayall-hud.service" })) return false;
+    _ = runInherited(io, &.{ "systemctl", "--user", "stop", "sayall.service" });
+    if (!legacyOwnerInactive(arena, io)) return false;
+    _ = runInherited(io, &.{ "systemctl", "--user", "disable", "sayall.service" });
+    return runInherited(io, &.{ "systemctl", "--user", "restart", "sayall-hud.service" });
+}
+
+fn legacyOwnerInactive(arena: Allocator, io: Io) bool {
+    const result = std.process.run(arena, io, .{
+        .argv = &.{ "systemctl", "--user", "is-active", "sayall.service" },
+        .stdout_limit = .limited(4096),
+        .stderr_limit = .limited(4096),
+    }) catch return false;
+    const state = std.mem.trim(u8, result.stdout, " \t\r\n");
+    return !termSucceeded(result.term) and
+        (std.mem.eql(u8, state, "inactive") or
+            std.mem.eql(u8, state, "failed") or
+            std.mem.eql(u8, state, "unknown"));
 }
 
 fn runInherited(io: Io, argv: []const []const u8) bool {
@@ -191,4 +225,18 @@ test "package identities preserve current variants and legacy migration" {
         try std.testing.expectEqual(item.migration, identity.legacy_migration);
     }
     try std.testing.expect(packageIdentity("other") == null);
+}
+
+test "session selection matches native host precedence" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    try std.testing.expectEqual(Session.unavailable, session(&env));
+    try env.put("DISPLAY", ":0");
+    try std.testing.expectEqual(Session.x11, session(&env));
+    try env.put("WAYLAND_DISPLAY", "wayland-1");
+    try std.testing.expectEqual(Session.wayland, session(&env));
+    try env.put("XDG_SESSION_TYPE", "x11");
+    try std.testing.expectEqual(Session.x11, session(&env));
+    try env.put("XDG_SESSION_TYPE", "wayland");
+    try std.testing.expectEqual(Session.wayland, session(&env));
 }

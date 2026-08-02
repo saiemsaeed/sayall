@@ -5,6 +5,15 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Replaced the split Linux Zig daemon and Rust HUD runtime with one native Rust
+  session host controlled by the shared Zig CLI and backed by the private Zig
+  processing worker. Linux now installs one package-managed user service, with
+  no experimental mode or public legacy daemon commands.
+- Added native X11 typing, paste, and clipboard delivery alongside the existing
+  Wayland path, with runtime session selection and matching diagnostics.
+
 ## [0.1.8] - 2026-08-01
 
 ### Added

@@ -1,7 +1,8 @@
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -48,6 +49,23 @@ impl Ownership {
                     "unsafe stale public endpoint",
                 ));
             }
+            if endpoint_live_or_uncertain(&socket)? {
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrInUse,
+                    "another SayAll owner is listening or endpoint liveness is uncertain",
+                ));
+            }
+            let current = fs::symlink_metadata(&socket)?;
+            if !current.file_type().is_socket()
+                || current.uid() != meta.uid()
+                || current.dev() != meta.dev()
+                || current.ino() != meta.ino()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrInUse,
+                    "public endpoint changed during liveness check",
+                ));
+            }
             fs::remove_file(&socket)?;
         }
         Ok(Self {
@@ -55,6 +73,51 @@ impl Ownership {
             _lock: lock,
         })
     }
+}
+
+fn endpoint_live_or_uncertain(path: &Path) -> io::Result<bool> {
+    let fd = unsafe {
+        libc::socket(
+            libc::AF_UNIX,
+            libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+            0,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let bytes = path.as_os_str().as_bytes();
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (destination, source) in address.sun_path.iter_mut().zip(bytes) {
+        *destination = *source as libc::c_char;
+    }
+    let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + bytes.len() + 1;
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    ))]
+    {
+        address.sun_len = length as u8;
+    }
+    let result = unsafe {
+        libc::connect(
+            fd.as_raw_fd(),
+            std::ptr::from_ref(&address).cast(),
+            length as libc::socklen_t,
+        )
+    };
+    if result == 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    Ok(!matches!(
+        error.raw_os_error(),
+        Some(code) if code == libc::ECONNREFUSED || code == libc::ENOENT
+    ))
 }
 
 fn validate_parent(path: &Path) -> io::Result<()> {
@@ -133,11 +196,8 @@ mod tests {
     use std::io::Write;
 
     fn private_dir(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "sayall-rust-test-{}-{}-{name}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("thread")
-        ));
+        let path =
+            std::env::temp_dir().join(format!("sayall-rust-test-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir(&path).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
@@ -168,6 +228,48 @@ mod tests {
             .unwrap();
         assert!(Ownership::acquire(socket.clone()).is_err());
         assert_eq!(fs::read(socket).unwrap(), b"keep");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn never_removes_live_socket_endpoint() {
+        let dir = private_dir("live");
+        let socket = dir.join("sayall.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let error = match Ownership::acquire(socket.clone()) {
+            Ok(_) => panic!("acquired a live endpoint"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
+        assert!(
+            fs::symlink_metadata(&socket)
+                .unwrap()
+                .file_type()
+                .is_socket()
+        );
+        drop(listener);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn saturated_live_socket_probe_is_bounded_and_preserved() {
+        let dir = private_dir("saturated");
+        let socket = dir.join("sayall.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 0) }, 0);
+        let queued = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        let started = std::time::Instant::now();
+        assert!(Ownership::acquire(socket.clone()).is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert!(
+            fs::symlink_metadata(&socket)
+                .unwrap()
+                .file_type()
+                .is_socket()
+        );
+        drop(queued);
+        drop(listener);
         fs::remove_dir_all(dir).unwrap();
     }
 
