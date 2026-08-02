@@ -146,24 +146,49 @@ pub fn build(b: *std.Build) void {
         .os_tag = .macos,
         .os_version_min = .{ .semver = .{ .major = 15, .minor = 0, .patch = 0 } },
     });
-    const darwin_cli = b.addExecutable(.{
-        .name = "sayall-cli-readiness",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("daemon/cli_readiness_main.zig"),
-            .target = darwin_cli_target,
-            .optimize = optimize,
-        }),
-    });
-    const darwin_cli_step = b.step("check-darwin-cli", "Cross-compile the aarch64-macos.15 Zig CLI frontend boundary");
-    darwin_cli_step.dependOn(&darwin_cli.step);
-    const darwin_cli_tests = b.addTest(.{ .root_module = b.createModule(.{
+    const darwin_cli_module = b.createModule(.{
         .root_source_file = b.path("daemon/cli_readiness_main.zig"),
         .target = darwin_cli_target,
         .optimize = optimize,
-    }) });
-    // Compilation-only: this explicit frontend test artifact is never installed
-    // or executed on Linux CI.
-    darwin_cli_step.dependOn(&darwin_cli_tests.step);
+    });
+    darwin_cli_module.addOptions("build_options", build_options);
+    darwin_cli_module.addImport("protocol_fixtures", protocol_fixtures);
+    const darwin_cli = b.addExecutable(.{
+        .name = "sayall-macos",
+        .root_module = darwin_cli_module,
+    });
+    configureDarwinBridge(b, darwin_cli_module);
+    const install_darwin_cli = b.addInstallArtifact(darwin_cli, .{});
+    const darwin_cli_build_step = b.step("darwin-cli", "Build and install the canonical macOS public CLI");
+    darwin_cli_build_step.dependOn(&install_darwin_cli.step);
+    const darwin_cli_step = b.step("check-darwin-cli", "Compile the platform-neutral Darwin CLI frontend boundary");
+    const darwin_test_module = b.createModule(.{
+        .root_source_file = b.path("daemon/cli_frontend_readiness_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    darwin_test_module.addOptions("build_options", build_options);
+    darwin_test_module.addImport("protocol_fixtures", protocol_fixtures);
+    const darwin_cli_tests = b.addTest(.{ .root_module = darwin_test_module });
+    if (target.query.isNative()) darwin_cli_step.dependOn(&b.addRunArtifact(darwin_cli_tests).step) else darwin_cli_step.dependOn(&darwin_cli_tests.step);
+
+    if (target.query.isNative() and target.result.os.tag == .macos) {
+        const native_module = b.createModule(.{ .root_source_file = b.path("daemon/darwin_host_control.zig"), .target = target, .optimize = optimize });
+        native_module.addImport("protocol_fixtures", protocol_fixtures);
+        configureDarwinBridge(b, native_module);
+        const native_tests = b.addTest(.{ .root_module = native_module });
+        const native_step = b.step("test-darwin-cli", "Run native Darwin bridge policy and parsing tests");
+        native_step.dependOn(&b.addRunArtifact(native_tests).step);
+    }
+}
+
+fn configureDarwinBridge(b: *std.Build, module: *std.Build.Module) void {
+    module.addIncludePath(b.path("daemon"));
+    module.addCSourceFile(.{ .file = b.path("daemon/darwin_host_control.m"), .flags = &.{"-fobjc-arc"} });
+    if (b.sysroot) |sysroot| module.addFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sysroot, "System/Library/Frameworks" }) });
+    module.linkFramework("AppKit", .{});
+    module.linkFramework("Foundation", .{});
+    module.link_libc = true;
 }
 
 fn addCoreReadinessCheck(
