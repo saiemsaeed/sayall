@@ -46,3 +46,4 @@ jobs:
           version=$(tr -d '[:space:]' < VERSION)
           test -f "dist/sayall-$version-macos-arm64-unsigned.zip"
           test ! -e "dist/sayall-$version-macos-arm64.zip"
+          test ! -e "dist/sayall-$version-macos-arm64.dmg"

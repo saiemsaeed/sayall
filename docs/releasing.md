@@ -35,7 +35,8 @@ produces the tested, ad-hoc-signed CI candidate. On `release/<version>`, the Rel
 workflow rebuilds that candidate without credentials, verifies it before
 credentials are exposed, then uses a protected job to sign the nested CLI and
 processing helper first and the app second, notarize, staple, and
-Gatekeeper-check the result.
+Gatekeeper-check the result. It then creates a DMG containing that one app and
+an `/Applications` symlink, and notarizes, staples, and validates the final DMG.
 Repository build or test code does not run while release credentials are
 available, and an `if: always()` step removes the certificate, notary key, and
 temporary keychain before the signed artifact is uploaded.
@@ -109,7 +110,7 @@ the gate.
     candidate.
 11. Download that exact `macos-assets` artifact while `publish` remains blocked.
     Complete the artifact checks and physical Apple Silicon matrix, record the
-    approver, decision, and ZIP SHA-256, then set `MACOS_APPROVED_SHA256` to
+    approver, decision, and DMG SHA-256, then set `MACOS_APPROVED_SHA256` to
     that exact digest. Do not approve publication if any required row is
     incomplete.
 12. Approve the protected `publish` job. It rejects any candidate whose digest
@@ -133,6 +134,27 @@ assets.
 Treat a successfully published release branch as frozen. If publication
 succeeds and a defect is found afterward, prepare a new patch version rather
 than pushing replacement artifacts to the same branch.
+
+## Homebrew Cask publication gate
+
+The release workflow generates `sayall.rb` from the approved DMG version and
+SHA-256 and retains it as the `homebrew-cask` workflow artifact. The Cask uses
+the immutable GitHub release DMG, installs `SayAll.app`, and lets Homebrew expose
+`Contents/Helpers/sayall`; it never uses `sha256 :no_check`. Normal uninstall
+quits bundle ID `pro.leets.sayall` and removes Homebrew's app and binary shim.
+Shared configuration is removed only by explicit `--zap`.
+
+Publishing to a tap is intentionally gated until an external tap repository
+exists. Create `saiemsaeed/homebrew-sayall` (or document the final intended
+owner/name), grant a dedicated fine-grained GitHub token **Contents: read and
+write** access to only that repository, protect its main branch as appropriate,
+and add the token as a secret in a separate protected Homebrew-publication
+environment. Only then add a default-branch workflow that downloads generated
+`sayall.rb`, verifies its DMG checksum and release URL, writes it to
+`Casks/sayall.rb`, runs `brew style` and `brew audit --cask`, and pushes it. Do
+not place that token in `release.yml` or share Apple credentials. Until this
+gate is completed, test generation with `bash tests/homebrew-cask.sh` and do
+not advertise the tap as live.
 
 ## Automated AUR publishing
 
