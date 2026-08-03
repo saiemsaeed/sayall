@@ -795,6 +795,42 @@ fn rounded_rect(cr: &cairo::Context, x: f64, y: f64, width: f64, height: f64, ra
 mod tests {
     use super::*;
 
+    #[test]
+    fn production_hud_variants_render_at_figma_dimensions() {
+        let Some(directory) = env::var_os("SAYALL_HUD_SNAPSHOT_DIR") else {
+            return;
+        };
+        let directory = PathBuf::from(directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let variants = [
+            ("recording-timed", HudState::Recording, true),
+            ("recording-timeless", HudState::Recording, false),
+            ("processing", HudState::Processing, true),
+            ("copied", HudState::Success, true),
+            ("error", HudState::Error, true),
+        ];
+        for (name, state, show_timer) in variants {
+            let mut model = Model {
+                state,
+                show_timer,
+                recording_started: Some(Instant::now()),
+                processing_started: Some(Instant::now() - Duration::from_millis(800)),
+                error: "Deepgram is unavailable".to_owned(),
+                ..Model::default()
+            };
+            model.displayed = [
+                0.0, 0.35, 0.75, 1.0, 0.55, 0.9, 0.7, 1.0, 0.4, 0.7, 0.9, 0.6, 0.3, 0.0,
+            ];
+            let surface =
+                cairo::ImageSurface::create(cairo::Format::ARgb32, HUD_WIDTH, HUD_HEIGHT).unwrap();
+            let context = cairo::Context::new(&surface).unwrap();
+            draw_hud(&context, HUD_WIDTH, HUD_HEIGHT, &model);
+            surface.flush();
+            let mut file = std::fs::File::create(directory.join(format!("{name}.png"))).unwrap();
+            surface.write_to_png(&mut file).unwrap();
+        }
+    }
+
     fn decoder_with_idle_snapshot() -> protocol::SubscriptionDecoder {
         let mut decoder = protocol::SubscriptionDecoder::new(1);
         decoder
