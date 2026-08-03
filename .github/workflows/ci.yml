@@ -22,7 +22,14 @@ jobs:
       - name: Compile readiness / unsupported runtime — Windows core
         run: zig build check-windows-core
       - name: Test Rust HUD
+        env:
+          SAYALL_HUD_SNAPSHOT_DIR: ${{ runner.temp }}/sayall-linux-hud-renders
         run: cargo test --locked --manifest-path ui/linux/Cargo.toml
+      - name: Upload Linux HUD renders
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-hud-renders
+          path: ${{ runner.temp }}/sayall-linux-hud-renders
       - name: Test Homebrew Cask generation
         run: bash tests/homebrew-cask.sh
       - name: Verify checked-in AUR metadata
@@ -56,6 +63,15 @@ jobs:
         env:
           MACOS_SIGN_MODE: adhoc
         run: bash scripts/package-macos-release.sh
+      - name: Render macOS HUD states
+        env:
+          SAYALL_HUD_SNAPSHOT_DIR: ${{ runner.temp }}/sayall-macos-hud-renders
+        run: swift test --package-path ui/macos --filter HUDRenderingTests
+      - name: Upload macOS HUD renders
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: macos-hud-renders
+          path: ${{ runner.temp }}/sayall-macos-hud-renders
       - name: Confirm CI output cannot be mistaken for a release
         run: |
           version=$(tr -d '[:space:]' < VERSION)
