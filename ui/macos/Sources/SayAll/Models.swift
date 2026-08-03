@@ -8,7 +8,8 @@ enum DictationState: String, CaseIterable {
         case (.idle, .recording), (.idle, .error), (.idle, .cancelled),
              (.recording, .stopping), (.recording, .error), (.recording, .cancelled),
              (.stopping, .processing), (.stopping, .error), (.stopping, .cancelled),
-             (.processing, .delivering), (.processing, .success), (.processing, .error), (.processing, .cancelled),
+             (.processing, .idle), (.processing, .delivering), (.processing, .success),
+             (.processing, .error), (.processing, .cancelled),
              (.delivering, .idle), (.delivering, .success), (.delivering, .error), (.delivering, .cancelled),
              (.success, .idle), (.error, .idle), (.cancelled, .idle): return true
         default: return false

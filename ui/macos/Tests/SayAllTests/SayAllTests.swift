@@ -113,6 +113,47 @@ final class StateMachineTests: XCTestCase {
         }
         XCTAssertEqual(sut.state, .idle)
     }
+    func testNoSpeechCanHideImmediatelyFromProcessing() throws {
+        var sut = StateMachine()
+        for state in [DictationState.recording, .stopping, .processing, .idle] {
+            try sut.transition(to: state)
+        }
+        XCTAssertEqual(sut.state, .idle)
+    }
+}
+
+final class HUDRenderingTests: XCTestCase {
+    @MainActor
+    func testProductionVariantsRenderAtFigmaDimensions() throws {
+        let variants: [(String, DictationState, Bool, String)] = [
+            ("recording-timed", .recording, true, ""),
+            ("recording-timeless", .recording, false, ""),
+            ("processing", .processing, true, ""),
+            ("copied", .success, true, "Copied to clipboard"),
+            ("error", .error, true, "Deepgram is unavailable"),
+        ]
+        for (name, state, showTimer, message) in variants {
+            let view = HUDView(frame: NSRect(x: 0, y: 0, width: 244, height: 48))
+            view.update(state: state, message: message, audioLevel: 0.85, showTimer: showTimer)
+            for _ in 0..<12 { view.tick() }
+            guard let representation = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+                return XCTFail("Could not create \(name) render")
+            }
+            view.cacheDisplay(in: view.bounds, to: representation)
+            XCTAssertEqual(representation.size.width, 244)
+            XCTAssertEqual(representation.size.height, 48)
+            guard let png = representation.representation(using: .png, properties: [:]) else {
+                return XCTFail("Could not encode \(name) render")
+            }
+            if let directory = ProcessInfo.processInfo.environment["SAYALL_HUD_SNAPSHOT_DIR"] {
+                try FileManager.default.createDirectory(
+                    at: URL(fileURLWithPath: directory),
+                    withIntermediateDirectories: true
+                )
+                try png.write(to: URL(fileURLWithPath: directory).appendingPathComponent("\(name).png"))
+            }
+        }
+    }
 }
 
 final class TextDeliveryTests: XCTestCase {
@@ -681,7 +722,7 @@ final class ConfigurationLoaderTests: XCTestCase {
         let directory = home.appendingPathComponent(".config/sayall")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: home) }
-        try Data(#"{"stt":{"provider":"deepgram","api_key":"deepgram","model":"nova-3","language":"en-GB","region":"eu","streaming":false,"stream_finalize_timeout_ms":3500},"llm":{"provider":"groq","api_key":"groq","model":"llama-3.1-8b-instant","base_url":"https://api.groq.com/openai/v1/chat/completions","enabled":true},"output":{"method":"type"}}"#.utf8)
+        try Data(#"{"stt":{"provider":"deepgram","api_key":"deepgram","model":"nova-3","language":"en-GB","region":"eu","streaming":false,"stream_finalize_timeout_ms":3500},"llm":{"provider":"groq","api_key":"groq","model":"llama-3.1-8b-instant","base_url":"https://api.groq.com/openai/v1/chat/completions","enabled":true},"output":{"method":"type"},"hud":{"show_timer":false}}"#.utf8)
             .write(to: directory.appendingPathComponent("config.json"))
         try Data(#"{"version":1,"keywords":["SayAll","München"]}"#.utf8)
             .write(to: directory.appendingPathComponent("keywords.json"))
@@ -689,7 +730,8 @@ final class ConfigurationLoaderTests: XCTestCase {
             ProviderSettings(deepgramAPIKey: "deepgram", deepgramModel: "nova-3", deepgramLanguage: "en-GB",
                 deepgramRegion: "eu", deepgramKeyterms: ["SayAll", "München"], streamingEnabled: false,
                 streamFinalizeTimeoutMs: 3_500, groqAPIKey: "groq", groqModel: "llama-3.1-8b-instant",
-                groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", cleanupEnabled: true))
+                groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", cleanupEnabled: true,
+                showTimer: false))
     }
 
     func testEnvironmentOverridesAndReferences() throws {
@@ -705,7 +747,8 @@ final class ConfigurationLoaderTests: XCTestCase {
             ProviderSettings(deepgramAPIKey: "resolved", deepgramModel: "nova-3", deepgramLanguage: "en",
                 deepgramRegion: "global", deepgramKeyterms: [], streamingEnabled: true,
                 streamFinalizeTimeoutMs: 2_000, groqAPIKey: "override", groqModel: "llama-3.1-8b-instant",
-                groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", cleanupEnabled: false))
+                groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", cleanupEnabled: false,
+                showTimer: true))
     }
 
     func testMissingAndMalformedConfiguration() throws {
