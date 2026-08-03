@@ -63,11 +63,17 @@ final class AudioCapture {
                 throw CaptureError.format
             }
             file = try AVAudioFile(forWriting: wavURL, settings: canonical.settings, commonFormat: .pcmFormatInt16, interleaved: true)
-            let input = engine.inputNode, source = input.outputFormat(forBus: 0)
-            guard let converter = AVAudioConverter(from: source, to: canonical) else { throw CaptureError.format }
-            input.installTap(onBus: 0, bufferSize: 4096, format: source) { [weak self] buffer, _ in
+            let input = engine.inputNode
+            var source: AVAudioFormat?
+            var converter: AVAudioConverter?
+            input.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buffer, _ in
                 guard let self else { return }
-                let ratio = canonical.sampleRate / source.sampleRate
+                if source?.isEqual(buffer.format) != true {
+                    source = buffer.format
+                    converter = AVAudioConverter(from: buffer.format, to: canonical)
+                }
+                guard let converter else { self.markCaptureFailed(); return }
+                let ratio = canonical.sampleRate / buffer.format.sampleRate
                 guard let output = AVAudioPCMBuffer(pcmFormat: canonical,
                     frameCapacity: AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1) else {
                     self.markCaptureFailed(); return
