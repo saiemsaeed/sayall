@@ -7,6 +7,7 @@ final class Coordinator {
     var state: DictationState { machine.state }
     private(set) var message = "Ready — Control+/ to start"
     private(set) var audioLevel = 0.0
+    private(set) var showTimer = true
     private var machine = StateMachine()
     private let capture = AudioCapture()
     private var beginTask: Task<Void, Never>?, task: Task<Void, Never>?
@@ -14,6 +15,7 @@ final class Coordinator {
     private var streamSession: StreamingHelperSession?
     private var operationConfig: ProviderSettings?
     private var deliveryTarget: TextDelivery.Target?
+    private var pendingWarning: String?
     private let configuration: ConfigurationLoader
     private let changed: () -> Void
 
@@ -56,6 +58,11 @@ final class Coordinator {
         }
     }
     var controlState: String { hostControlState.rawValue }
+
+    func takePendingWarning() -> String? {
+        defer { pendingWarning = nil }
+        return pendingWarning
+    }
 
     func handleControl(_ method: ControlMethod) -> ControlResponse {
         switch method {
@@ -101,7 +108,11 @@ final class Coordinator {
         set(.idle, "Ready — Control+/ to start")
     }
     private func begin(_ id: UUID) async {
-        do { operationConfig = try configuration.load() }
+        pendingWarning = nil
+        do {
+            operationConfig = try configuration.load()
+            showTimer = operationConfig?.showTimer ?? true
+        }
         catch {
             finish(id, as: .error, message: Self.message(for: error, path: configuration.url.path), resetAfter: 8)
             return
@@ -212,21 +223,19 @@ final class Coordinator {
                 }
                 guard operationID == id, !Task.isCancelled else { return }
                 guard result.status == .success, let text = result.text, !text.isEmpty else {
-                    finish(id, as: .success, message: "No speech detected", resetAfter: 2)
+                    completeAndHide(id)
                     return
                 }
                 set(.delivering, "Delivering transcript…")
                 let delivery = TextDelivery.deliver(text, to: deliveryTarget)
-                let warning = result.warning == "cleanup_failed" ? " Groq cleanup failed; used raw transcript." : ""
+                if result.warning == "cleanup_failed" {
+                    pendingWarning = "Groq cleanup failed; used the raw transcript."
+                }
                 switch delivery {
                 case .pasteCommandPosted:
-                    if warning.isEmpty {
-                        completeAndHide(id)
-                    } else {
-                        finish(id, as: .success, message: "Pasted raw transcript — Groq cleanup failed", resetAfter: 3)
-                    }
+                    completeAndHide(id)
                 case .copied:
-                    finish(id, as: .success, message: "Copied to clipboard; automatic paste was unavailable.\(warning)", resetAfter: 3)
+                    finish(id, as: .success, message: "Copied to clipboard", resetAfter: 3)
                 case .failed:
                     finish(id, as: .error, message: "Could not copy or paste the transcript", resetAfter: 3)
                 }

@@ -230,15 +230,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusGeneration += 1
         let generation = statusGeneration
         errorNotificationTask?.cancel()
-        statusPanel.update(state: coordinator.state, message: coordinator.message, audioLevel: coordinator.audioLevel)
+        statusPanel.update(
+            state: coordinator.state,
+            message: coordinator.message,
+            audioLevel: coordinator.audioLevel,
+            showTimer: coordinator.showTimer
+        )
+        if let warning = coordinator.takePendingWarning() {
+            Task { [errorNotifier] in
+                _ = await errorNotifier.notify(title: "SayAll warning", message: warning)
+            }
+        }
         guard coordinator.state == .error else { return }
         let message = coordinator.message
         errorNotificationTask = Task { [weak self] in
-            guard let self, await errorNotifier.notify(message), !Task.isCancelled,
+            guard let self, await errorNotifier.notify(title: "SayAll error", message: message), !Task.isCancelled,
                   statusGeneration == generation,
                   coordinator.state == .error,
                   coordinator.message == message else { return }
-            statusPanel.update(state: .idle, message: "", audioLevel: 0)
+            statusPanel.update(state: .idle, message: "", audioLevel: 0, showTimer: true)
         }
     }
     private func registerShortcut() {
@@ -261,7 +271,7 @@ private final class ErrorNotifier: NSObject, UNUserNotificationCenterDelegate {
         center.delegate = self
     }
 
-    func notify(_ message: String) async -> Bool {
+    func notify(title: String, message: String) async -> Bool {
         var settings = await center.notificationSettings()
         if settings.authorizationStatus == .notDetermined {
             guard (try? await center.requestAuthorization(options: [.alert, .sound])) == true else { return false }
@@ -270,7 +280,7 @@ private final class ErrorNotifier: NSObject, UNUserNotificationCenterDelegate {
         guard [.authorized, .provisional].contains(settings.authorizationStatus),
               settings.alertSetting == .enabled else { return false }
         let content = UNMutableNotificationContent()
-        content.title = "SayAll error"
+        content.title = title
         content.body = message
         content.sound = .default
         do {
