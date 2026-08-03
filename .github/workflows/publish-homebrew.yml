@@ -78,6 +78,8 @@ jobs:
           ruby -c "$RUNNER_TEMP/sayall.rb"
           printf 'VERSION=%s\n' "$version" >> "$GITHUB_ENV"
       - name: Audit exact Cask without publication credentials
+        env:
+          HOMEBREW_GITHUB_API_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           brew tap saiemsaeed/sayall
