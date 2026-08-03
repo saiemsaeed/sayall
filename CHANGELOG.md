@@ -5,6 +5,23 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-08-03
+
+### Changed
+
+- Redesigned the macOS and Linux HUDs to match the approved Figma handoff with
+  a compact 244×48 pill, platform-consistent recording and processing
+  waveforms, updated colors, spacing, typography, and timer presentation.
+- Simplified completion feedback so successful typing, pasting, and no-speech
+  sessions dismiss silently, while clipboard-only delivery shows the exact
+  confirmation `✓  Copied to clipboard` and errors remain visible.
+- Applied the shared `hud.show_timer` setting consistently on macOS and Linux.
+
+### Fixed
+
+- Moved macOS transcript-cleanup degradation feedback from the HUD into a
+  native warning notification while still delivering the raw transcript.
+
 ## [0.2.2] - 2026-08-02
 
 ### Added
@@ -235,7 +252,8 @@ Initial release, tested and supported on x86-64 Arch Linux with Omarchy.
 - Persistent privacy-safe transcription metrics and microphone diagnostics.
 - systemd user services and Hyprland hotkey integration.
 
-[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/saiemsaeed/sayall/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/saiemsaeed/sayall/compare/v0.1.8...v0.2.2
 [0.1.8]: https://github.com/saiemsaeed/sayall/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/saiemsaeed/sayall/compare/v0.1.6...v0.1.7
