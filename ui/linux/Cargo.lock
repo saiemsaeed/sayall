@@ -942,6 +942,7 @@ dependencies = [
  "ashpd",
  "async-channel",
  "async-io",
+ "cairo-rs",
  "futures-lite",
  "gtk4",
  "gtk4-layer-shell",
