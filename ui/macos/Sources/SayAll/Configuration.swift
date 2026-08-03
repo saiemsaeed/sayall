@@ -12,6 +12,7 @@ struct ProviderSettings: Equatable {
     let groqModel: String
     let groqBaseURL: String
     let cleanupEnabled: Bool
+    let showTimer: Bool
 }
 
 enum ConfigurationError: Error, Equatable {
@@ -51,7 +52,7 @@ struct ConfigurationLoader {
             }
             document = decoded
         } else {
-            document = Document(stt: nil, llm: nil)
+            document = Document(stt: nil, llm: nil, hud: nil)
         }
         let deepgram = resolve(document.stt?.apiKey, override: "DEEPGRAM_API_KEY")
         let groq = resolve(document.llm?.apiKey, override: "GROQ_API_KEY")
@@ -85,7 +86,8 @@ struct ConfigurationLoader {
             groqAPIKey: groq,
             groqModel: groqModel,
             groqBaseURL: groqBaseURL,
-            cleanupEnabled: (document.llm?.enabled ?? true) && !groq.isEmpty
+            cleanupEnabled: (document.llm?.enabled ?? true) && !groq.isEmpty,
+            showTimer: document.hud?.showTimer ?? true
         )
     }
 
@@ -137,6 +139,7 @@ struct ConfigurationLoader {
     private struct Document: Decodable {
         let stt: STT?
         let llm: LLM?
+        let hud: HUD?
     }
 
     private struct STT: Decodable {
@@ -162,6 +165,13 @@ struct ConfigurationLoader {
         let enabled: Bool?
         enum CodingKeys: String, CodingKey {
             case provider, apiKey = "api_key", model, baseURL = "base_url", enabled
+        }
+    }
+
+    private struct HUD: Decodable {
+        let showTimer: Bool?
+        enum CodingKeys: String, CodingKey {
+            case showTimer = "show_timer"
         }
     }
 

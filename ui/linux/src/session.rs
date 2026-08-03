@@ -26,6 +26,7 @@ pub struct Snapshot {
     pub state: State,
     pub generation: u64,
     pub elapsed_ms: u64,
+    pub show_timer: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -37,6 +38,7 @@ impl Default for Snapshot {
             state: State::Idle,
             generation: 0,
             elapsed_ms: 0,
+            show_timer: true,
             message: None,
             level: None,
         }
@@ -172,13 +174,15 @@ fn run(
         config::RecordingConfig,
         config::OutputConfig,
         bool,
+        bool,
     )> = None;
     let mut terminal_until: Option<Instant> = None;
-    let publish = |state, g, started: Option<Instant>, message| {
+    let publish = |state, g, started: Option<Instant>, message, show_timer| {
         let s = Snapshot {
             state,
             generation: g,
             elapsed_ms: started.map_or(0, |x| x.elapsed().as_millis() as u64),
+            show_timer,
             message,
             level: None,
         };
@@ -189,7 +193,7 @@ fn run(
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Command::Shutdown) => {
-                if let Some((c, w, _, _, _, _)) = active.take() {
+                if let Some((c, w, _, _, _, _, _)) = active.take() {
                     w.cancel();
                     c.cancel();
                 }
@@ -201,7 +205,7 @@ fn run(
                     Err(ToggleError::Busy)
                 } else if expected == State::Idle && active.is_none() {
                     generation += 1;
-                    publish(State::Starting, generation, None, None);
+                    publish(State::Starting, generation, None, None, true);
                     let mut loaded_notifications = None;
                     let started = config::load().map_err(|e| e.to_string()).and_then(|cfg| {
                         loaded_notifications = Some(cfg.notifications);
@@ -216,13 +220,26 @@ fn run(
                             &cfg.provider,
                             shutdown.clone(),
                         )?;
-                        Ok((c, w, cfg.recording, cfg.output, cfg.notifications))
+                        Ok((
+                            c,
+                            w,
+                            cfg.recording,
+                            cfg.output,
+                            cfg.show_timer,
+                            cfg.notifications,
+                        ))
                     });
                     match started {
-                        Ok((c, w, cfg, output, notifications)) => {
+                        Ok((c, w, cfg, output, show_timer, notifications)) => {
                             let now = Instant::now();
-                            active = Some((c, w, now, cfg, output, notifications));
-                            Ok(publish(State::Recording, generation, Some(now), None))
+                            active = Some((c, w, now, cfg, output, show_timer, notifications));
+                            Ok(publish(
+                                State::Recording,
+                                generation,
+                                Some(now),
+                                None,
+                                show_timer,
+                            ))
                         }
                         Err(e) => {
                             let msg = format!("capture failed: {e}");
@@ -233,7 +250,7 @@ fn run(
                                     "Speech session could not start; see the SayAll HUD for details",
                                 );
                             }
-                            publish(State::Error, generation, None, Some(msg.clone()));
+                            publish(State::Error, generation, None, Some(msg.clone()), true);
                             terminal_until = Some(Instant::now() + Duration::from_secs(2));
                             Err(ToggleError::Failed(msg))
                         }
@@ -251,11 +268,12 @@ fn run(
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if active.is_none() && terminal_until.is_some_and(|until| Instant::now() >= until) {
                     terminal_until = None;
-                    publish(State::Idle, generation, None, None);
+                    let show_timer = shared.lock().unwrap().show_timer;
+                    publish(State::Idle, generation, None, None, show_timer);
                 }
-                if let Some((c, _, started, cfg, _, _)) = active.as_mut() {
+                if let Some((c, _, started, cfg, _, show_timer, _)) = active.as_mut() {
                     if !c.alive().unwrap_or(false) {
-                        let (c, w, _, _, _, notifications) = active.take().unwrap();
+                        let (c, w, _, _, _, show_timer, notifications) = active.take().unwrap();
                         w.cancel();
                         c.cancel();
                         publish(
@@ -263,6 +281,7 @@ fn run(
                             generation,
                             None,
                             Some("capture process exited early".into()),
+                            show_timer,
                         );
                         desktop::notify(
                             notifications,
@@ -281,7 +300,13 @@ fn run(
                             admitted.store(false, Ordering::Release);
                         }
                     } else if let Ok(level) = c.level() {
-                        let mut s = publish(State::Recording, generation, Some(*started), None);
+                        let mut s = publish(
+                            State::Recording,
+                            generation,
+                            Some(*started),
+                            None,
+                            *show_timer,
+                        );
                         s.level = Some(level);
                         *shared.lock().unwrap() = s.clone();
                         let _ = updates.send(s);
@@ -300,17 +325,18 @@ fn finish_active<F>(
         config::RecordingConfig,
         config::OutputConfig,
         bool,
+        bool,
     )>,
     generation: u64,
     publish: &F,
     delivery: &mut dyn Delivery,
 ) -> Result<Snapshot, ToggleError>
 where
-    F: Fn(State, u64, Option<Instant>, Option<String>) -> Snapshot,
+    F: Fn(State, u64, Option<Instant>, Option<String>, bool) -> Snapshot,
 {
-    let (capture, worker, started, cfg, output, notifications) =
+    let (capture, worker, started, cfg, output, show_timer, notifications) =
         active.take().expect("active capture");
-    publish(State::Stopping, generation, Some(started), None);
+    publish(State::Stopping, generation, Some(started), None, show_timer);
     let outcome = (|| -> Result<Option<desktop::DeliveryOutcome>, String> {
         let wav = capture
             .stop()
@@ -328,12 +354,26 @@ where
         if no_signal(&cleanup.0) {
             return Err("no audio signal detected".into());
         }
-        publish(State::Processing, generation, Some(started), None);
+        publish(
+            State::Processing,
+            generation,
+            Some(started),
+            None,
+            show_timer,
+        );
         deliver_outcome(
             worker.finish(Duration::from_secs(45))?,
             delivery,
             &output,
-            || publish(State::Delivering, generation, Some(started), None),
+            || {
+                publish(
+                    State::Delivering,
+                    generation,
+                    Some(started),
+                    None,
+                    show_timer,
+                )
+            },
         )
     })();
     match outcome {
@@ -342,6 +382,7 @@ where
             generation,
             None,
             Some(terminal_message(delivery_outcome).into()),
+            show_timer,
         )),
         Err(message) => {
             desktop::notify(
@@ -349,7 +390,13 @@ where
                 "SayAll error",
                 "Speech session failed; see the SayAll HUD for details",
             );
-            let s = publish(State::Error, generation, None, Some(message.clone()));
+            let s = publish(
+                State::Error,
+                generation,
+                None,
+                Some(message.clone()),
+                show_timer,
+            );
             let _ = s;
             Err(ToggleError::Failed(message))
         }

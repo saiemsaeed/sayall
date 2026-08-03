@@ -29,6 +29,7 @@ struct Config {
     stt: Stt,
     llm: Llm,
     output: Output,
+    hud: Hud,
     notifications: bool,
 }
 impl Default for Config {
@@ -38,6 +39,7 @@ impl Default for Config {
             stt: Stt::default(),
             llm: Llm::default(),
             output: Output::default(),
+            hud: Hud::default(),
             notifications: true,
         }
     }
@@ -88,7 +90,19 @@ pub struct SessionConfig {
     pub recording: RecordingConfig,
     pub provider: ProviderConfig,
     pub output: OutputConfig,
+    pub show_timer: bool,
     pub notifications: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(default)]
+struct Hud {
+    show_timer: bool,
+}
+impl Default for Hud {
+    fn default() -> Self {
+        Self { show_timer: true }
+    }
 }
 #[derive(Deserialize)]
 #[serde(default)]
@@ -232,6 +246,7 @@ pub fn load() -> io::Result<SessionConfig> {
             method,
             trailing_space: cfg.output.trailing_space,
         },
+        show_timer: cfg.hud.show_timer,
         notifications: cfg.notifications,
         provider: ProviderConfig {
             deepgram_api_key,
@@ -380,7 +395,7 @@ mod tests {
     #[test]
     fn full_config_loads_output_fields() {
         let cfg: Config = serde_json::from_str(
-            r#"{"stt":{"provider":"deepgram"},"llm":{"enabled":true},"recording":{"max_seconds":5,"min_ms":200,"source":"node"},"output":{"method":"type"}}"#,
+            r#"{"stt":{"provider":"deepgram"},"llm":{"enabled":true},"recording":{"max_seconds":5,"min_ms":200,"source":"node"},"output":{"method":"type"},"hud":{"show_timer":false}}"#,
         )
         .unwrap();
         assert_eq!(cfg.recording.max_seconds, 5);
@@ -388,6 +403,7 @@ mod tests {
         assert_eq!(cfg.recording.source, "node");
         assert_eq!(cfg.output.method, "type");
         assert!(cfg.output.trailing_space);
+        assert!(!cfg.hud.show_timer);
     }
 
     #[test]
@@ -395,6 +411,7 @@ mod tests {
         let omitted: Config = serde_json::from_str("{}").unwrap();
         assert_eq!(omitted.stt.model, "nova-3");
         assert_eq!(omitted.llm.provider, "groq");
+        assert!(omitted.hud.show_timer);
         let explicit: Config = serde_json::from_str(
             r#"{"stt":{"model":"","provider":""},"llm":{"provider":"","model":""}}"#,
         )

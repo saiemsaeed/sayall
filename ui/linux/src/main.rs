@@ -24,7 +24,7 @@ use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -159,26 +159,47 @@ impl Model {
         {
             return false;
         }
+        let copied = snapshot.state == session::State::Success
+            && matches!(
+                snapshot.message.as_deref(),
+                Some("transcript copied to clipboard")
+                    | Some("typing failed; transcript copied to clipboard")
+            );
+        self.show_timer = snapshot.show_timer;
         self.state = match snapshot.state {
             session::State::Idle => HudState::Idle,
             session::State::Starting | session::State::Recording => HudState::Recording,
             session::State::Stopping => HudState::Stopping,
             session::State::Processing | session::State::Delivering => HudState::Processing,
-            session::State::Success => HudState::Success,
+            session::State::Success if copied => HudState::Success,
+            session::State::Success => HudState::Idle,
             session::State::Error | session::State::Cancelled => HudState::Error,
         };
-        if let Some(message) = &snapshot.message {
-            if snapshot.state == session::State::Success {
-                self.success_message.clone_from(message);
-            } else {
-                self.error.clone_from(message);
-            }
-        }
         if matches!(
             snapshot.state,
-            session::State::Success | session::State::Error | session::State::Cancelled
-        ) {
+            session::State::Stopping | session::State::Processing | session::State::Delivering
+        ) && self.processing_started.is_none()
+        {
+            self.processing_started = Some(Instant::now());
+        }
+        if copied {
+            self.success_message = "Copied to clipboard".to_owned();
+        } else if matches!(
+            snapshot.state,
+            session::State::Error | session::State::Cancelled
+        ) && let Some(message) = &snapshot.message
+        {
+            self.error.clone_from(message);
+        }
+        if copied
+            || matches!(
+                snapshot.state,
+                session::State::Error | session::State::Cancelled
+            )
+        {
             self.hide_at = Some(Instant::now() + Duration::from_secs(2));
+        } else if snapshot.state == session::State::Success {
+            self.hide_at = None;
         }
         true
     }
@@ -473,13 +494,6 @@ fn install_tick(
                     if !model.apply_native_terminal(&snapshot) {
                         continue;
                     }
-                    if matches!(
-                        snapshot.state,
-                        session::State::Processing | session::State::Delivering
-                    ) && model.processing_started.is_none()
-                    {
-                        model.processing_started = Some(Instant::now());
-                    }
                     if let Some(level) = snapshot.level {
                         let value = (level.rms * 2.2).max(level.peak * 0.72).clamp(0.0, 1.0);
                         model.history.pop_front();
@@ -624,9 +638,9 @@ fn draw_processing(cr: &cairo::Context, width: f64, height: f64, model: &Model) 
     const REFERENCE_HEIGHTS: [f64; PROCESSING_BAR_COUNT] =
         [6.0, 10.0, 16.0, 22.0, 14.0, 8.0, 18.0, 24.0, 14.0, 8.0];
     let bar_width = 4.5;
-    let gap = 5.0;
-    let waveform_width =
-        PROCESSING_BAR_COUNT as f64 * bar_width + (PROCESSING_BAR_COUNT - 1) as f64 * gap;
+    let waveform_width = 138.0;
+    let gap = (waveform_width - PROCESSING_BAR_COUNT as f64 * bar_width)
+        / (PROCESSING_BAR_COUNT - 1) as f64;
     let start_x = (width - waveform_width) / 2.0;
     let elapsed_ms = model
         .processing_started
@@ -781,6 +795,42 @@ fn rounded_rect(cr: &cairo::Context, x: f64, y: f64, width: f64, height: f64, ra
 mod tests {
     use super::*;
 
+    #[test]
+    fn production_hud_variants_render_at_figma_dimensions() {
+        let Some(directory) = env::var_os("SAYALL_HUD_SNAPSHOT_DIR") else {
+            return;
+        };
+        let directory = PathBuf::from(directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let variants = [
+            ("recording-timed", HudState::Recording, true),
+            ("recording-timeless", HudState::Recording, false),
+            ("processing", HudState::Processing, true),
+            ("copied", HudState::Success, true),
+            ("error", HudState::Error, true),
+        ];
+        for (name, state, show_timer) in variants {
+            let mut model = Model {
+                state,
+                show_timer,
+                recording_started: Some(Instant::now()),
+                processing_started: Some(Instant::now() - Duration::from_millis(800)),
+                error: "Deepgram is unavailable".to_owned(),
+                ..Model::default()
+            };
+            model.displayed = [
+                0.0, 0.35, 0.75, 1.0, 0.55, 0.9, 0.7, 1.0, 0.4, 0.7, 0.9, 0.6, 0.3, 0.0,
+            ];
+            let surface =
+                cairo::ImageSurface::create(cairo::Format::ARgb32, HUD_WIDTH, HUD_HEIGHT).unwrap();
+            let context = cairo::Context::new(&surface).unwrap();
+            draw_hud(&context, HUD_WIDTH, HUD_HEIGHT, &model);
+            surface.flush();
+            let mut file = std::fs::File::create(directory.join(format!("{name}.png"))).unwrap();
+            surface.write_to_png(&mut file).unwrap();
+        }
+    }
+
     fn decoder_with_idle_snapshot() -> protocol::SubscriptionDecoder {
         let mut decoder = protocol::SubscriptionDecoder::new(1);
         decoder
@@ -828,6 +878,20 @@ mod tests {
         assert_eq!(model.state, HudState::Recording);
         assert!(!model.show_timer);
         assert!(model.recording_started.unwrap().elapsed() >= Duration::from_millis(1250));
+    }
+
+    #[test]
+    fn native_snapshot_carries_timer_setting_and_starts_stopping_animation() {
+        let mut model = Model::default();
+        let snapshot = session::Snapshot {
+            state: session::State::Stopping,
+            generation: 1,
+            show_timer: false,
+            ..session::Snapshot::default()
+        };
+        model.apply_native_terminal(&snapshot);
+        assert!(!model.show_timer);
+        assert!(model.processing_started.is_some());
     }
 
     #[test]
@@ -885,13 +949,16 @@ mod tests {
     }
 
     #[test]
-    fn native_success_uses_no_speech_generic_clipboard_and_fallback_labels() {
-        for (generation, message) in [
-            (1, "No speech detected"),
-            (2, "delivery completed"),
-            (3, "delivery completed"),
-            (4, "transcript copied to clipboard"),
-            (5, "typing failed; transcript copied to clipboard"),
+    fn native_success_is_visible_only_for_clipboard_delivery() {
+        for (generation, message, expected) in [
+            (1, "No speech detected", HudState::Idle),
+            (2, "delivery completed", HudState::Idle),
+            (3, "transcript copied to clipboard", HudState::Success),
+            (
+                4,
+                "typing failed; transcript copied to clipboard",
+                HudState::Success,
+            ),
         ] {
             let mut model = Model::default();
             model.apply_native_terminal(&session::Snapshot {
@@ -900,8 +967,8 @@ mod tests {
                 message: Some(message.to_owned()),
                 ..session::Snapshot::default()
             });
-            assert_eq!(model.state, HudState::Success);
-            assert_eq!(model.success_message, message);
+            assert_eq!(model.state, expected);
+            assert_eq!(model.success_message, "Copied to clipboard");
             assert!(model.error.is_empty());
         }
     }
