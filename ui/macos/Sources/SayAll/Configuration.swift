@@ -1,5 +1,9 @@
 import Foundation
 
+enum OutputMethod: String, Equatable {
+    case type, clipboard, paste
+}
+
 struct ProviderSettings: Equatable {
     let deepgramAPIKey: String
     let deepgramModel: String
@@ -13,10 +17,12 @@ struct ProviderSettings: Equatable {
     let groqBaseURL: String
     let cleanupEnabled: Bool
     let showTimer: Bool
+    let outputMethod: OutputMethod
+    let trailingSpace: Bool
 }
 
 enum ConfigurationError: Error, Equatable {
-    case missing, oversized, malformed, missingDeepgramKey, invalidProvider, invalidSecret
+    case missing, oversized, malformed, missingDeepgramKey, invalidProvider, invalidOutputMethod, invalidSecret
 }
 
 struct ConfigurationLoader {
@@ -52,7 +58,7 @@ struct ConfigurationLoader {
             }
             document = decoded
         } else {
-            document = Document(stt: nil, llm: nil, hud: nil)
+            document = Document(stt: nil, llm: nil, output: nil, hud: nil)
         }
         let deepgram = resolve(document.stt?.apiKey, override: "DEEPGRAM_API_KEY")
         let groq = resolve(document.llm?.apiKey, override: "GROQ_API_KEY")
@@ -64,6 +70,9 @@ struct ConfigurationLoader {
         let finalizeTimeout = document.stt?.streamFinalizeTimeoutMs ?? 2_000
         let groqModel = document.llm?.model ?? "llama-3.1-8b-instant"
         let groqBaseURL = document.llm?.baseURL ?? "https://api.groq.com/openai/v1/chat/completions"
+        guard let outputMethod = OutputMethod(rawValue: document.output?.method ?? "type") else {
+            throw ConfigurationError.invalidOutputMethod
+        }
         guard !deepgram.isEmpty else { throw ConfigurationError.missingDeepgramKey }
         guard Self.safeSecret(deepgram), Self.safeSecret(groq) else { throw ConfigurationError.invalidSecret }
         guard (document.stt?.provider ?? "deepgram") == "deepgram",
@@ -87,7 +96,9 @@ struct ConfigurationLoader {
             groqModel: groqModel,
             groqBaseURL: groqBaseURL,
             cleanupEnabled: (document.llm?.enabled ?? true) && !groq.isEmpty,
-            showTimer: document.hud?.showTimer ?? true
+            showTimer: document.hud?.showTimer ?? true,
+            outputMethod: outputMethod,
+            trailingSpace: document.output?.trailingSpace ?? true
         )
     }
 
@@ -139,6 +150,7 @@ struct ConfigurationLoader {
     private struct Document: Decodable {
         let stt: STT?
         let llm: LLM?
+        let output: Output?
         let hud: HUD?
     }
 
@@ -172,6 +184,14 @@ struct ConfigurationLoader {
         let showTimer: Bool?
         enum CodingKeys: String, CodingKey {
             case showTimer = "show_timer"
+        }
+    }
+
+    private struct Output: Decodable {
+        let method: String?
+        let trailingSpace: Bool?
+        enum CodingKeys: String, CodingKey {
+            case method, trailingSpace = "trailing_space"
         }
     }
 
