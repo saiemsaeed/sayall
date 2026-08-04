@@ -1,11 +1,12 @@
 import Foundation
 
 enum DictationState: String, CaseIterable {
-    case idle, recording, stopping, processing, delivering, success, error, cancelled
+    case idle, starting, recording, stopping, processing, delivering, success, error, cancelled
 
     func canTransition(to next: DictationState) -> Bool {
         switch (self, next) {
-        case (.idle, .recording), (.idle, .error), (.idle, .cancelled),
+        case (.idle, .starting),
+             (.starting, .recording), (.starting, .error), (.starting, .cancelled),
              (.recording, .stopping), (.recording, .error), (.recording, .cancelled),
              (.stopping, .processing), (.stopping, .error), (.stopping, .cancelled),
              (.processing, .idle), (.processing, .delivering), (.processing, .success),

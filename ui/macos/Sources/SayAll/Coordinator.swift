@@ -4,6 +4,20 @@ import SayAllControl
 
 @MainActor
 final class Coordinator {
+    enum TriggerSource { case shortcut, menu, control }
+
+    private struct StartupTiming {
+        let source: TriggerSource
+        let started: UInt64
+        var hudPresented: UInt64?
+        var targetCaptureMs = 0
+        var configLoadMs = 0
+        var microphonePermissionMs = 0
+        var compatibilityMs = 0
+        var audioStartMs = 0
+        var streamReadyMs = 0
+    }
+
     var state: DictationState { machine.state }
     private(set) var message = "Ready — Control+/ to start"
     private(set) var audioLevel = 0.0
@@ -16,6 +30,8 @@ final class Coordinator {
     private var operationConfig: ProviderSettings?
     private var deliveryTarget: TextDelivery.Target?
     private var pendingWarning: String?
+    private var startupTiming: StartupTiming?
+    private let startupMetrics = StartupMetricsStore()
     private let configuration: ConfigurationLoader
     private let changed: () -> Void
 
@@ -30,24 +46,33 @@ final class Coordinator {
             }
         }
     }
-    func trigger() {
+    func trigger(source: TriggerSource = .menu) {
         switch state {
         case .idle:
             guard operationID == nil else { return }
+            let started = DispatchTime.now().uptimeNanoseconds
             let id = UUID()
             operationID = id
             deliveryTarget = TextDelivery.captureTarget()
+            let targetCaptured = DispatchTime.now().uptimeNanoseconds
+            startupTiming = StartupTiming(source: source, started: started,
+                targetCaptureMs: Self.elapsedMilliseconds(from: started, to: targetCaptured))
+            set(.starting, "Starting recording…")
             beginTask = Task { await begin(id) }
         case .recording: stop()
         default: break
         }
     }
+
+    func markHUDPresented() {
+        guard state == .starting, startupTiming?.hudPresented == nil else { return }
+        startupTiming?.hudPresented = DispatchTime.now().uptimeNanoseconds
+    }
+
     var hostControlState: HostControlState {
-        if operationID != nil && state == .idle { return .starting }
-        // DictationState and HostControlState are both closed. This explicit,
-        // total conversion prevents an app-only state leaking onto protocol v2.
         switch state {
         case .idle: return .idle
+        case .starting: return .starting
         case .recording: return .recording
         case .stopping: return .stopping
         case .processing: return .processing
@@ -76,7 +101,7 @@ final class Coordinator {
             guard !(state == .idle && operationID != nil) else {
                 return ControlResponse(ok: false, state: controlState, error: "busy: SayAll is starting")
             }
-            trigger()
+            trigger(source: .control)
             return ControlResponse(ok: true, state: controlState)
         }
     }
@@ -109,22 +134,27 @@ final class Coordinator {
     }
     private func begin(_ id: UUID) async {
         pendingWarning = nil
+        var phaseStarted = DispatchTime.now().uptimeNanoseconds
         do {
             operationConfig = try configuration.load()
             showTimer = operationConfig?.showTimer ?? true
+            startupTiming?.configLoadMs = Self.elapsedMilliseconds(since: phaseStarted)
         }
         catch {
             finish(id, as: .error, message: Self.message(for: error, path: configuration.url.path), resetAfter: 8)
             return
         }
+        phaseStarted = DispatchTime.now().uptimeNanoseconds
         let allowed: Bool
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: allowed = true
         case .notDetermined: allowed = await AVCaptureDevice.requestAccess(for: .audio)
         default: allowed = false
         }
+        startupTiming?.microphonePermissionMs = Self.elapsedMilliseconds(since: phaseStarted)
         guard operationID == id, !Task.isCancelled else { return }
         guard allowed else {
+            persistStartup(outcome: "permission_denied")
             finish(id, as: .error, message: "Microphone access is required — open System Settings", resetAfter: 3)
             return
         }
@@ -132,11 +162,16 @@ final class Coordinator {
             guard let config = operationConfig else { throw HelperFailure.launch }
             let helperURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/sayall-process")
             let helper = HelperRunner(executableURL: helperURL)
+            phaseStarted = DispatchTime.now().uptimeNanoseconds
             let compatibility = try await helper.compatibilityPreflight()
+            startupTiming?.compatibilityMs = Self.elapsedMilliseconds(since: phaseStarted)
             guard operationID == id, !Task.isCancelled else { return }
+            phaseStarted = DispatchTime.now().uptimeNanoseconds
             let recording = try capture.start()
+            startupTiming?.audioStartMs = Self.elapsedMilliseconds(since: phaseStarted)
             var session: StreamingHelperSession?
             if config.streamingEnabled {
+                phaseStarted = DispatchTime.now().uptimeNanoseconds
                 session = try await helper.launchStreaming(
                     StreamingHelperRequest(version: 1, wavPath: recording.wavURL.path, pcmPath: recording.pcmURL.path,
                         deepgramAPIKey: config.deepgramAPIKey, deepgramModel: config.deepgramModel,
@@ -146,6 +181,7 @@ final class Coordinator {
                         groqAPIKey: config.groqAPIKey, groqModel: config.groqModel,
                         groqBaseURL: config.groqBaseURL, cleanupEnabled: config.cleanupEnabled),
                     compatibility: compatibility)
+                startupTiming?.streamReadyMs = Self.elapsedMilliseconds(since: phaseStarted)
             }
             guard operationID == id, !Task.isCancelled else {
                 await session?.cancelAndWait()
@@ -154,12 +190,15 @@ final class Coordinator {
             }
             streamSession = session
             set(.recording, "Recording — Control+/ to stop")
+            persistStartup(outcome: "recording_ready", recordingReady: true)
             maximumTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: false) { [weak self] _ in Task { @MainActor in self?.stop() } }
         } catch let failure as HelperFailure {
             capture.cancel()
+            persistStartup(outcome: "helper_error")
             finish(id, as: .error, message: Self.message(for: failure), resetAfter: 8)
         } catch {
             capture.cancel()
+            persistStartup(outcome: "audio_error")
             finish(id, as: .error, message: "Could not start the default microphone", resetAfter: 3)
         }
     }
@@ -258,13 +297,14 @@ final class Coordinator {
         let starting = beginTask
         let work = task
         let session = streamSession
+        if hadOperation && state == .starting { persistStartup(outcome: "cancelled") }
         operationID = nil
         operationConfig = nil
         deliveryTarget = nil
         maximumTimer?.invalidate()
         beginTask = nil; task = nil; streamSession = nil
         starting?.cancel(); work?.cancel(); capture.cancel()
-        if hadOperation && [.idle, .recording, .stopping, .processing, .delivering].contains(state) {
+        if hadOperation && [.starting, .recording, .stopping, .processing, .delivering].contains(state) {
             set(.cancelled, "Dictation cancelled")
             Task {
                 await starting?.value
@@ -274,6 +314,42 @@ final class Coordinator {
                 reset(after: 0)
             }
         }
+    }
+
+    private func persistStartup(outcome: String, recordingReady: Bool = false) {
+        guard let timing = startupTiming, let config = operationConfig else {
+            startupTiming = nil
+            return
+        }
+        let finished = DispatchTime.now().uptimeNanoseconds
+        let shortcut = timing.source == .shortcut
+        let sample = StartupMetricSample(
+            shortcutToHUDMs: shortcut ? timing.hudPresented.map {
+                Self.elapsedMilliseconds(from: timing.started, to: $0)
+            } : nil,
+            shortcutToRecordingReadyMs: shortcut && recordingReady
+                ? Self.elapsedMilliseconds(from: timing.started, to: finished) : nil,
+            targetCaptureMs: timing.targetCaptureMs,
+            configLoadMs: timing.configLoadMs,
+            microphonePermissionMs: timing.microphonePermissionMs,
+            compatibilityMs: timing.compatibilityMs,
+            audioStartMs: timing.audioStartMs,
+            streamReadyMs: timing.streamReadyMs,
+            outcome: outcome
+        )
+        startupTiming = nil
+        Task {
+            await startupMetrics.record(sample, enabled: config.metricsEnabled,
+                limit: config.metricsHistoryMaxEntries)
+        }
+    }
+
+    private nonisolated static func elapsedMilliseconds(since started: UInt64) -> Int {
+        elapsedMilliseconds(from: started, to: DispatchTime.now().uptimeNanoseconds)
+    }
+
+    private nonisolated static func elapsedMilliseconds(from started: UInt64, to finished: UInt64) -> Int {
+        Int((finished >= started ? finished - started : 0) / 1_000_000)
     }
 
     private static func message(for code: String) -> String {
@@ -320,6 +396,7 @@ final class Coordinator {
         case .missingDeepgramKey: return "Set stt.api_key or DEEPGRAM_API_KEY in \(path)"
         case .invalidProvider: return "Use a valid stt.model, stt.language, and global/eu/au region"
         case .invalidOutputMethod: return "Set output.method to type, paste, or clipboard"
+        case .invalidMetrics: return "Set metrics.history_max_entries between 0 and 100000"
         case .invalidSecret: return "Provider API keys cannot contain whitespace"
         case nil: return "Could not load SayAll config.json"
         }

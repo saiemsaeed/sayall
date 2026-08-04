@@ -22,18 +22,21 @@ final class StatusPanel {
         panel.contentView = hud
     }
 
-    func update(state: DictationState, message: String, audioLevel: Double, showTimer: Bool) {
+    @discardableResult
+    func update(state: DictationState, message: String, audioLevel: Double, showTimer: Bool) -> Bool {
         if state == .idle {
             timer?.invalidate()
             timer = nil
             panel.orderOut(nil)
-            return
+            return false
         }
+        let presentingStartup = state == .starting && hud.state != .starting
         hud.update(state: state, message: message, audioLevel: audioLevel, showTimer: showTimer)
         if let frame = NSScreen.main?.visibleFrame {
             panel.setFrameOrigin(NSPoint(x: frame.midX - panel.frame.width / 2, y: frame.minY + 48))
         }
         panel.orderFrontRegardless()
+        panel.displayIfNeeded()
         if timer == nil {
             let timer = Timer(timeInterval: 1 / 30, repeats: true) { [weak hud] _ in
                 MainActor.assumeIsolated { hud?.tick() }
@@ -41,6 +44,7 @@ final class StatusPanel {
             RunLoop.main.add(timer, forMode: .common)
             self.timer = timer
         }
+        return presentingStartup
     }
 }
 
@@ -49,7 +53,7 @@ final class HUDView: NSView {
     private static let waveformWidth: CGFloat = 138
     private static let recordingBarCount = 14
     private static let processingHeights: [CGFloat] = [6, 10, 16, 22, 14, 8, 18, 24, 14, 8]
-    private var state: DictationState = .idle
+    private(set) var state: DictationState = .idle
     private var message = ""
     private var audioLevel = 0.0
     private var bars = [Double](repeating: 0, count: recordingBarCount)
@@ -58,6 +62,9 @@ final class HUDView: NSView {
     private var processingStarted: Date?
 
     func update(state: DictationState, message: String, audioLevel: Double, showTimer: Bool) {
+        if state == .starting && self.state != .starting {
+            bars = [Double](repeating: 0, count: Self.recordingBarCount)
+        }
         if state == .recording && self.state != .recording { recordingStarted = Date() }
         if state != .recording { recordingStarted = nil }
         let processingStates: [DictationState] = [.stopping, .processing, .delivering]
@@ -92,6 +99,7 @@ final class HUDView: NSView {
         background.stroke()
 
         switch state {
+        case .starting: drawRecording()
         case .recording: drawRecording()
         case .stopping, .processing, .delivering: drawProcessing()
         case .success: drawCenteredText("✓  Copied to clipboard", color: Self.success, size: 13)

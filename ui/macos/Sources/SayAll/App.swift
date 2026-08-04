@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let errorNotifier = ErrorNotifier()
     private var shortcutAvailable = false
     private var statusGeneration = 0
+    private var menuState: HostControlState?
     private var errorNotificationTask: Task<Void, Never>?
     private let controlServer = ControlServer()
     private var ownsInstance = false
@@ -50,6 +51,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.imagePosition = .imageLeading
         statusItem.button?.toolTip = "SayAll"
         rebuildMenu(); registerShortcut()
+        let helperURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/sayall-process")
+        Task.detached(priority: .utility) {
+            _ = try? await HelperRunner(executableURL: helperURL).compatibilityPreflight()
+        }
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(cancel), name: NSWorkspace.willSleepNotification, object: nil)
     }
     func applicationWillTerminate(_ notification: Notification) {
@@ -61,7 +66,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ownsInstance = false
     }
     @objc private func cancel() { coordinator.cancel() }
-    @objc private func trigger() { coordinator.trigger() }
+    @objc private func trigger() { coordinator.trigger(source: .menu) }
+    private func triggerShortcut() { coordinator.trigger(source: .shortcut) }
     @objc private func installCommandLineTool() {
         guard cliInstaller == nil else {
             showInstallResult("A command line tool operation is already in progress.")
@@ -204,7 +210,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let conflict = NSMenuItem(title: "Control+/ unavailable — use this menu", action: nil, keyEquivalent: "")
             conflict.isEnabled = false; menu.addItem(conflict)
         }
-        menu.addItem(withTitle: coordinator.state == .recording ? "Stop Dictation" : "Start Dictation", action: #selector(trigger), keyEquivalent: "")
+        let toggle = NSMenuItem(
+            title: coordinator.state == .recording ? "Stop Dictation" : "Start Dictation",
+            action: #selector(trigger),
+            keyEquivalent: ""
+        )
+        toggle.target = self
+        toggle.isEnabled = coordinator.state == .idle || coordinator.state == .recording
+        menu.addItem(toggle)
         menu.addItem(.separator())
         let cli = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/sayall").path
         let target = "/usr/local/bin/sayall"
@@ -226,16 +239,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
     }
     private func refreshStatus() {
-        rebuildMenu()
         statusGeneration += 1
         let generation = statusGeneration
         errorNotificationTask?.cancel()
-        statusPanel.update(
+        let startupPresented = statusPanel.update(
             state: coordinator.state,
             message: coordinator.message,
             audioLevel: coordinator.audioLevel,
             showTimer: coordinator.showTimer
         )
+        if startupPresented { coordinator.markHUDPresented() }
+        if menuState != coordinator.hostControlState {
+            menuState = coordinator.hostControlState
+            rebuildMenu()
+        }
         if let warning = coordinator.takePendingWarning() {
             Task { [errorNotifier] in
                 _ = await errorNotifier.notify(title: "SayAll warning", message: warning)
@@ -256,7 +273,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         shortcutAvailable = RegisterEventHotKey(UInt32(kVK_ANSI_Slash), UInt32(controlKey), id, GetApplicationEventTarget(), 0, &hotKey) == noErr
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(), { _, _, context in
-            guard let context else { return noErr }; Unmanaged<AppDelegate>.fromOpaque(context).takeUnretainedValue().trigger(); return noErr
+            guard let context else { return noErr }
+            Unmanaged<AppDelegate>.fromOpaque(context).takeUnretainedValue().triggerShortcut()
+            return noErr
         }, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), nil)
         rebuildMenu()
     }

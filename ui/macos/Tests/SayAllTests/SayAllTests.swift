@@ -100,7 +100,9 @@ final class ControlFoundationTests: XCTestCase {
 final class StateMachineTests: XCTestCase {
     func testLegalRecordingPipeline() throws {
         var sut = StateMachine()
-        for state in [DictationState.recording, .stopping, .processing, .delivering, .success, .idle] { try sut.transition(to: state) }
+        for state in [DictationState.starting, .recording, .stopping, .processing, .delivering, .success, .idle] {
+            try sut.transition(to: state)
+        }
         XCTAssertEqual(sut.state, .idle)
     }
     func testIllegalTransitionsDoNotMutate() {
@@ -110,17 +112,31 @@ final class StateMachineTests: XCTestCase {
     }
     func testSuccessfulDeliveryCanHideImmediately() throws {
         var sut = StateMachine()
-        for state in [DictationState.recording, .stopping, .processing, .delivering, .idle] {
+        for state in [DictationState.starting, .recording, .stopping, .processing, .delivering, .idle] {
             try sut.transition(to: state)
         }
         XCTAssertEqual(sut.state, .idle)
     }
     func testNoSpeechCanHideImmediatelyFromProcessing() throws {
         var sut = StateMachine()
-        for state in [DictationState.recording, .stopping, .processing, .idle] {
+        for state in [DictationState.starting, .recording, .stopping, .processing, .idle] {
             try sut.transition(to: state)
         }
         XCTAssertEqual(sut.state, .idle)
+    }
+
+    func testStartingCanOnlyBecomeRecordingErrorOrCancelled() throws {
+        for terminal in [DictationState.recording, .error, .cancelled] {
+            var sut = StateMachine()
+            try sut.transition(to: .starting)
+            try sut.transition(to: terminal)
+        }
+        for invalid in [DictationState.idle, .stopping, .processing, .delivering, .success] {
+            var sut = StateMachine()
+            try sut.transition(to: .starting)
+            XCTAssertThrowsError(try sut.transition(to: invalid))
+            XCTAssertEqual(sut.state, .starting)
+        }
     }
 }
 
@@ -128,6 +144,7 @@ final class HUDRenderingTests: XCTestCase {
     @MainActor
     func testProductionVariantsRenderAtFigmaDimensions() throws {
         let variants: [(String, DictationState, Bool, String)] = [
+            ("starting", .starting, true, "Starting recording…"),
             ("recording-timed", .recording, true, ""),
             ("recording-timeless", .recording, false, ""),
             ("processing", .processing, true, ""),
@@ -845,7 +862,7 @@ final class ConfigurationLoaderTests: XCTestCase {
         let directory = home.appendingPathComponent(".config/sayall")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: home) }
-        try Data(#"{"stt":{"provider":"deepgram","api_key":"deepgram","model":"nova-3","language":"en-GB","region":"eu","streaming":false,"stream_finalize_timeout_ms":3500},"llm":{"provider":"groq","api_key":"groq","model":"llama-3.1-8b-instant","base_url":"https://api.groq.com/openai/v1/chat/completions","enabled":true},"output":{"method":"paste","trailing_space":false},"hud":{"show_timer":false}}"#.utf8)
+        try Data(#"{"stt":{"provider":"deepgram","api_key":"deepgram","model":"nova-3","language":"en-GB","region":"eu","streaming":false,"stream_finalize_timeout_ms":3500},"llm":{"provider":"groq","api_key":"groq","model":"llama-3.1-8b-instant","base_url":"https://api.groq.com/openai/v1/chat/completions","enabled":true},"output":{"method":"paste","trailing_space":false},"metrics":{"enabled":false,"history_max_entries":12},"hud":{"show_timer":false}}"#.utf8)
             .write(to: directory.appendingPathComponent("config.json"))
         try Data(#"{"version":1,"keywords":["SayAll","München"]}"#.utf8)
             .write(to: directory.appendingPathComponent("keywords.json"))
@@ -854,7 +871,8 @@ final class ConfigurationLoaderTests: XCTestCase {
                 deepgramRegion: "eu", deepgramKeyterms: ["SayAll", "München"], streamingEnabled: false,
                 streamFinalizeTimeoutMs: 3_500, groqAPIKey: "groq", groqModel: "llama-3.1-8b-instant",
                 groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", cleanupEnabled: true,
-                showTimer: false, outputMethod: .paste, trailingSpace: false))
+                showTimer: false, outputMethod: .paste, trailingSpace: false,
+                metricsEnabled: false, metricsHistoryMaxEntries: 12))
     }
 
     func testEnvironmentOverridesAndReferences() throws {
@@ -871,7 +889,8 @@ final class ConfigurationLoaderTests: XCTestCase {
                 deepgramRegion: "global", deepgramKeyterms: [], streamingEnabled: true,
                 streamFinalizeTimeoutMs: 2_000, groqAPIKey: "override", groqModel: "llama-3.1-8b-instant",
                 groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", cleanupEnabled: false,
-                showTimer: true, outputMethod: .type, trailingSpace: true))
+                showTimer: true, outputMethod: .type, trailingSpace: true,
+                metricsEnabled: true, metricsHistoryMaxEntries: 1_000))
     }
 
     func testMissingAndMalformedConfiguration() throws {
@@ -888,6 +907,9 @@ final class ConfigurationLoaderTests: XCTestCase {
 
         try Data(#"{"stt":{"api_key":"key"},"output":{"method":"unknown"}}"#.utf8).write(to: loader.url)
         XCTAssertThrowsError(try loader.load()) { XCTAssertEqual($0 as? ConfigurationError, .invalidOutputMethod) }
+
+        try Data(#"{"stt":{"api_key":"key"},"metrics":{"history_max_entries":100001}}"#.utf8).write(to: loader.url)
+        XCTAssertThrowsError(try loader.load()) { XCTAssertEqual($0 as? ConfigurationError, .invalidMetrics) }
     }
 
     func testEnvironmentOnlyConfigurationDoesNotRequireAFile() throws {
@@ -899,5 +921,91 @@ final class ConfigurationLoaderTests: XCTestCase {
         XCTAssertTrue(settings.streamingEnabled)
         XCTAssertEqual(settings.outputMethod, .type)
         XCTAssertTrue(settings.trailingSpace)
+        XCTAssertTrue(settings.metricsEnabled)
+        XCTAssertEqual(settings.metricsHistoryMaxEntries, 1_000)
+    }
+}
+
+final class StartupMetricsTests: XCTestCase {
+    func testStorePersistsBoundedPrivacySafeSamples() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let url = directory.appendingPathComponent("startup-metrics-v1.json")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = StartupMetricsStore(url: url)
+        let first = StartupMetricSample(shortcutToHUDMs: 12, shortcutToRecordingReadyMs: 320,
+            targetCaptureMs: 4, configLoadMs: 2, microphonePermissionMs: 0,
+            compatibilityMs: 100, audioStartMs: 80, streamReadyMs: 134,
+            outcome: "recording_ready")
+        let second = StartupMetricSample(shortcutToHUDMs: 9, shortcutToRecordingReadyMs: nil,
+            targetCaptureMs: 3, configLoadMs: 1, microphonePermissionMs: 0,
+            compatibilityMs: 0, audioStartMs: 0, streamReadyMs: 0,
+            outcome: "cancelled")
+
+        await store.record(first, enabled: true, limit: 1)
+        await store.record(second, enabled: true, limit: 1)
+
+        let samples = await store.samplesForTesting()
+        XCTAssertEqual(samples, [second])
+        let encoded = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertFalse(encoded.contains("transcript"))
+        XCTAssertFalse(encoded.contains("application"))
+        XCTAssertFalse(encoded.contains("api_key"))
+        let directoryAttributes = try FileManager.default.attributesOfItem(atPath: directory.path)
+        let fileAttributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        let directoryMode = try XCTUnwrap(directoryAttributes[.posixPermissions] as? NSNumber)
+        let fileMode = try XCTUnwrap(fileAttributes[.posixPermissions] as? NSNumber)
+        XCTAssertEqual(directoryMode.intValue & 0o777, 0o700)
+        XCTAssertEqual(fileMode.intValue & 0o777, 0o600)
+    }
+
+    func testDisabledStoreWritesNothing() async {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let url = directory.appendingPathComponent("startup-metrics-v1.json")
+        let store = StartupMetricsStore(url: url)
+        let sample = StartupMetricSample(shortcutToHUDMs: 1, shortcutToRecordingReadyMs: 2,
+            targetCaptureMs: 0, configLoadMs: 0, microphonePermissionMs: 0,
+            compatibilityMs: 0, audioStartMs: 0, streamReadyMs: 0,
+            outcome: "recording_ready")
+
+        await store.record(sample, enabled: false, limit: 1_000)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func testZeroRetentionRemovesExistingSamples() async {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let url = directory.appendingPathComponent("startup-metrics-v1.json")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = StartupMetricsStore(url: url)
+        let sample = StartupMetricSample(shortcutToHUDMs: 1, shortcutToRecordingReadyMs: 2,
+            targetCaptureMs: 0, configLoadMs: 0, microphonePermissionMs: 0,
+            compatibilityMs: 0, audioStartMs: 0, streamReadyMs: 0,
+            outcome: "recording_ready")
+        await store.record(sample, enabled: true, limit: 10)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+
+        await store.record(sample, enabled: true, limit: 0)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func testByteLimitKeepsNewestSamples() async {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let url = directory.appendingPathComponent("startup-metrics-v1.json")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = StartupMetricsStore(url: url, maximumBytes: 420)
+        let first = StartupMetricSample(shortcutToHUDMs: 1, shortcutToRecordingReadyMs: 2,
+            targetCaptureMs: 0, configLoadMs: 0, microphonePermissionMs: 0,
+            compatibilityMs: 0, audioStartMs: 0, streamReadyMs: 0, outcome: "first")
+        let newest = StartupMetricSample(shortcutToHUDMs: 3, shortcutToRecordingReadyMs: 4,
+            targetCaptureMs: 0, configLoadMs: 0, microphonePermissionMs: 0,
+            compatibilityMs: 0, audioStartMs: 0, streamReadyMs: 0, outcome: "newest")
+        await store.record(first, enabled: true, limit: 100)
+        await store.record(first, enabled: true, limit: 100)
+        await store.record(newest, enabled: true, limit: 100)
+
+        let samples = await store.samplesForTesting()
+        XCTAssertEqual(samples.last, newest)
+        XCTAssertLessThan(samples.count, 3)
     }
 }
