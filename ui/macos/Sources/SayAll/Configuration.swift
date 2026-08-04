@@ -19,10 +19,12 @@ struct ProviderSettings: Equatable {
     let showTimer: Bool
     let outputMethod: OutputMethod
     let trailingSpace: Bool
+    let metricsEnabled: Bool
+    let metricsHistoryMaxEntries: Int
 }
 
 enum ConfigurationError: Error, Equatable {
-    case missing, oversized, malformed, missingDeepgramKey, invalidProvider, invalidOutputMethod, invalidSecret
+    case missing, oversized, malformed, missingDeepgramKey, invalidProvider, invalidOutputMethod, invalidMetrics, invalidSecret
 }
 
 struct ConfigurationLoader {
@@ -58,7 +60,7 @@ struct ConfigurationLoader {
             }
             document = decoded
         } else {
-            document = Document(stt: nil, llm: nil, output: nil, hud: nil)
+            document = Document(stt: nil, llm: nil, output: nil, metrics: nil, hud: nil)
         }
         let deepgram = resolve(document.stt?.apiKey, override: "DEEPGRAM_API_KEY")
         let groq = resolve(document.llm?.apiKey, override: "GROQ_API_KEY")
@@ -72,6 +74,9 @@ struct ConfigurationLoader {
         let groqBaseURL = document.llm?.baseURL ?? "https://api.groq.com/openai/v1/chat/completions"
         guard let outputMethod = OutputMethod(rawValue: document.output?.method ?? "type") else {
             throw ConfigurationError.invalidOutputMethod
+        }
+        guard (0...100_000).contains(document.metrics?.historyMaxEntries ?? 1_000) else {
+            throw ConfigurationError.invalidMetrics
         }
         guard !deepgram.isEmpty else { throw ConfigurationError.missingDeepgramKey }
         guard Self.safeSecret(deepgram), Self.safeSecret(groq) else { throw ConfigurationError.invalidSecret }
@@ -98,7 +103,9 @@ struct ConfigurationLoader {
             cleanupEnabled: (document.llm?.enabled ?? true) && !groq.isEmpty,
             showTimer: document.hud?.showTimer ?? true,
             outputMethod: outputMethod,
-            trailingSpace: document.output?.trailingSpace ?? true
+            trailingSpace: document.output?.trailingSpace ?? true,
+            metricsEnabled: document.metrics?.enabled ?? true,
+            metricsHistoryMaxEntries: document.metrics?.historyMaxEntries ?? 1_000
         )
     }
 
@@ -151,6 +158,7 @@ struct ConfigurationLoader {
         let stt: STT?
         let llm: LLM?
         let output: Output?
+        let metrics: Metrics?
         let hud: HUD?
     }
 
@@ -177,6 +185,14 @@ struct ConfigurationLoader {
         let enabled: Bool?
         enum CodingKeys: String, CodingKey {
             case provider, apiKey = "api_key", model, baseURL = "base_url", enabled
+        }
+    }
+
+    private struct Metrics: Decodable {
+        let enabled: Bool?
+        let historyMaxEntries: Int?
+        enum CodingKeys: String, CodingKey {
+            case enabled, historyMaxEntries = "history_max_entries"
         }
     }
 

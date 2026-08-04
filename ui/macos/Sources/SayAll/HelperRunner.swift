@@ -159,7 +159,7 @@ final class HelperRunner {
         process.standardInput = stdin; process.standardOutput = stdout
         process.standardError = FileHandle.nullDevice
         do { try process.run() }
-        catch { await Self.terminateAndWait(process, stdin: stdin); throw error }
+        catch { await Self.terminateAndWait(process, stdin: stdin); throw HelperFailure.launch }
         do {
             let identity = try validatedRunningCodeIdentity(process, requirement: requirement)
             try await Self.completeCompatibilityProbe(process: process, stdin: stdin, stdout: stdout,
