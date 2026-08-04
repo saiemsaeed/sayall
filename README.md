@@ -335,9 +335,9 @@ provider settings.
 
 The stable bundle identifier is `pro.leets.sayall`. Swift/AppKit owns the menu
 bar UI, lifecycle, config loading, native microphone/TCC,
-Control+/ Carbon hotkey and menu fallback, Accessibility-authorized paste and
-clipboard fallback, temporary audio, and packaging. It invokes the bundled
-`sayall-process` helper once per recording. The Zig helper streams private raw
+Control+/ Carbon hotkey and menu fallback, Accessibility-authorized typing and
+pasting with clipboard fallback, temporary audio, and packaging. It invokes the
+bundled `sayall-process` helper once per recording. The Zig helper streams private raw
 PCM to Deepgram during capture, validates the completed PCM S16LE mono 16 kHz
 WAV, falls back to REST when streaming fails, and optionally runs Groq cleanup.
 The signed `sayall` helper uses a separate bounded JSON request/response socket
@@ -520,11 +520,14 @@ specific input, set `recording.source` to a PipeWire node name or serial:
 An empty `source` follows the OS default, including future default-device
 changes.
 
-Output method `type` passes the complete transcript directly to `wtype`.
-`clipboard` copies without typing. `paste` copies the transcript and sends one
-`Ctrl+V` shortcut to insert it into the focused application. Terminals commonly
-reserve `Ctrl+V` for literal input and may require a user keybinding that maps
-it to clipboard paste, or can use `clipboard` instead.
+Output method `clipboard` copies without inserting. On macOS, `type` inserts
+at the verified original cursor using clipboard-backed `Command+V`; `paste` is
+an explicit name for the same robust macOS behavior. On Linux, `type` passes
+the transcript directly to `wtype` or `xdotool`, while `paste` copies and sends
+one `Ctrl+V`. Terminals commonly reserve `Ctrl+V` for literal input and may
+require a user keybinding that maps it to clipboard paste, or can use
+`clipboard` instead. If insertion becomes unsafe or fails, SayAll preserves
+the transcript on the clipboard and reports the fallback.
 
 Deepgram region is allow-listed to `global`, `eu`, or `au`. The regional
 endpoint changes data-processing location and network latency without changing

@@ -1,6 +1,8 @@
 import XCTest
 import AppKit
 import ApplicationServices
+import AVFoundation
+import AudioToolbox
 import Darwin
 @testable import SayAll
 import SayAllControl
@@ -167,6 +169,92 @@ final class TextDeliveryTests: XCTestCase {
     }
 
     @MainActor
+    func testClipboardModeCopiesWithoutAccessibilityOrInsertion() {
+        var pasted = false
+        let client = accessibilityClient(trusted: false, focus: { nil },
+            post: { pasted = true; return true })
+        let pasteboard = testPasteboard()
+
+        let result = TextDelivery.deliver("clipboard transcript", method: .clipboard, to: nil,
+            pasteboard: pasteboard, client: client)
+
+        guard case .copied = result else { return XCTFail("Expected explicit clipboard delivery") }
+        XCTAssertEqual(pasteboard.string(forType: .string), "clipboard transcript")
+        XCTAssertFalse(pasted)
+    }
+
+    @MainActor
+    func testTypeModeCopiesAndPostsVerifiedPaste() {
+        let element = AXUIElementCreateApplication(101)
+        let focus = focus(pid: 101, element: element)
+        var posted = false
+        let client = accessibilityClient(focus: { focus }, post: { posted = true; return true })
+        let target = TextDelivery.captureTarget(client: client)
+        let pasteboard = testPasteboard()
+        XCTAssertTrue(TextDelivery.copy("existing clipboard", to: pasteboard))
+
+        let result = TextDelivery.deliver("typed transcript", method: .type, to: target,
+            pasteboard: pasteboard, client: client)
+
+        guard case .typeCommandPosted = result else { return XCTFail("Expected type delivery") }
+        XCTAssertTrue(posted)
+        XCTAssertEqual(pasteboard.string(forType: .string), "typed transcript")
+    }
+
+    @MainActor
+    func testTypeFailureFallsBackToClipboard() {
+        let element = AXUIElementCreateApplication(101)
+        let focus = focus(pid: 101, element: element)
+        let client = accessibilityClient(focus: { focus }, post: { false })
+        let target = TextDelivery.captureTarget(client: client)
+        let pasteboard = testPasteboard()
+
+        let result = TextDelivery.deliver("recoverable transcript", method: .type, to: target,
+            pasteboard: pasteboard, client: client)
+
+        guard case .copiedFallback = result else { return XCTFail("Expected clipboard fallback") }
+        XCTAssertEqual(pasteboard.string(forType: .string), "recoverable transcript")
+    }
+
+    @MainActor
+    func testPasteOnlyTextAreaUsesVerifiedPasteForTypeMode() {
+        let element = AXUIElementCreateApplication(101)
+        let focus = focus(pid: 101, element: element)
+        var posted = false
+        let client = accessibilityClient(focus: { focus }, eligible: { _ in false },
+            pasteOnlySurface: { _ in true }, post: { posted = true; return true })
+        let target = TextDelivery.captureTarget(client: client)
+        let pasteboard = testPasteboard()
+
+        let result = TextDelivery.deliver("terminal transcript", method: .type, to: target,
+            pasteboard: pasteboard, client: client)
+
+        guard case .typeCommandPosted = result else { return XCTFail("Expected text-area paste delivery") }
+        XCTAssertTrue(posted)
+        XCTAssertEqual(pasteboard.string(forType: .string), "terminal transcript")
+    }
+
+    @MainActor
+    func testApplicationRootIsRejectedAsPasteOnlySurface() {
+        let element = AXUIElementCreateApplication(101)
+        let focus = focus(pid: 101, element: element)
+        let client = accessibilityClient(focus: { focus }, eligible: { _ in false },
+            pasteOnlySurface: { _ in false })
+
+        XCTAssertNil(TextDelivery.captureTarget(client: client))
+    }
+
+    @MainActor
+    func testSecureInputRejectsApplicationSurface() {
+        let element = AXUIElementCreateApplication(101)
+        let focus = focus(pid: 101, element: element)
+        let client = accessibilityClient(focus: { focus }, eligible: { _ in false },
+            pasteOnlySurface: { _ in true }, secureInput: true)
+
+        XCTAssertNil(TextDelivery.captureTarget(client: client))
+    }
+
+    @MainActor
     func testUnchangedEditableTargetPostsPasteAfterCopying() {
         let element = AXUIElementCreateApplication(101)
         let focus = focus(pid: 101, element: element)
@@ -175,7 +263,8 @@ final class TextDeliveryTests: XCTestCase {
         let target = TextDelivery.captureTarget(client: client)
         let pasteboard = testPasteboard()
 
-        let result = TextDelivery.deliver("bound transcript", to: target, pasteboard: pasteboard, client: client)
+        let result = TextDelivery.deliver("bound transcript", method: .paste, to: target,
+            pasteboard: pasteboard, client: client)
 
         guard case .pasteCommandPosted = result else { return XCTFail("Expected paste delivery") }
         XCTAssertEqual(posted, 1)
@@ -196,10 +285,10 @@ final class TextDeliveryTests: XCTestCase {
         )
         let pasteboard = testPasteboard()
 
-        let result = TextDelivery.deliver("private transcript", to: target,
+        let result = TextDelivery.deliver("private transcript", method: .paste, to: target,
             pasteboard: pasteboard, client: deliveryClient)
 
-        guard case .copied = result else { return XCTFail("Expected clipboard fallback") }
+        guard case .copiedFallback = result else { return XCTFail("Expected clipboard fallback") }
         XCTAssertFalse(posted)
         XCTAssertEqual(pasteboard.string(forType: .string), "private transcript")
     }
@@ -216,10 +305,10 @@ final class TextDeliveryTests: XCTestCase {
             post: { posted = true; return true }
         )
 
-        let result = TextDelivery.deliver("private transcript", to: target,
+        let result = TextDelivery.deliver("private transcript", method: .paste, to: target,
             pasteboard: testPasteboard(), client: deliveryClient)
 
-        guard case .copied = result else { return XCTFail("Expected clipboard fallback") }
+        guard case .copiedFallback = result else { return XCTFail("Expected clipboard fallback") }
         XCTAssertFalse(posted)
     }
 
@@ -232,10 +321,10 @@ final class TextDeliveryTests: XCTestCase {
         let deliveryClient = accessibilityClient(focus: { focus }, eligible: { _ in false },
             post: { posted = true; return true })
 
-        let result = TextDelivery.deliver("private transcript", to: target,
+        let result = TextDelivery.deliver("private transcript", method: .paste, to: target,
             pasteboard: testPasteboard(), client: deliveryClient)
 
-        guard case .copied = result else { return XCTFail("Expected clipboard fallback") }
+        guard case .copiedFallback = result else { return XCTFail("Expected clipboard fallback") }
         XCTAssertFalse(posted)
     }
 
@@ -256,10 +345,10 @@ final class TextDeliveryTests: XCTestCase {
             post: { posted = true; return true }
         )
 
-        let result = TextDelivery.deliver("private transcript", to: target,
+        let result = TextDelivery.deliver("private transcript", method: .paste, to: target,
             pasteboard: testPasteboard(), client: deliveryClient)
 
-        guard case .copied = result else { return XCTFail("Expected clipboard fallback") }
+        guard case .copiedFallback = result else { return XCTFail("Expected clipboard fallback") }
         XCTAssertFalse(posted)
     }
 
@@ -275,10 +364,10 @@ final class TextDeliveryTests: XCTestCase {
             post: { posted = true; return true }
         )
 
-        let result = TextDelivery.deliver("private transcript", to: target,
+        let result = TextDelivery.deliver("private transcript", method: .paste, to: target,
             pasteboard: testPasteboard(), client: deliveryClient)
 
-        guard case .copied = result else { return XCTFail("Expected clipboard fallback") }
+        guard case .copiedFallback = result else { return XCTFail("Expected clipboard fallback") }
         XCTAssertFalse(posted)
     }
 
@@ -292,10 +381,10 @@ final class TextDeliveryTests: XCTestCase {
         )
         XCTAssertNil(TextDelivery.captureTarget(client: client))
 
-        let result = TextDelivery.deliver("private transcript", to: nil,
+        let result = TextDelivery.deliver("private transcript", method: .paste, to: nil,
             pasteboard: testPasteboard(), client: client)
 
-        guard case .copied = result else { return XCTFail("Expected clipboard fallback") }
+        guard case .copiedFallback = result else { return XCTFail("Expected clipboard fallback") }
         XCTAssertFalse(posted)
     }
 
@@ -316,6 +405,8 @@ final class TextDeliveryTests: XCTestCase {
         trusted: Bool = true,
         focus: @escaping @MainActor () -> TextDelivery.Focus?,
         eligible: @escaping @MainActor (AXUIElement) -> Bool = { _ in true },
+        pasteOnlySurface: @escaping @MainActor (AXUIElement) -> Bool = { _ in false },
+        secureInput: Bool = false,
         applicationsMatch: @escaping @MainActor (NSRunningApplication, NSRunningApplication) -> Bool = { _, _ in true },
         post: @escaping @MainActor () -> Bool = { true }
     ) -> TextDelivery.AccessibilityClient {
@@ -324,6 +415,8 @@ final class TextDeliveryTests: XCTestCase {
             isTrusted: { trusted },
             currentFocus: focus,
             isEditableAndNonSecure: eligible,
+            isPasteOnlySurface: pasteOnlySurface,
+            isSecureInputEnabled: { secureInput },
             elementsEqual: { CFEqual($0, $1) },
             applicationsMatch: applicationsMatch,
             postPasteCommand: post
@@ -338,6 +431,36 @@ final class TextDeliveryTests: XCTestCase {
     @MainActor
     private func testPasteboard() -> NSPasteboard {
         NSPasteboard(name: NSPasteboard.Name("pro.leets.sayall.tests.\(UUID().uuidString)"))
+    }
+}
+
+final class AudioCaptureConversionTests: XCTestCase {
+    func testActiveChannelMonoBufferPreservesTheLoudestInputChannel() throws {
+        let layout = try XCTUnwrap(AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_Quadraphonic))
+        let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            interleaved: false,
+            channelLayout: layout
+        )
+        let input = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 8))
+        input.frameLength = 8
+        let channels = try XCTUnwrap(input.floatChannelData)
+        for index in 0..<8 {
+            channels[0][index] = 0.01
+            channels[1][index] = -0.02
+            channels[2][index] = Float(index + 1) / 10
+            channels[3][index] = 0
+        }
+
+        let mono = try XCTUnwrap(AudioCapture.activeChannelMonoBuffer(from: input))
+
+        XCTAssertEqual(mono.format.channelCount, 1)
+        XCTAssertEqual(mono.frameLength, 8)
+        let samples = try XCTUnwrap(mono.floatChannelData?[0])
+        for index in 0..<8 {
+            XCTAssertEqual(samples[index], channels[2][index])
+        }
     }
 }
 
@@ -722,7 +845,7 @@ final class ConfigurationLoaderTests: XCTestCase {
         let directory = home.appendingPathComponent(".config/sayall")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: home) }
-        try Data(#"{"stt":{"provider":"deepgram","api_key":"deepgram","model":"nova-3","language":"en-GB","region":"eu","streaming":false,"stream_finalize_timeout_ms":3500},"llm":{"provider":"groq","api_key":"groq","model":"llama-3.1-8b-instant","base_url":"https://api.groq.com/openai/v1/chat/completions","enabled":true},"output":{"method":"type"},"hud":{"show_timer":false}}"#.utf8)
+        try Data(#"{"stt":{"provider":"deepgram","api_key":"deepgram","model":"nova-3","language":"en-GB","region":"eu","streaming":false,"stream_finalize_timeout_ms":3500},"llm":{"provider":"groq","api_key":"groq","model":"llama-3.1-8b-instant","base_url":"https://api.groq.com/openai/v1/chat/completions","enabled":true},"output":{"method":"paste","trailing_space":false},"hud":{"show_timer":false}}"#.utf8)
             .write(to: directory.appendingPathComponent("config.json"))
         try Data(#"{"version":1,"keywords":["SayAll","München"]}"#.utf8)
             .write(to: directory.appendingPathComponent("keywords.json"))
@@ -731,7 +854,7 @@ final class ConfigurationLoaderTests: XCTestCase {
                 deepgramRegion: "eu", deepgramKeyterms: ["SayAll", "München"], streamingEnabled: false,
                 streamFinalizeTimeoutMs: 3_500, groqAPIKey: "groq", groqModel: "llama-3.1-8b-instant",
                 groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", cleanupEnabled: true,
-                showTimer: false))
+                showTimer: false, outputMethod: .paste, trailingSpace: false))
     }
 
     func testEnvironmentOverridesAndReferences() throws {
@@ -748,7 +871,7 @@ final class ConfigurationLoaderTests: XCTestCase {
                 deepgramRegion: "global", deepgramKeyterms: [], streamingEnabled: true,
                 streamFinalizeTimeoutMs: 2_000, groqAPIKey: "override", groqModel: "llama-3.1-8b-instant",
                 groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", cleanupEnabled: false,
-                showTimer: true))
+                showTimer: true, outputMethod: .type, trailingSpace: true))
     }
 
     func testMissingAndMalformedConfiguration() throws {
@@ -762,6 +885,9 @@ final class ConfigurationLoaderTests: XCTestCase {
 
         try Data(#"{"stt":{"api_key":"key","region":"somewhere"}}"#.utf8).write(to: loader.url)
         XCTAssertThrowsError(try loader.load()) { XCTAssertEqual($0 as? ConfigurationError, .invalidProvider) }
+
+        try Data(#"{"stt":{"api_key":"key"},"output":{"method":"unknown"}}"#.utf8).write(to: loader.url)
+        XCTAssertThrowsError(try loader.load()) { XCTAssertEqual($0 as? ConfigurationError, .invalidOutputMethod) }
     }
 
     func testEnvironmentOnlyConfigurationDoesNotRequireAFile() throws {
@@ -771,5 +897,7 @@ final class ConfigurationLoaderTests: XCTestCase {
             homeDirectory: home).load()
         XCTAssertEqual(settings.deepgramAPIKey, "shell-key")
         XCTAssertTrue(settings.streamingEnabled)
+        XCTAssertEqual(settings.outputMethod, .type)
+        XCTAssertTrue(settings.trailingSpace)
     }
 }
