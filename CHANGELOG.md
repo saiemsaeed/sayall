@@ -5,6 +5,22 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-08-04
+
+### Changed
+
+- Made the macOS HUD appear immediately after Control+/ while microphone and
+  streaming startup continue, matching Linux's explicit starting state.
+- Prewarmed the signed processing helper and stopped rebuilding the menu bar
+  menu for every audio-level update, reducing work on the main UI thread.
+- Added bounded, privacy-safe local macOS startup timing metrics that honor the
+  shared metrics enablement and retention settings.
+
+### Fixed
+
+- Corrected helper launch failures during compatibility checks so they no
+  longer report an unrelated microphone startup error.
+
 ## [0.2.4] - 2026-08-04
 
 ### Fixed
@@ -264,7 +280,8 @@ Initial release, tested and supported on x86-64 Arch Linux with Omarchy.
 - Persistent privacy-safe transcription metrics and microphone diagnostics.
 - systemd user services and Hyprland hotkey integration.
 
-[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/saiemsaeed/sayall/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/saiemsaeed/sayall/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/saiemsaeed/sayall/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/saiemsaeed/sayall/compare/v0.1.8...v0.2.2
