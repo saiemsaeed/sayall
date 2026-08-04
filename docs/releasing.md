@@ -50,12 +50,12 @@ to release branches. Keep their authority separate:
 
 - `macos-signing` authorizes only signing/notarization. Configure the
   `APPLE_TEAM_ID` variable and all six Apple secrets below.
-- `macos-publication` contains no signing credentials. Configure
-  `MACOS_APPROVED_SHA256` and `LINUX_APPROVED_MANIFEST_SHA256` only after the
-  exact candidates are approved. The checked-in `VERSION` determines the
-  release version. The macOS digest binds one signed DMG; the Linux manifest
-  digest binds both Linux archives from one workflow attempt. Stale digests
-  cannot publish later candidates.
+- `macos-publication` contains no signing credentials. An unprivileged
+  `candidate-identities` job verifies the exact artifacts and records their
+  hashes before this environment requests approval. The protected publish job
+  receives those same-run hashes through job outputs and rejects different
+  downloads. Approving that exact job therefore binds publication to one
+  signed DMG and both Linux archives without mutable cross-release variables.
 
 Configure secrets:
 
@@ -116,33 +116,38 @@ the gate.
     [the Linux qualification checklist](linux-release-qualification.md),
     including standalone archive, 0.1.8 upgrade, service retirement,
     Wayland/X11 delivery, GNOME/KDE portal, recovery, uninstall, soak, and
-    rollback gates. Record the workflow run attempt and set
-    `LINUX_APPROVED_MANIFEST_SHA256` to the exact candidate `SHA256SUMS` file's
-    SHA-256 only after qualification passes. Do not approve publication if any
-    row is incomplete.
+    rollback gates. Record the workflow run attempt and exact candidate
+    `SHA256SUMS` file's SHA-256. Do not approve publication if any row is
+    incomplete.
 11. After the unsigned macOS job succeeds, approve the
     protected `macos-assets` job to sign, notarize, staple, and upload the exact
     candidate.
 12. Download that exact `macos-assets` artifact while `publish` remains blocked.
     Complete the artifact checks and physical Apple Silicon matrix, record the
-    approver, decision, and DMG SHA-256, then set `MACOS_APPROVED_SHA256` to
-    that exact digest. Do not approve publication if any required row is
-    incomplete.
-13. Approve the protected `publish` job only after both Linux and macOS
-    qualification records are complete. It rejects any macOS candidate whose digest
-    differs from the approved value, creates the immutable `v<version>` tag at
-    the exact release commit, and publishes Linux, source, and signed macOS
-    archives with one checksum manifest. A default-branch workflow then
-    publishes all three AUR repositories from those immutable assets. Keep the
-    release branch until AUR publication succeeds; it may then be deleted.
+    approver, decision, and DMG SHA-256. Confirm the `candidate-identities` job
+    summary reports the same Linux manifest and macOS DMG hashes. Do not approve
+    publication if any required row is incomplete or either hash differs.
+13. Approve the protected `publish` job once, only after both Linux and macOS
+    qualification records are complete. It verifies downloaded artifacts
+    against the identities produced before the approval gate, creates the
+    immutable `v<version>` tag at the exact release commit, and publishes Linux,
+    source, and signed macOS archives with one checksum manifest. A
+    default-branch workflow then publishes all three AUR repositories from
+    those immutable assets. Keep the release branch until AUR publication
+    succeeds; it may then be deleted.
 
-If publication fails while the GitHub release is still a draft, rerun only the
-failed publication job when possible. Rerunning `linux-assets` creates a new
-candidate and invalidates Linux approval even at the same commit; repeat the
-full Linux qualification and update its approved manifest digest before
-publication. If the release is already published, do not rerun or move its tag.
-Use the manual `Publish AUR` workflow with the immutable version when only AUR
-publication needs retrying.
+If only publication fails while the GitHub release is still a draft, rerun only
+the failed `publish` job when possible; it reuses the successful
+`candidate-identities` outputs and revalidates the retained candidate artifacts.
+Do not partially rerun a successful artifact-producing job: v4 artifact names
+are unique within a workflow run, so its same-name upload will fail. To rebuild
+a candidate, cancel the pending run if necessary and use **Re-run all jobs**.
+Treat both Linux and macOS artifacts as new candidates, repeat signing approval
+and both complete physical qualification gates, compare both hashes with the
+new-attempt `candidate-identities` summary, and approve the new publish job. If
+the release is already published, do not rerun or move its tag. Use the manual
+`Publish AUR` workflow with the immutable version when only AUR publication
+needs retrying.
 
 Do not move or recreate a published tag. Corrections receive a new patch
 release. Enable **immutable releases** in the GitHub repository settings before
