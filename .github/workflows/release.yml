@@ -255,8 +255,55 @@ jobs:
             dist/SHA256SUMS.macos
           if-no-files-found: error
 
-  publish:
+  candidate-identities:
     needs: [linux-assets, macos-assets]
+    runs-on: ubuntu-latest
+    outputs:
+      linux-manifest-sha256: ${{ steps.identities.outputs.linux-manifest-sha256 }}
+      macos-sha256: ${{ steps.identities.outputs.macos-sha256 }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Verify release version
+        id: release
+        run: |
+          version=$(tr -d '[:space:]' < VERSION)
+          [[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "$GITHUB_REF_NAME" = "release/$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Download Linux and source candidates
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: linux-assets
+          path: candidate
+      - name: Download signed macOS candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: macos-assets
+          path: candidate
+      - name: Record exact candidate identities before publication approval
+        id: identities
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          (cd candidate && sha256sum --check SHA256SUMS)
+          (cd candidate && sha256sum --check SHA256SUMS.macos)
+          test "$(wc -l < candidate/SHA256SUMS)" -eq 2
+          grep -Eq "^[0-9a-f]{64}  sayall-$VERSION-linux-x86_64\.tar\.gz$" candidate/SHA256SUMS
+          grep -Eq "^[0-9a-f]{64}  sayall-$VERSION\.tar\.gz$" candidate/SHA256SUMS
+          macos_sha=$(awk -v file="sayall-$VERSION-macos-arm64.dmg" \
+            '$2 == file { print $1 }' candidate/SHA256SUMS.macos)
+          [[ $macos_sha =~ ^[0-9a-f]{64}$ ]]
+          test "$(wc -l < candidate/SHA256SUMS.macos)" -eq 1
+          linux_manifest_sha=$(sha256sum candidate/SHA256SUMS | awk '{ print $1 }')
+          echo "linux-manifest-sha256=$linux_manifest_sha" >> "$GITHUB_OUTPUT"
+          echo "macos-sha256=$macos_sha" >> "$GITHUB_OUTPUT"
+          printf '### Exact candidates awaiting physical qualification and publication approval\n\n- Run: `%s`\n- Attempt: `%s`\n- Commit: `%s`\n- Linux manifest SHA-256: `%s`\n- macOS DMG SHA-256: `%s`\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \
+            "$linux_manifest_sha" "$macos_sha" >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    needs: [candidate-identities]
     runs-on: ubuntu-latest
     environment: macos-publication
     permissions:
@@ -285,12 +332,12 @@ jobs:
       - name: Assemble and verify release assets
         env:
           VERSION: ${{ steps.release.outputs.version }}
-          APPROVED_MACOS_SHA256: ${{ vars.MACOS_APPROVED_SHA256 }}
-          APPROVED_LINUX_MANIFEST_SHA256: ${{ vars.LINUX_APPROVED_MANIFEST_SHA256 }}
+          CANDIDATE_MACOS_SHA256: ${{ needs.candidate-identities.outputs.macos-sha256 }}
+          CANDIDATE_LINUX_MANIFEST_SHA256: ${{ needs.candidate-identities.outputs.linux-manifest-sha256 }}
         run: |
-          test -n "$APPROVED_LINUX_MANIFEST_SHA256"
+          test -n "$CANDIDATE_LINUX_MANIFEST_SHA256"
           linux_manifest_sha=$(sha256sum dist/SHA256SUMS | awk '{ print $1 }')
-          test "$linux_manifest_sha" = "$APPROVED_LINUX_MANIFEST_SHA256"
+          test "$linux_manifest_sha" = "$CANDIDATE_LINUX_MANIFEST_SHA256"
           cat dist/SHA256SUMS dist/SHA256SUMS.macos | sort -k2 > dist/SHA256SUMS.all
           mv dist/SHA256SUMS.all dist/SHA256SUMS
           rm dist/SHA256SUMS.macos
@@ -299,8 +346,8 @@ jobs:
           grep -Eq "^[0-9a-f]{64}  sayall-$VERSION-linux-x86_64\.tar\.gz$" dist/SHA256SUMS
           grep -Eq "^[0-9a-f]{64}  sayall-$VERSION\.tar\.gz$" dist/SHA256SUMS
           macos_sha=$(awk -v file="sayall-$VERSION-macos-arm64.dmg" '$2 == file { print $1 }' dist/SHA256SUMS)
-          test -n "$APPROVED_MACOS_SHA256"
-          test "$macos_sha" = "$APPROVED_MACOS_SHA256"
+          test -n "$CANDIDATE_MACOS_SHA256"
+          test "$macos_sha" = "$CANDIDATE_MACOS_SHA256"
           bash scripts/generate-homebrew-cask.sh "$VERSION" "$macos_sha" dist/sayall.rb
           ruby -c dist/sayall.rb
           grep -Fq 'binary "#{appdir}/SayAll.app/Contents/Helpers/sayall"' dist/sayall.rb
@@ -311,6 +358,7 @@ jobs:
           name: homebrew-cask
           path: dist/sayall.rb
           if-no-files-found: error
+          overwrite: true
       - name: Atomically bind the release tag to this commit
         env:
           GH_TOKEN: ${{ github.token }}

@@ -100,8 +100,8 @@ At minimum, qualify:
 - [ ] No release-blocking defect remains open.
 - [ ] Signing/notarization evidence is attached to the immutable candidate.
 - [ ] Release approver records name, date, candidate SHA-256, and go/no-go.
-- [ ] `MACOS_APPROVED_SHA256` equals that exact candidate before the protected
-  publish job is approved.
+- [ ] The exact candidate SHA-256 matches the `candidate-identities` job summary
+  before the protected publish job is approved.
 
 Until every publication item is checked, the current supported macOS release
 remains latest and the candidate must not be published.

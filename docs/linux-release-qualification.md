@@ -62,13 +62,14 @@ the stable source and binary recipes; they must not download a not-yet-published
 GitHub release. Install candidate package archives with `pacman -U`, not an AUR
 helper pointed at the public packages.
 
-After every required row passes, set the protected
-`LINUX_APPROVED_MANIFEST_SHA256` environment variable to the exact
-`sha256sum SHA256SUMS` value recorded above. The publish job rejects a different
-manifest, thereby binding both the Linux binary and source archive to this
-qualification. Any rerun of `linux-assets` invalidates the approval even when
-the commit is unchanged: download the new attempt, repeat the complete Linux
-gate, and replace the approved manifest digest.
+After every required row passes, compare the exact `sha256sum SHA256SUMS` value
+recorded above with the `candidate-identities` job summary before approving the
+protected publish job. The publish job rejects a different manifest, thereby
+binding both the Linux binary and source archive to this qualification.
+Rebuilding workflow artifacts invalidates this approval even when the commit is
+unchanged. Follow the full-rerun procedure in `releasing.md`, download the new
+Linux artifact ID, repeat the complete Linux gate, and compare the new manifest
+identity before publication approval.
 
 The public `sayall-git` recipe intentionally follows moving `main`. To qualify
 the release commit, make a disposable copy of its generated recipe, pin its Git
