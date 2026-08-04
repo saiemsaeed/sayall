@@ -5,6 +5,18 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-08-04
+
+### Fixed
+
+- Made the macOS native host honor the shared `type`, `paste`, and `clipboard`
+  output modes and `trailing_space` setting. Cursor insertion now targets the
+  original editable field with a verified clipboard-backed paste, while failed
+  insertion preserves the transcript on the clipboard and reports a native
+  warning.
+- Fixed silent microphone capture with newer macOS SDKs by explicitly selecting
+  active multichannel input and converting it to mono before transcription.
+
 ## [0.2.3] - 2026-08-03
 
 ### Changed
@@ -252,7 +264,8 @@ Initial release, tested and supported on x86-64 Arch Linux with Omarchy.
 - Persistent privacy-safe transcription metrics and microphone diagnostics.
 - systemd user services and Hyprland hotkey integration.
 
-[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/saiemsaeed/sayall/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/saiemsaeed/sayall/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/saiemsaeed/sayall/compare/v0.1.8...v0.2.2
 [0.1.8]: https://github.com/saiemsaeed/sayall/compare/v0.1.7...v0.1.8

@@ -227,14 +227,20 @@ final class Coordinator {
                     return
                 }
                 set(.delivering, "Delivering transcript…")
-                let delivery = TextDelivery.deliver(text, to: deliveryTarget)
+                let deliveredText = config.trailingSpace ? text + " " : text
+                let delivery = TextDelivery.deliver(deliveredText, method: config.outputMethod, to: deliveryTarget)
                 if result.warning == "cleanup_failed" {
                     pendingWarning = "Groq cleanup failed; used the raw transcript."
                 }
                 switch delivery {
-                case .pasteCommandPosted:
+                case .typeCommandPosted, .pasteCommandPosted:
                     completeAndHide(id)
                 case .copied:
+                    finish(id, as: .success, message: "Copied to clipboard", resetAfter: 3)
+                case .copiedFallback:
+                    let action = config.outputMethod == .type ? "Type" : "Paste"
+                    let deliveryWarning = "\(action) failed; the transcript was copied to the clipboard. Check SayAll's Accessibility permission and keep the original text field focused."
+                    pendingWarning = [pendingWarning, deliveryWarning].compactMap { $0 }.joined(separator: " ")
                     finish(id, as: .success, message: "Copied to clipboard", resetAfter: 3)
                 case .failed:
                     finish(id, as: .error, message: "Could not copy or paste the transcript", resetAfter: 3)
@@ -313,6 +319,7 @@ final class Coordinator {
         case .malformed: return "SayAll config.json is not valid JSON"
         case .missingDeepgramKey: return "Set stt.api_key or DEEPGRAM_API_KEY in \(path)"
         case .invalidProvider: return "Use a valid stt.model, stt.language, and global/eu/au region"
+        case .invalidOutputMethod: return "Set output.method to type, paste, or clipboard"
         case .invalidSecret: return "Provider API keys cannot contain whitespace"
         case nil: return "Could not load SayAll config.json"
         }

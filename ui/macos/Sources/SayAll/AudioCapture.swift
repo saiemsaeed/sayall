@@ -70,9 +70,20 @@ final class AudioCapture {
                 guard let self else { return }
                 if source?.isEqual(buffer.format) != true {
                     source = buffer.format
-                    converter = AVAudioConverter(from: buffer.format, to: canonical)
+                    guard let monoSource = AVAudioFormat(
+                        commonFormat: .pcmFormatFloat32,
+                        sampleRate: buffer.format.sampleRate,
+                        channels: 1,
+                        interleaved: false
+                    ) else {
+                        self.markCaptureFailed()
+                        return
+                    }
+                    converter = AVAudioConverter(from: monoSource, to: canonical)
                 }
-                guard let converter else { self.markCaptureFailed(); return }
+                guard let converter, let monoInput = Self.activeChannelMonoBuffer(from: buffer) else {
+                    self.markCaptureFailed(); return
+                }
                 let ratio = canonical.sampleRate / buffer.format.sampleRate
                 guard let output = AVAudioPCMBuffer(pcmFormat: canonical,
                     frameCapacity: AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1) else {
@@ -82,7 +93,7 @@ final class AudioCapture {
                 var error: NSError?
                 let status = converter.convert(to: output, error: &error) { _, status in
                     if supplied { status.pointee = .noDataNow; return nil }
-                    supplied = true; status.pointee = .haveData; return buffer
+                    supplied = true; status.pointee = .haveData; return monoInput
                 }
                 guard error == nil, status != .error else { self.markCaptureFailed(); return }
                 self.write(output)
@@ -159,6 +170,37 @@ final class AudioCapture {
 
     private func markCaptureFailed() {
         lock.withLock { captureFailed = true }
+    }
+
+    static func activeChannelMonoBuffer(from buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard buffer.format.commonFormat == .pcmFormatFloat32,
+              !buffer.format.isInterleaved,
+              buffer.frameLength > 0,
+              let channels = buffer.floatChannelData,
+              let monoFormat = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: buffer.format.sampleRate,
+                channels: 1,
+                interleaved: false
+              ),
+              let mono = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: buffer.frameLength),
+              let destination = mono.floatChannelData?[0] else { return nil }
+        var selectedChannel = 0
+        var selectedEnergy = -1.0
+        for channel in 0..<Int(buffer.format.channelCount) {
+            var energy = 0.0
+            for index in stride(from: 0, to: Int(buffer.frameLength), by: 4) {
+                let sample = Double(channels[channel][index])
+                energy += sample * sample
+            }
+            if energy > selectedEnergy {
+                selectedChannel = channel
+                selectedEnergy = energy
+            }
+        }
+        mono.frameLength = buffer.frameLength
+        destination.update(from: channels[selectedChannel], count: Int(buffer.frameLength))
+        return mono
     }
 
     private func reportLevel(_ buffer: AVAudioPCMBuffer) {
