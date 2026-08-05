@@ -13,7 +13,7 @@ final class AudioCapture {
     private static let sampleRate = 16_000.0
     private static let minimumFrames: AVAudioFramePosition = 4_800
     private static let maximumFrames: AVAudioFramePosition = 4_800_000
-    private let engine = AVAudioEngine()
+    private var engine: AVAudioEngine?
     private let lock = NSLock()
     private var file: AVAudioFile?
     private var pcmFile: FileHandle?
@@ -63,6 +63,8 @@ final class AudioCapture {
                 throw CaptureError.format
             }
             file = try AVAudioFile(forWriting: wavURL, settings: canonical.settings, commonFormat: .pcmFormatInt16, interleaved: true)
+            let engine = AVAudioEngine()
+            self.engine = engine
             let input = engine.inputNode
             var source: AVAudioFormat?
             var converter: AVAudioConverter?
@@ -135,8 +137,10 @@ final class AudioCapture {
     }
 
     private func cleanup(deleteFile: Bool) {
-        if tapInstalled { engine.inputNode.removeTap(onBus: 0); tapInstalled = false }
-        engine.stop()
+        let activeEngine = engine
+        if tapInstalled, let activeEngine { activeEngine.inputNode.removeTap(onBus: 0) }
+        tapInstalled = false
+        activeEngine?.stop()
         lock.lock()
         file = nil
         try? pcmFile?.synchronize()
@@ -144,6 +148,7 @@ final class AudioCapture {
         pcmFile = nil
         let directory = directoryURL
         lock.unlock()
+        engine = nil
         if deleteFile, let directory { try? FileManager.default.removeItem(at: directory) }
     }
 
