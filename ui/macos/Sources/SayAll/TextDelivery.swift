@@ -144,15 +144,7 @@ enum TextDelivery {
               !frontmost.isTerminated,
               frontmost.processIdentifier != getpid() else { return nil }
         let pid = frontmost.processIdentifier
-        let system = AXUIElementCreateSystemWide()
-        var focusedApplicationValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            system,
-            kAXFocusedApplicationAttribute as CFString,
-            &focusedApplicationValue
-        ) == .success,
-              let application = accessibilityElement(focusedApplicationValue),
-              processID(of: application) == pid else { return nil }
+        let application = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(application, 0.25)
         var focusedElementValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(

@@ -47,8 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AudioCapture.removeStaleFiles()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "SayAll")
-        statusItem.button?.title = "SayAll"
-        statusItem.button?.imagePosition = .imageLeading
+        statusItem.button?.imagePosition = .imageOnly
         statusItem.button?.toolTip = "SayAll"
         rebuildMenu(); registerShortcut()
         let helperURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/sayall-process")
