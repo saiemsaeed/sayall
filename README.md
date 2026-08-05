@@ -50,8 +50,11 @@ The official Homebrew Cask installs the same app and exposes its bundled CLI
 using Homebrew's managed binary shim:
 
 ```sh
-brew install --cask saiemsaeed/sayall/sayall
+brew install saiemsaeed/sayall/sayall
 ```
+
+The fully qualified name adds the official SayAll tap automatically. After the
+tap has been added, Homebrew also accepts the shorter `brew install sayall`.
 Ordinary Cask uninstall quits SayAll and removes only the app and Homebrew CLI
 shim; it retains `~/.config/sayall`. Use `brew uninstall --zap --cask sayall`
 only when configuration and Application Support data should also be removed.
