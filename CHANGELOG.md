@@ -5,6 +5,15 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-08-05
+
+### Fixed
+
+- Recreated the macOS audio input graph for every recording so SayAll follows
+  the current system-default microphone after an external interface disconnects
+  or the default input changes, instead of retaining an incompatible sample
+  rate from the previous device.
+
 ## [0.2.5] - 2026-08-04
 
 ### Changed
@@ -280,7 +289,8 @@ Initial release, tested and supported on x86-64 Arch Linux with Omarchy.
 - Persistent privacy-safe transcription metrics and microphone diagnostics.
 - systemd user services and Hyprland hotkey integration.
 
-[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.2.6...HEAD
+[0.2.6]: https://github.com/saiemsaeed/sayall/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/saiemsaeed/sayall/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/saiemsaeed/sayall/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/saiemsaeed/sayall/compare/v0.2.2...v0.2.3
