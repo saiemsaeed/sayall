@@ -5,6 +5,19 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-08-06
+
+### Changed
+
+- Simplified the macOS menu bar item to show only the waveform icon while
+  retaining its SayAll accessibility label and tooltip.
+
+### Fixed
+
+- Fixed cursor insertion in Slack and other Electron-style apps by querying
+  the known frontmost application directly for its focused accessibility
+  element instead of relying on the system-wide focused-application lookup.
+
 ## [0.2.6] - 2026-08-05
 
 ### Fixed
@@ -289,7 +302,8 @@ Initial release, tested and supported on x86-64 Arch Linux with Omarchy.
 - Persistent privacy-safe transcription metrics and microphone diagnostics.
 - systemd user services and Hyprland hotkey integration.
 
-[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.2.7...HEAD
+[0.2.7]: https://github.com/saiemsaeed/sayall/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/saiemsaeed/sayall/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/saiemsaeed/sayall/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/saiemsaeed/sayall/compare/v0.2.3...v0.2.4
