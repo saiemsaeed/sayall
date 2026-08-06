@@ -5,6 +5,19 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-08-06
+
+### Fixed
+
+- Made macOS cursor insertion work across hidden and dynamically recreated
+  Electron accessibility trees, including Claude Desktop, without app-specific
+  exceptions.
+- Bound macOS insertion to the original live application process and top-level
+  window, revalidated focus and secure input immediately before delivery, and
+  targeted paste events to that process instead of the global session.
+- Preserved insertion in terminal surfaces such as Ghostty while keeping
+  explicit clipboard mode independent of Accessibility APIs.
+
 ## [0.2.7] - 2026-08-06
 
 ### Changed
@@ -302,7 +315,8 @@ Initial release, tested and supported on x86-64 Arch Linux with Omarchy.
 - Persistent privacy-safe transcription metrics and microphone diagnostics.
 - systemd user services and Hyprland hotkey integration.
 
-[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.2.7...HEAD
+[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.2.8...HEAD
+[0.2.8]: https://github.com/saiemsaeed/sayall/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/saiemsaeed/sayall/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/saiemsaeed/sayall/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/saiemsaeed/sayall/compare/v0.2.4...v0.2.5
