@@ -1,5 +1,6 @@
 import AVFoundation
-import CoreMedia
+import AudioToolbox
+import CoreAudio
 import Darwin
 import Foundation
 
@@ -11,37 +12,119 @@ struct AudioInputDeviceInfo: Equatable {
 
 enum AudioInputDevices {
     static func available() -> [AudioInputDeviceInfo] {
-        let defaultID = AVCaptureDevice.default(for: .audio)?.uniqueID
-        return captureDevices().map {
-            AudioInputDeviceInfo(uniqueID: $0.uniqueID, name: $0.localizedName, isDefault: $0.uniqueID == defaultID)
+        let defaultID = defaultDeviceID()
+        return deviceIDs().compactMap { deviceID in
+            guard isEligible(deviceID),
+                  let uniqueID = stringProperty(deviceID, selector: kAudioDevicePropertyDeviceUID),
+                  let name = stringProperty(deviceID, selector: kAudioObjectPropertyName) else { return nil }
+            return AudioInputDeviceInfo(uniqueID: uniqueID, name: name, isDefault: deviceID == defaultID)
         }.sorted {
             if $0.isDefault != $1.isDefault { return $0.isDefault }
             return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
     }
 
-    static func selectedDevice(uniqueID: String?) throws -> AVCaptureDevice {
+    static func selectedDeviceID(uniqueID: String?) throws -> AudioDeviceID {
         if let uniqueID {
-            guard let device = captureDevices().first(where: { $0.uniqueID == uniqueID }) else {
+            var uid: CFString = uniqueID as CFString
+            var deviceID = kAudioObjectUnknown
+            let qualifierSize = UInt32(MemoryLayout<CFString>.size)
+            var dataSize = UInt32(MemoryLayout<AudioDeviceID>.size)
+            var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
+                mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+            let status = withUnsafePointer(to: &uid) { qualifier in
+                AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address,
+                    qualifierSize, qualifier, &dataSize, &deviceID)
+            }
+            guard status == noErr, deviceID != kAudioObjectUnknown, isEligible(deviceID) else {
                 throw AudioCapture.CaptureError.deviceUnavailable
             }
-            return device
+            return deviceID
         }
-        guard let device = AVCaptureDevice.default(for: .audio) else {
+        guard let deviceID = defaultDeviceID(), isEligible(deviceID) else {
             throw AudioCapture.CaptureError.deviceUnavailable
         }
-        return device
+        return deviceID
     }
 
-    private static func captureDevices() -> [AVCaptureDevice] {
-        var devices = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.microphone], mediaType: .audio, position: .unspecified
-        ).devices
-        if let systemDefault = AVCaptureDevice.default(for: .audio),
-           !devices.contains(where: { $0.uniqueID == systemDefault.uniqueID }) {
-            devices.append(systemDefault)
-        }
+    private static func defaultDeviceID() -> AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var deviceID = kAudioObjectUnknown
+        var size = UInt32(MemoryLayout.size(ofValue: deviceID))
+        guard AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID
+        ) == noErr, deviceID != kAudioObjectUnknown else { return nil }
+        return deviceID
+    }
+
+    private static func deviceIDs() -> [AudioDeviceID] {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size
+        ) == noErr else { return [] }
+        var devices = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &devices
+        ) == noErr else { return [] }
         return devices
+    }
+
+    private static func isEligible(_ deviceID: AudioDeviceID) -> Bool {
+        guard let alive = uintProperty(
+                deviceID, selector: kAudioDevicePropertyDeviceIsAlive, scope: kAudioObjectPropertyScopeGlobal
+              ), alive != 0,
+              let hidden = uintProperty(
+                deviceID, selector: kAudioDevicePropertyIsHidden, scope: kAudioObjectPropertyScopeGlobal
+              ), hidden == 0,
+              let canBeDefault = uintProperty(
+                deviceID,
+                selector: kAudioDevicePropertyDeviceCanBeDefaultDevice,
+                scope: kAudioDevicePropertyScopeInput
+              ), canBeDefault != 0 else { return false }
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioDevicePropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &size) == noErr, size > 0 else { return false }
+        let memory = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { memory.deallocate() }
+        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, memory) == noErr else { return false }
+        return UnsafeMutableAudioBufferListPointer(memory.assumingMemoryBound(to: AudioBufferList.self))
+            .contains { $0.mNumberChannels > 0 }
+    }
+
+    private static func uintProperty(_ deviceID: AudioDeviceID, selector: AudioObjectPropertySelector,
+        scope: AudioObjectPropertyScope) -> UInt32? {
+        var address = AudioObjectPropertyAddress(mSelector: selector, mScope: scope,
+            mElement: kAudioObjectPropertyElementMain)
+        guard AudioObjectHasProperty(deviceID, &address) else { return nil }
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout.size(ofValue: value))
+        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &value) == noErr else { return nil }
+        return value
+    }
+
+    private static func stringProperty(_ deviceID: AudioDeviceID, selector: AudioObjectPropertySelector) -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout.size(ofValue: value))
+        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &value) == noErr else { return nil }
+        return value?.takeRetainedValue() as String?
     }
 }
 
@@ -56,7 +139,7 @@ enum MicrophoneSelection {
     }
 }
 
-final class AudioCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
+final class AudioCapture {
     enum CaptureError: Error { case format, deviceUnavailable, tooShort, tooLong }
     final class AudioResampler {
         private var sourceFormat: AVAudioFormat?
@@ -108,12 +191,12 @@ final class AudioCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
     private static let sampleRate = 16_000.0
     private static let minimumFrames: AVAudioFramePosition = 4_800
     private static let maximumFrames: AVAudioFramePosition = 4_800_000
-    private let captureQueue = DispatchQueue(label: "pro.leets.sayall.audio-capture", qos: .userInitiated)
     private let resampler = AudioResampler()
-    private var session: AVCaptureSession?
-    private var audioOutput: AVCaptureAudioDataOutput?
-    private var sessionObservers: [NSObjectProtocol] = []
+    private var inputUnit: AUHALInput?
     private var captureGeneration: UUID?
+    private var selectedChannel = 0
+    private var channelCandidate = 0
+    private var candidateWins = 0
     private var intentionalTeardown = false
     private var failureReported = false
     private let lock = NSLock()
@@ -167,30 +250,27 @@ final class AudioCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
                 throw CaptureError.format
             }
             file = try AVAudioFile(forWriting: wavURL, settings: canonical.settings, commonFormat: .pcmFormatInt16, interleaved: true)
-            let device = try AudioInputDevices.selectedDevice(uniqueID: MicrophoneSelection.uniqueID)
-            let input = try AVCaptureDeviceInput(device: device)
-            let output = AVCaptureAudioDataOutput()
-            output.audioSettings = [
-                AVFormatIDKey: kAudioFormatLinearPCM,
-                AVLinearPCMBitDepthKey: 32,
-                AVLinearPCMIsFloatKey: true,
-                AVLinearPCMIsBigEndianKey: false,
-                AVLinearPCMIsNonInterleaved: true,
-            ]
-            output.setSampleBufferDelegate(self, queue: captureQueue)
-            let session = AVCaptureSession()
-            session.beginConfiguration()
-            guard session.canAddInput(input), session.canAddOutput(output) else { throw CaptureError.format }
-            session.addInput(input)
-            session.addOutput(output)
-            session.commitConfiguration()
-            self.session = session
-            audioOutput = output
+            let deviceID = try AudioInputDevices.selectedDeviceID(uniqueID: MicrophoneSelection.uniqueID)
+            let inputUnit: AUHALInput
+            do { inputUnit = try AUHALInput(deviceID: deviceID) }
+            catch AUHALInput.Failure.unavailable { throw CaptureError.deviceUnavailable }
+            catch { throw CaptureError.format }
+            self.inputUnit = inputUnit
             let generation = UUID()
             captureGeneration = generation
-            observe(session: session, device: device, generation: generation)
-            session.startRunning()
-            guard session.isRunning else { throw CaptureError.format }
+            inputUnit.framesHandler = { [weak self] samples, frames, channels, frameStride, rate in
+                guard let self,
+                      let monoInput = self.monoBuffer(
+                        samples: samples, frames: frames, channels: channels, frameStride: frameStride, rate: rate
+                      ),
+                      let converted = self.resampler.convert(monoInput) else {
+                    self?.markCaptureFailed()
+                    return
+                }
+                self.write(converted)
+            }
+            inputUnit.failureHandler = { [weak self] in self?.markUnexpectedFailure(generation: generation) }
+            try inputUnit.start()
             return Recording(directoryURL: directory, wavURL: wavURL, pcmURL: pcmURL, streamSourceFailed: false)
         } catch {
             cleanup(deleteFile: true)
@@ -200,7 +280,6 @@ final class AudioCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
 
     func stop() throws -> Recording {
         guard let directoryURL, let wavURL, let pcmURL else { throw CaptureError.format }
-        if session?.isRunning == false { markCaptureFailed() }
         cleanup(deleteFile: false)
         lock.lock()
         let frames = framesWritten
@@ -228,11 +307,9 @@ final class AudioCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
 
     private func cleanup(deleteFile: Bool) {
         lock.withLock { intentionalTeardown = true }
-        removeSessionObservers()
-        let activeSession = session
-        activeSession?.stopRunning()
-        audioOutput?.setSampleBufferDelegate(nil, queue: nil)
-        captureQueue.sync { resampler.reset() }
+        let activeInput = inputUnit
+        activeInput?.stop()
+        resampler.reset()
         lock.lock()
         file = nil
         try? pcmFile?.synchronize()
@@ -240,36 +317,9 @@ final class AudioCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
         pcmFile = nil
         let directory = directoryURL
         lock.unlock()
-        audioOutput = nil
-        session = nil
+        inputUnit = nil
         lock.withLock { captureGeneration = nil }
         if deleteFile, let directory { try? FileManager.default.removeItem(at: directory) }
-    }
-
-    private func observe(session: AVCaptureSession, device: AVCaptureDevice, generation: UUID) {
-        let center = NotificationCenter.default
-        for name in [
-            AVCaptureSession.runtimeErrorNotification,
-            AVCaptureSession.wasInterruptedNotification,
-            AVCaptureSession.didStopRunningNotification,
-        ] {
-            sessionObservers.append(center.addObserver(forName: name, object: session, queue: nil) { [weak self] _ in
-                self?.markUnexpectedFailure(generation: generation)
-            })
-        }
-        sessionObservers.append(center.addObserver(
-            forName: AVCaptureDevice.wasDisconnectedNotification,
-            object: device,
-            queue: nil
-        ) { [weak self] _ in
-            self?.markUnexpectedFailure(generation: generation)
-        })
-    }
-
-    private func removeSessionObservers() {
-        let center = NotificationCenter.default
-        sessionObservers.forEach(center.removeObserver)
-        sessionObservers.removeAll()
     }
 
     private func markUnexpectedFailure(generation: UUID) {
@@ -281,68 +331,6 @@ final class AudioCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
             return true
         }
         if shouldReport { failureHandler?() }
-    }
-
-    func captureOutput(
-        _ output: AVCaptureOutput,
-        didOutput sampleBuffer: CMSampleBuffer,
-        from connection: AVCaptureConnection
-    ) {
-        guard let source = Self.copyPCMBuffer(from: sampleBuffer),
-              let monoInput = Self.activeChannelMonoBuffer(from: source),
-              let converted = resampler.convert(monoInput) else {
-            markCaptureFailed()
-            return
-        }
-        write(converted)
-    }
-
-    private static func copyPCMBuffer(from sampleBuffer: CMSampleBuffer) -> AVAudioPCMBuffer? {
-        guard let description = CMSampleBufferGetFormatDescription(sampleBuffer),
-              let streamDescription = CMAudioFormatDescriptionGetStreamBasicDescription(description),
-              let format = AVAudioFormat(streamDescription: streamDescription),
-              CMSampleBufferGetNumSamples(sampleBuffer) > 0 else { return nil }
-        var requiredSize = 0
-        var blockBuffer: CMBlockBuffer?
-        let flags = kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment
-        guard CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
-            sampleBuffer,
-            bufferListSizeNeededOut: &requiredSize,
-            bufferListOut: nil,
-            bufferListSize: 0,
-            blockBufferAllocator: nil,
-            blockBufferMemoryAllocator: nil,
-            flags: flags,
-            blockBufferOut: &blockBuffer
-        ) == noErr else { return nil }
-        let memory = UnsafeMutableRawPointer.allocate(byteCount: requiredSize, alignment: 16)
-        defer { memory.deallocate() }
-        let bufferList = memory.bindMemory(to: AudioBufferList.self, capacity: 1)
-        guard CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
-            sampleBuffer,
-            bufferListSizeNeededOut: nil,
-            bufferListOut: bufferList,
-            bufferListSize: requiredSize,
-            blockBufferAllocator: nil,
-            blockBufferMemoryAllocator: nil,
-            flags: flags,
-            blockBufferOut: &blockBuffer
-        ) == noErr else { return nil }
-        let frameCount = AVAudioFrameCount(CMSampleBufferGetNumSamples(sampleBuffer))
-        guard let copy = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return nil }
-        copy.frameLength = frameCount
-        let sourceBuffers = UnsafeMutableAudioBufferListPointer(bufferList)
-        let destinationBuffers = UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)
-        guard sourceBuffers.count == destinationBuffers.count else { return nil }
-        for index in sourceBuffers.indices {
-            let source = sourceBuffers[index]
-            guard let sourceData = source.mData,
-                  let destinationData = destinationBuffers[index].mData,
-                  source.mDataByteSize <= destinationBuffers[index].mDataByteSize else { return nil }
-            memcpy(destinationData, sourceData, Int(source.mDataByteSize))
-            destinationBuffers[index].mDataByteSize = source.mDataByteSize
-        }
-        return copy
     }
 
     private func write(_ buffer: AVAudioPCMBuffer) {
@@ -370,34 +358,115 @@ final class AudioCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
         lock.withLock { captureFailed = true }
     }
 
+    private func monoBuffer(
+        samples: UnsafePointer<Float>, frames: Int, channels: Int, frameStride: Int, rate: Double
+    ) -> AVAudioPCMBuffer? {
+        guard frames > 0, channels > 0,
+              let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 1, interleaved: false),
+              let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
+              let destination = output.floatChannelData?[0] else { return nil }
+        var energies = [Double](repeating: 0, count: channels)
+        for channel in 0..<channels {
+            let source = samples.advanced(by: channel * frameStride)
+            for frame in stride(from: 0, to: frames, by: 4) { energies[channel] += Double(source[frame] * source[frame]) }
+        }
+        let winner = energies.indices.max(by: { energies[$0] < energies[$1] }) ?? 0
+        if selectedChannel >= channels { selectedChannel = winner }
+        if winner != selectedChannel && energies[winner] > energies[selectedChannel] * 1.8 {
+            if channelCandidate == winner { candidateWins += 1 } else { channelCandidate = winner; candidateWins = 1 }
+            if candidateWins >= 4 { selectedChannel = winner; candidateWins = 0 }
+        } else { candidateWins = 0 }
+        destination.update(from: samples.advanced(by: selectedChannel * frameStride), count: frames)
+        output.frameLength = AVAudioFrameCount(frames)
+        return output
+    }
+
     static func activeChannelMonoBuffer(from buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
-        guard buffer.format.commonFormat == .pcmFormatFloat32,
-              !buffer.format.isInterleaved,
-              buffer.frameLength > 0,
-              let channels = buffer.floatChannelData,
+        guard buffer.frameLength > 0,
               let monoFormat = AVAudioFormat(
-                commonFormat: .pcmFormatFloat32,
+                commonFormat: buffer.format.commonFormat,
                 sampleRate: buffer.format.sampleRate,
                 channels: 1,
                 interleaved: false
               ),
-              let mono = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: buffer.frameLength),
-              let destination = mono.floatChannelData?[0] else { return nil }
+              let mono = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: buffer.frameLength) else { return nil }
         var selectedChannel = 0
         var selectedEnergy = -1.0
-        for channel in 0..<Int(buffer.format.channelCount) {
-            var energy = 0.0
-            for index in stride(from: 0, to: Int(buffer.frameLength), by: 4) {
-                let sample = Double(channels[channel][index])
-                energy += sample * sample
+        switch buffer.format.commonFormat {
+        case .pcmFormatFloat32:
+            guard let destination = mono.floatChannelData?[0] else { return nil }
+            if buffer.format.isInterleaved {
+                guard let samples = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList).first?.mData?
+                    .assumingMemoryBound(to: Float.self) else { return nil }
+                let channelCount = Int(buffer.format.channelCount)
+                for channel in 0..<channelCount {
+                    var energy = 0.0
+                    for frame in stride(from: 0, to: Int(buffer.frameLength), by: 4) {
+                        let sample = Double(samples[frame * channelCount + channel])
+                        energy += sample * sample
+                    }
+                    if energy > selectedEnergy {
+                        selectedChannel = channel
+                        selectedEnergy = energy
+                    }
+                }
+                for frame in 0..<Int(buffer.frameLength) {
+                    destination[frame] = samples[frame * channelCount + selectedChannel]
+                }
+                break
             }
-            if energy > selectedEnergy {
-                selectedChannel = channel
-                selectedEnergy = energy
+            guard let channels = buffer.floatChannelData else { return nil }
+            for channel in 0..<Int(buffer.format.channelCount) {
+                var energy = 0.0
+                for index in stride(from: 0, to: Int(buffer.frameLength), by: 4) {
+                    let sample = Double(channels[channel][index])
+                    energy += sample * sample
+                }
+                if energy > selectedEnergy {
+                    selectedChannel = channel
+                    selectedEnergy = energy
+                }
             }
+            destination.update(from: channels[selectedChannel], count: Int(buffer.frameLength))
+        case .pcmFormatInt16:
+            guard let destination = mono.int16ChannelData?[0] else { return nil }
+            if buffer.format.isInterleaved {
+                guard let samples = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList).first?.mData?
+                    .assumingMemoryBound(to: Int16.self) else { return nil }
+                let channelCount = Int(buffer.format.channelCount)
+                for channel in 0..<channelCount {
+                    var energy = 0.0
+                    for frame in stride(from: 0, to: Int(buffer.frameLength), by: 4) {
+                        let sample = Double(samples[frame * channelCount + channel])
+                        energy += sample * sample
+                    }
+                    if energy > selectedEnergy {
+                        selectedChannel = channel
+                        selectedEnergy = energy
+                    }
+                }
+                for frame in 0..<Int(buffer.frameLength) {
+                    destination[frame] = samples[frame * channelCount + selectedChannel]
+                }
+                break
+            }
+            guard let channels = buffer.int16ChannelData else { return nil }
+            for channel in 0..<Int(buffer.format.channelCount) {
+                var energy = 0.0
+                for index in stride(from: 0, to: Int(buffer.frameLength), by: 4) {
+                    let sample = Double(channels[channel][index])
+                    energy += sample * sample
+                }
+                if energy > selectedEnergy {
+                    selectedChannel = channel
+                    selectedEnergy = energy
+                }
+            }
+            destination.update(from: channels[selectedChannel], count: Int(buffer.frameLength))
+        default:
+            return nil
         }
         mono.frameLength = buffer.frameLength
-        destination.update(from: channels[selectedChannel], count: Int(buffer.frameLength))
         return mono
     }
 

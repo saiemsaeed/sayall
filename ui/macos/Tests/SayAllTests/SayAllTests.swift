@@ -582,6 +582,67 @@ final class AudioCaptureConversionTests: XCTestCase {
         }
     }
 
+    func testActiveChannelMonoBufferSupportsInt16Capture() throws {
+        let layout = try XCTUnwrap(AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_Quadraphonic))
+        let format = AVAudioFormat(
+            commonFormat: .pcmFormatInt16,
+            sampleRate: 48_000,
+            interleaved: false,
+            channelLayout: layout
+        )
+        let input = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 8))
+        input.frameLength = 8
+        let channels = try XCTUnwrap(input.int16ChannelData)
+        for index in 0..<8 {
+            channels[0][index] = 100
+            channels[1][index] = -200
+            channels[2][index] = Int16((index + 1) * 1_000)
+            channels[3][index] = 0
+        }
+
+        let mono = try XCTUnwrap(AudioCapture.activeChannelMonoBuffer(from: input))
+
+        XCTAssertEqual(mono.format.commonFormat, .pcmFormatInt16)
+        XCTAssertEqual(mono.format.channelCount, 1)
+        XCTAssertEqual(mono.frameLength, 8)
+        let samples = try XCTUnwrap(mono.int16ChannelData?[0])
+        for index in 0..<8 {
+            XCTAssertEqual(samples[index], channels[2][index])
+        }
+    }
+
+    func testActiveChannelMonoBufferSupportsInterleavedFloatCapture() throws {
+        let layout = try XCTUnwrap(AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_Quadraphonic))
+        let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            interleaved: true,
+            channelLayout: layout
+        )
+        let input = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 8))
+        input.frameLength = 8
+        let source = try XCTUnwrap(
+            UnsafeMutableAudioBufferListPointer(input.mutableAudioBufferList).first?.mData?
+                .assumingMemoryBound(to: Float.self)
+        )
+        for frame in 0..<8 {
+            source[frame * 4] = 0.01
+            source[frame * 4 + 1] = -0.02
+            source[frame * 4 + 2] = Float(frame + 1) / 10
+            source[frame * 4 + 3] = 0
+        }
+
+        let mono = try XCTUnwrap(AudioCapture.activeChannelMonoBuffer(from: input))
+
+        XCTAssertFalse(mono.format.isInterleaved)
+        XCTAssertEqual(mono.format.channelCount, 1)
+        XCTAssertEqual(mono.frameLength, 8)
+        let samples = try XCTUnwrap(mono.floatChannelData?[0])
+        for frame in 0..<8 {
+            XCTAssertEqual(samples[frame], source[frame * 4 + 2])
+        }
+    }
+
     func testResamplerKeepsStateAcrossChunksAndRebuildsForFormatChanges() throws {
         let resampler = AudioCapture.AudioResampler()
         let firstFormat = try XCTUnwrap(AVAudioFormat(
