@@ -16,40 +16,53 @@ enum TextDelivery {
     }
 
     struct Target {
-        fileprivate enum Kind { case editableElement, pasteOnlySurface }
         fileprivate let pid: pid_t
-        fileprivate let element: AXUIElement
+        fileprivate let window: AXUIElement
         fileprivate let application: NSRunningApplication
-        fileprivate let kind: Kind
     }
 
     struct Focus {
         let pid: pid_t
         let element: AXUIElement
+        let window: AXUIElement
         let application: NSRunningApplication
+    }
+
+    enum ElementCapability: Equatable {
+        case none, editable, pasteOnlyTextArea
+    }
+
+    struct ElementFacts {
+        let role: String?
+        let enabled: Bool
+        let nonSecureSubrole: Bool
+        let valueSettable: Bool
+        let writableSelectionRange: Bool
     }
 
     struct AccessibilityClient {
         let processID: pid_t
         let isTrusted: @MainActor () -> Bool
         let currentFocus: @MainActor () -> Focus?
-        let isEditableAndNonSecure: @MainActor (AXUIElement) -> Bool
-        let isPasteOnlySurface: @MainActor (AXUIElement) -> Bool
+        let currentTarget: @MainActor () -> Target?
+        let requestAccessibility: @MainActor (Target) -> Bool
+        let elementCapability: @MainActor (AXUIElement) -> ElementCapability
         let isSecureInputEnabled: @MainActor () -> Bool
         let elementsEqual: @MainActor (AXUIElement, AXUIElement) -> Bool
         let applicationsMatch: @MainActor (NSRunningApplication, NSRunningApplication) -> Bool
-        let postPasteCommand: @MainActor () -> Bool
+        let postPasteCommand: @MainActor (pid_t) -> Bool
 
         static let live = AccessibilityClient(
             processID: getpid(),
             isTrusted: { AXIsProcessTrusted() && CGPreflightPostEventAccess() },
             currentFocus: { TextDelivery.currentFocus() },
-            isEditableAndNonSecure: { TextDelivery.editableAndNonSecure($0) },
-            isPasteOnlySurface: { TextDelivery.pasteOnlySurface($0) },
+            currentTarget: { TextDelivery.currentTarget() },
+            requestAccessibility: { TextDelivery.requestAccessibility(for: $0) },
+            elementCapability: { TextDelivery.elementCapability(of: $0) },
             isSecureInputEnabled: { IsSecureEventInputEnabled() },
             elementsEqual: { CFEqual($0, $1) },
             applicationsMatch: { !$0.isTerminated && $0.isEqual($1) },
-            postPasteCommand: { TextDelivery.postPasteCommand() }
+            postPasteCommand: { TextDelivery.postPasteCommand(to: $0) }
         )
     }
 
@@ -58,34 +71,45 @@ enum TextDelivery {
             logger.error("Target capture rejected: Accessibility or event-posting permission is unavailable")
             return nil
         }
-        guard let focus = client.currentFocus() else {
-            logger.error("Target capture rejected: no focused accessibility element")
+        guard !client.isSecureInputEnabled() else {
+            logger.error("Target capture rejected: secure keyboard input is active")
             return nil
         }
-        guard focus.pid != client.processID else {
-            logger.error("Target capture rejected: SayAll owns the focused element")
+        if let focus = client.currentFocus() {
+            guard focus.pid != client.processID else {
+                logger.error("Target capture rejected: SayAll owns the focused element")
+                return nil
+            }
+            guard client.elementCapability(focus.element) != .none else {
+                let focusedRole = role(of: focus.element) ?? "missing"
+                logger.error("Target capture rejected: role=\(focusedRole, privacy: .public) is not a text input")
+                return nil
+            }
+            guard !client.isSecureInputEnabled() else {
+                logger.error("Target capture rejected: secure keyboard input became active")
+                return nil
+            }
+            return Target(pid: focus.pid, window: focus.window, application: focus.application)
+        }
+        guard let target = client.currentTarget(), target.pid != client.processID else {
+            logger.error("Target capture rejected: no focused accessibility element or window")
             return nil
         }
-        let kind: Target.Kind
-        if client.isEditableAndNonSecure(focus.element) {
-            kind = .editableElement
-        } else if client.isPasteOnlySurface(focus.element), !client.isSecureInputEnabled() {
-            // Some terminal surfaces expose a read-only text area for their
-            // displayed buffer. Keep the same fail-closed app/element binding,
-            // then use one paste command while that exact surface remains focused.
-            kind = .pasteOnlySurface
-        } else {
-            let focusedRole = role(of: focus.element) ?? "missing"
-            let secureInput = client.isSecureInputEnabled()
-            logger.error("Target capture rejected: role=\(focusedRole, privacy: .public) secure-input=\(secureInput, privacy: .public)")
+        guard client.requestAccessibility(target) else {
+            logger.error("Target capture rejected: the focused app does not expose or enable accessibility")
             return nil
         }
-        return Target(pid: focus.pid, element: focus.element, application: focus.application, kind: kind)
+        guard !client.isSecureInputEnabled() else {
+            logger.error("Target capture rejected: secure keyboard input became active")
+            return nil
+        }
+        logger.info("Requested accessibility for an app with a temporarily unavailable focus tree")
+        return target
     }
 
-    /// Inserts only when the original editable, non-secure element is still
-    /// focused immediately before event delivery. Failed insertion preserves
-    /// the transcript on the clipboard for manual recovery.
+    /// Inserts only when a stable editable, non-secure element is focused in
+    /// the original application window immediately before event delivery.
+    /// Failed insertion preserves the transcript on the clipboard for recovery.
     static func deliver(
         _ text: String,
         method: OutputMethod,
@@ -98,54 +122,52 @@ enum TextDelivery {
             return copy(text, to: pasteboard) ? .copied : .failed
         case .paste:
             guard copy(text, to: pasteboard) else { return .failed }
-            return canInsert(to: target, client: client) && client.postPasteCommand()
-                ? .pasteCommandPosted : .copiedFallback
+            guard let target = insertionTarget(target, client: client),
+                  client.postPasteCommand(target.pid) else { return .copiedFallback }
+            return .pasteCommandPosted
         case .type:
             guard copy(text, to: pasteboard) else { return .failed }
-            return canInsert(to: target, client: client) && client.postPasteCommand()
-                ? .typeCommandPosted : .copiedFallback
+            guard let target = insertionTarget(target, client: client),
+                  client.postPasteCommand(target.pid) else { return .copiedFallback }
+            return .typeCommandPosted
         }
     }
 
-    private static func canInsert(to target: Target?, client: AccessibilityClient) -> Bool {
+    private static func insertionTarget(_ target: Target?, client: AccessibilityClient) -> Target? {
         guard client.isTrusted() else {
             logger.error("Insertion rejected: Accessibility or event-posting permission was revoked")
-            return false
+            return nil
         }
         guard !client.isSecureInputEnabled() else {
             logger.error("Insertion rejected: secure keyboard input is active")
-            return false
+            return nil
         }
         guard let target else {
             logger.error("Insertion rejected: no target was captured")
-            return false
+            return nil
         }
-        guard matches(target, client.currentFocus(), client: client),
-              matches(target, client.currentFocus(), client: client) else {
+        guard let first = client.currentFocus(), matches(target, first, client: client),
+              let second = client.currentFocus(), matches(target, second, client: client),
+              client.elementsEqual(first.element, second.element) else {
             logger.error("Insertion rejected: the focused application or element changed")
-            return false
+            return nil
         }
-        return true
+        guard !client.isSecureInputEnabled() else {
+            logger.error("Insertion rejected: secure keyboard input became active")
+            return nil
+        }
+        return target
     }
 
-    private static func matches(_ target: Target, _ focus: Focus?, client: AccessibilityClient) -> Bool {
-        guard let focus,
-              focus.pid == target.pid,
+    private static func matches(_ target: Target, _ focus: Focus, client: AccessibilityClient) -> Bool {
+        guard focus.pid == target.pid,
               client.applicationsMatch(target.application, focus.application),
-              client.elementsEqual(target.element, focus.element) else { return false }
-        switch target.kind {
-        case .editableElement: return client.isEditableAndNonSecure(focus.element)
-        case .pasteOnlySurface: return client.isPasteOnlySurface(focus.element)
-        }
+              client.elementsEqual(target.window, focus.window) else { return false }
+        return client.elementCapability(focus.element) != .none
     }
 
     private static func currentFocus() -> Focus? {
-        guard let frontmost = NSWorkspace.shared.frontmostApplication,
-              !frontmost.isTerminated,
-              frontmost.processIdentifier != getpid() else { return nil }
-        let pid = frontmost.processIdentifier
-        let application = AXUIElementCreateApplication(pid)
-        AXUIElementSetMessagingTimeout(application, 0.25)
+        guard let (frontmost, pid, application) = frontmostContext() else { return nil }
         var focusedElementValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
             application,
@@ -153,9 +175,103 @@ enum TextDelivery {
             &focusedElementValue
         ) == .success,
               let element = accessibilityElement(focusedElementValue),
-              processID(of: element) == pid else { return nil }
+              processID(of: element) == pid,
+              let window = window(of: element, pid: pid) else { return nil }
         AXUIElementSetMessagingTimeout(element, 0.25)
-        return Focus(pid: pid, element: element, application: frontmost)
+        return Focus(pid: pid, element: element, window: window, application: frontmost)
+    }
+
+    private static func currentTarget() -> Target? {
+        guard let (frontmost, pid, application) = frontmostContext() else { return nil }
+        var focusedWindowValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(
+            application,
+            kAXFocusedWindowAttribute as CFString,
+            &focusedWindowValue
+        ) == .success,
+           let window = accessibilityElement(focusedWindowValue),
+           processID(of: window) == pid {
+            return Target(pid: pid, window: window, application: frontmost)
+        }
+        return nil
+    }
+
+    private static func frontmostContext() -> (NSRunningApplication, pid_t, AXUIElement)? {
+        guard let frontmost = NSWorkspace.shared.frontmostApplication,
+              !frontmost.isTerminated,
+              frontmost.processIdentifier != getpid() else { return nil }
+        let pid = frontmost.processIdentifier
+        let application = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(application, 0.25)
+        return (frontmost, pid, application)
+    }
+
+    private static func window(of element: AXUIElement, pid: pid_t) -> AXUIElement? {
+        for attribute in [kAXWindowAttribute, kAXTopLevelUIElementAttribute] {
+            var value: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
+               let window = accessibilityElement(value), processID(of: window) == pid {
+                return window
+            }
+        }
+        return nil
+    }
+
+    private static func requestAccessibility(for target: Target) -> Bool {
+        guard !target.application.isTerminated,
+              target.application.processIdentifier == target.pid,
+              let frontmost = NSWorkspace.shared.frontmostApplication,
+              frontmost.isEqual(target.application) else { return false }
+        let application = AXUIElementCreateApplication(target.pid)
+        AXUIElementSetMessagingTimeout(application, 0.25)
+
+        var requested = false
+        if attributeIsSettable("AXManualAccessibility", on: application) {
+            _ = AXUIElementSetAttributeValue(
+                application,
+                "AXManualAccessibility" as CFString,
+                true as CFTypeRef
+            )
+            requested = true
+            if boolAttribute("AXManualAccessibility", on: application) == true ||
+                focusedElementAvailable(in: application) {
+                return true
+            }
+        }
+        if attributeIsSettable("AXEnhancedUserInterface", on: application) {
+            // Some Electron builds, including Claude Desktop, report an error
+            // from this write while still enabling their accessibility tree.
+            // Readiness is proven later by a successful focus query.
+            _ = AXUIElementSetAttributeValue(
+                application,
+                "AXEnhancedUserInterface" as CFString,
+                true as CFTypeRef
+            )
+            requested = true
+        }
+        return requested
+    }
+
+    private static func attributeIsSettable(_ attribute: String, on element: AXUIElement) -> Bool {
+        var settable = DarwinBoolean(false)
+        return AXUIElementIsAttributeSettable(element, attribute as CFString, &settable) == .success &&
+            settable.boolValue
+    }
+
+    private static func boolAttribute(_ attribute: String, on element: AXUIElement) -> Bool? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
+              let number = value as? NSNumber else { return nil }
+        return number.boolValue
+    }
+
+    private static func focusedElementAvailable(in application: AXUIElement) -> Bool {
+        var value: CFTypeRef?
+        return AXUIElementCopyAttributeValue(
+            application,
+            kAXFocusedUIElementAttribute as CFString,
+            &value
+        ) == .success && accessibilityElement(value) != nil
     }
 
     private static func accessibilityElement(_ value: CFTypeRef?) -> AXUIElement? {
@@ -169,19 +285,45 @@ enum TextDelivery {
         return pid
     }
 
-    private static func editableAndNonSecure(_ element: AXUIElement) -> Bool {
-        guard let role = role(of: element),
-              role == kAXTextFieldRole as String || role == kAXTextAreaRole as String else { return false }
-
+    private static func elementCapability(of element: AXUIElement) -> ElementCapability {
+        // Terminal buffers such as Ghostty expose a focused AXTextArea but no
+        // AXEnabled value. Reject an explicit false while treating an absent
+        // value as unknown; the text role, secure-input checks, and stable
+        // application/window binding still gate delivery.
+        let enabled = boolAttribute(kAXEnabledAttribute, on: element)
+        guard enabled != false else { return .none }
         var subroleValue: CFTypeRef?
         let subroleError = AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subroleValue)
-        guard nonSecureSubrole(error: subroleError, value: subroleValue) else { return false }
+        let facts = ElementFacts(
+            role: role(of: element),
+            enabled: enabled ?? true,
+            nonSecureSubrole: nonSecureSubrole(error: subroleError, value: subroleValue),
+            valueSettable: attributeIsSettable(kAXValueAttribute, on: element),
+            writableSelectionRange: hasWritableSelectionRange(element)
+        )
+        return classify(facts)
+    }
 
-        var settable = DarwinBoolean(false)
-        guard AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable) == .success else {
-            return false
+    static func classify(_ facts: ElementFacts) -> ElementCapability {
+        guard facts.enabled, facts.nonSecureSubrole else { return .none }
+        let textField = facts.role == kAXTextFieldRole as String
+        let textArea = facts.role == kAXTextAreaRole as String
+        if facts.writableSelectionRange || ((textField || textArea) && facts.valueSettable) {
+            return .editable
         }
-        return settable.boolValue
+        return textArea ? .pasteOnlyTextArea : .none
+    }
+
+    private static func hasWritableSelectionRange(_ element: AXUIElement) -> Bool {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            &value
+        ) == .success,
+              let value, CFGetTypeID(value) == AXValueGetTypeID(),
+              AXValueGetType(unsafeBitCast(value, to: AXValue.self)) == .cfRange else { return false }
+        return attributeIsSettable(kAXSelectedTextRangeAttribute, on: element)
     }
 
     private static func role(of element: AXUIElement) -> String? {
@@ -190,18 +332,6 @@ enum TextDelivery {
             return nil
         }
         return value as? String
-    }
-
-    private static func pasteOnlySurface(_ element: AXUIElement) -> Bool {
-        guard let elementRole = role(of: element) else { return false }
-        guard elementRole == kAXTextAreaRole as String else { return false }
-        var subroleValue: CFTypeRef?
-        let subroleError = AXUIElementCopyAttributeValue(
-            element,
-            kAXSubroleAttribute as CFString,
-            &subroleValue
-        )
-        return nonSecureSubrole(error: subroleError, value: subroleValue)
     }
 
     static func nonSecureSubrole(error: AXError, value: CFTypeRef?) -> Bool {
@@ -216,7 +346,7 @@ enum TextDelivery {
         }
     }
 
-    private static func postPasteCommand() -> Bool {
+    private static func postPasteCommand(to pid: pid_t) -> Bool {
         guard let source = CGEventSource(stateID: .combinedSessionState),
               let keyDown = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: false) else {
@@ -224,8 +354,8 @@ enum TextDelivery {
         }
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
-        keyDown.post(tap: .cgSessionEventTap)
-        keyUp.post(tap: .cgSessionEventTap)
+        keyDown.postToPid(pid)
+        keyUp.postToPid(pid)
         return true
     }
 
