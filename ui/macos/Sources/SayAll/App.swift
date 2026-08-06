@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let controlServer = ControlServer()
     private var ownsInstance = false
     private var cliInstaller: Process?
+    private var audioDeviceMonitor: AudioInputDeviceMonitor?
 
     static func main() {
         let application = NSApplication.shared
@@ -50,6 +51,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.imagePosition = .imageOnly
         statusItem.button?.toolTip = "SayAll"
         rebuildMenu(); registerShortcut()
+        audioDeviceMonitor = AudioInputDeviceMonitor { [weak self] in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.coordinator.state == .idle else { return }
+                    self.rebuildMenu()
+                }
+            }
+        }
         let helperURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/sayall-process")
         Task.detached(priority: .utility) {
             _ = try? await HelperRunner(executableURL: helperURL).compatibilityPreflight()
