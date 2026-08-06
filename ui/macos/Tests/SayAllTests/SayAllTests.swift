@@ -581,6 +581,49 @@ final class AudioCaptureConversionTests: XCTestCase {
             XCTAssertEqual(samples[index], channels[2][index])
         }
     }
+
+    func testResamplerKeepsStateAcrossChunksAndRebuildsForFormatChanges() throws {
+        let resampler = AudioCapture.AudioResampler()
+        let firstFormat = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: false
+        ))
+        var firstFrames = 0
+        for chunk in 0..<20 {
+            firstFrames += Int(try XCTUnwrap(resampler.convert(
+                inputBuffer(format: firstFormat, frames: 480, phase: chunk * 480)
+            )).frameLength)
+        }
+        XCTAssertEqual(resampler.converterGeneration, 1)
+        XCTAssertLessThanOrEqual(abs(firstFrames - 3_200), 64)
+
+        let secondFormat = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 24_000,
+            channels: 1,
+            interleaved: false
+        ))
+        var secondFrames = 0
+        for chunk in 0..<20 {
+            secondFrames += Int(try XCTUnwrap(resampler.convert(
+                inputBuffer(format: secondFormat, frames: 240, phase: chunk * 240)
+            )).frameLength)
+        }
+        XCTAssertEqual(resampler.converterGeneration, 2)
+        XCTAssertLessThanOrEqual(abs(secondFrames - 3_200), 64)
+    }
+
+    private func inputBuffer(format: AVAudioFormat, frames: AVAudioFrameCount, phase: Int) throws -> AVAudioPCMBuffer {
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames))
+        buffer.frameLength = frames
+        let samples = try XCTUnwrap(buffer.floatChannelData?[0])
+        for index in 0..<Int(frames) {
+            samples[index] = sin(Float(phase + index) * 0.05) * 0.25
+        }
+        return buffer
+    }
 }
 
 final class HelperDecoderTests: XCTestCase {

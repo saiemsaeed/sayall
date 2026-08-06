@@ -67,6 +67,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func cancel() { coordinator.cancel() }
     @objc private func trigger() { coordinator.trigger(source: .menu) }
     private func triggerShortcut() { coordinator.trigger(source: .shortcut) }
+    @objc private func selectMicrophone(_ sender: NSMenuItem) {
+        guard coordinator.state == .idle else { return }
+        MicrophoneSelection.uniqueID = sender.representedObject as? String
+        rebuildMenu()
+    }
     @objc private func installCommandLineTool() {
         guard cliInstaller == nil else {
             showInstallResult("A command line tool operation is already in progress.")
@@ -226,8 +231,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(withTitle: "Install Command Line Tool…", action: #selector(installCommandLineTool), keyEquivalent: "")
         }
         menu.addItem(.separator())
-        let mic = AVCaptureDevice.authorizationStatus(for: .audio)
-        menu.addItem(withTitle: "Microphone: \(String(describing: mic)) — Open Settings", action: #selector(openMicSettings), keyEquivalent: "")
+        let devices = AudioInputDevices.available()
+        let selectedMicrophone = MicrophoneSelection.uniqueID
+        let microphoneItem = NSMenuItem(title: "Input Device", action: nil, keyEquivalent: "")
+        let microphoneMenu = NSMenu(title: "Input Device")
+        let systemDefaultName = devices.first(where: \.isDefault)?.name ?? "Unavailable"
+        let systemDefaultItem = NSMenuItem(
+            title: "System Default (\(systemDefaultName))",
+            action: #selector(selectMicrophone(_:)),
+            keyEquivalent: ""
+        )
+        systemDefaultItem.target = self
+        systemDefaultItem.state = selectedMicrophone == nil ? .on : .off
+        systemDefaultItem.isEnabled = coordinator.state == .idle
+        microphoneMenu.addItem(systemDefaultItem)
+        microphoneMenu.addItem(.separator())
+        for device in devices {
+            let item = NSMenuItem(title: device.name, action: #selector(selectMicrophone(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = device.uniqueID
+            item.state = selectedMicrophone == device.uniqueID ? .on : .off
+            item.isEnabled = coordinator.state == .idle
+            microphoneMenu.addItem(item)
+        }
+        if let selectedMicrophone, !devices.contains(where: { $0.uniqueID == selectedMicrophone }) {
+            microphoneMenu.addItem(.separator())
+            let unavailable = NSMenuItem(title: "Selected device is unavailable", action: nil, keyEquivalent: "")
+            unavailable.isEnabled = false
+            microphoneMenu.addItem(unavailable)
+        }
+        microphoneMenu.addItem(.separator())
+        let microphoneSettings = NSMenuItem(
+            title: "Microphone Privacy Settings…",
+            action: #selector(openMicSettings),
+            keyEquivalent: ""
+        )
+        microphoneSettings.target = self
+        microphoneMenu.addItem(microphoneSettings)
+        microphoneItem.submenu = microphoneMenu
+        menu.addItem(microphoneItem)
         let accessibilityGranted = CGPreflightPostEventAccess()
         menu.addItem(
             withTitle: accessibilityGranted ? "Accessibility: Granted — Open Settings" : "Accessibility: Not Granted — Request Access",

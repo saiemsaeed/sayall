@@ -45,6 +45,9 @@ final class Coordinator {
                 self.changed()
             }
         }
+        capture.failureHandler = { [weak self] in
+            DispatchQueue.main.async { self?.audioCaptureFailed() }
+        }
     }
     func trigger(source: TriggerSource = .menu) {
         switch state {
@@ -144,6 +147,18 @@ final class Coordinator {
         operationID = nil
         set(.idle, "Ready — Control+/ to start")
     }
+    private func audioCaptureFailed() {
+        guard let id = operationID, state == .starting || state == .recording else { return }
+        audioLevel = 0
+        maximumTimer?.invalidate()
+        maximumTimer = nil
+        let activeStream = streamSession
+        streamSession = nil
+        capture.cancel()
+        persistStartup(outcome: "audio_device_interrupted")
+        finish(id, as: .error, message: "Microphone disconnected or stopped — choose an available input from the SayAll menu", resetAfter: 5)
+        task = Task { await activeStream?.cancelAndWait() }
+    }
     private func begin(_ id: UUID) async {
         pendingWarning = nil
         var phaseStarted = DispatchTime.now().uptimeNanoseconds
@@ -198,10 +213,14 @@ final class Coordinator {
             capture.cancel()
             persistStartup(outcome: "helper_error")
             finish(id, as: .error, message: Self.message(for: failure), resetAfter: 8)
+        } catch AudioCapture.CaptureError.deviceUnavailable {
+            capture.cancel()
+            persistStartup(outcome: "audio_device_unavailable")
+            finish(id, as: .error, message: "Selected microphone is unavailable — choose another input from the SayAll menu", resetAfter: 5)
         } catch {
             capture.cancel()
             persistStartup(outcome: "audio_error")
-            finish(id, as: .error, message: "Could not start the default microphone", resetAfter: 3)
+            finish(id, as: .error, message: "Could not start the selected microphone", resetAfter: 3)
         }
     }
     private func stop() {
