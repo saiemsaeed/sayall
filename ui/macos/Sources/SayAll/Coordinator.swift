@@ -53,11 +53,23 @@ final class Coordinator {
             let started = DispatchTime.now().uptimeNanoseconds
             let id = UUID()
             operationID = id
-            deliveryTarget = TextDelivery.captureTarget()
-            let targetCaptured = DispatchTime.now().uptimeNanoseconds
-            startupTiming = StartupTiming(source: source, started: started,
-                targetCaptureMs: Self.elapsedMilliseconds(from: started, to: targetCaptured))
+            deliveryTarget = nil
+            startupTiming = StartupTiming(source: source, started: started)
             set(.starting, "Starting recording…")
+            var phaseStarted = DispatchTime.now().uptimeNanoseconds
+            do {
+                operationConfig = try configuration.load()
+                showTimer = operationConfig?.showTimer ?? true
+                startupTiming?.configLoadMs = Self.elapsedMilliseconds(since: phaseStarted)
+            } catch {
+                finish(id, as: .error, message: Self.message(for: error, path: configuration.url.path), resetAfter: 8)
+                return
+            }
+            phaseStarted = DispatchTime.now().uptimeNanoseconds
+            if operationConfig?.outputMethod != .clipboard {
+                deliveryTarget = TextDelivery.captureTarget()
+            }
+            startupTiming?.targetCaptureMs = Self.elapsedMilliseconds(since: phaseStarted)
             beginTask = Task { await begin(id) }
         case .recording: stop()
         default: break
@@ -135,16 +147,6 @@ final class Coordinator {
     private func begin(_ id: UUID) async {
         pendingWarning = nil
         var phaseStarted = DispatchTime.now().uptimeNanoseconds
-        do {
-            operationConfig = try configuration.load()
-            showTimer = operationConfig?.showTimer ?? true
-            startupTiming?.configLoadMs = Self.elapsedMilliseconds(since: phaseStarted)
-        }
-        catch {
-            finish(id, as: .error, message: Self.message(for: error, path: configuration.url.path), resetAfter: 8)
-            return
-        }
-        phaseStarted = DispatchTime.now().uptimeNanoseconds
         let allowed: Bool
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: allowed = true
@@ -278,7 +280,7 @@ final class Coordinator {
                     finish(id, as: .success, message: "Copied to clipboard", resetAfter: 3)
                 case .copiedFallback:
                     let action = config.outputMethod == .type ? "Type" : "Paste"
-                    let deliveryWarning = "\(action) failed; the transcript was copied to the clipboard. Check SayAll's Accessibility permission and keep the original text field focused."
+                    let deliveryWarning = "\(action) failed; the transcript was copied to the clipboard. Check SayAll's Accessibility permission and keep a text field in the original app window focused."
                     pendingWarning = [pendingWarning, deliveryWarning].compactMap { $0 }.joined(separator: " ")
                     finish(id, as: .success, message: "Copied to clipboard", resetAfter: 3)
                 case .failed:
