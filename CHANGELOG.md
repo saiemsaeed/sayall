@@ -5,6 +5,23 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-08-06
+
+### Changed
+
+- Rebuilt macOS microphone capture on an input-only Core Audio HAL backend so
+  built-in, Bluetooth, and multichannel USB microphones share one reliable
+  device-independent capture path without changing the system audio route.
+- Made the macOS Input Device menu update immediately when microphones connect,
+  disconnect, or become the system default, while hiding internal audio devices.
+
+### Fixed
+
+- Fixed silent capture from native 24-bit multichannel interfaces such as the
+  Scarlett 2i2 while preserving MacBook, AirPods, and System Default recording.
+- Added bounded buffering, stable input-channel selection, capture watchdogs,
+  and callback-safe teardown for disconnected or stalled microphones.
+
 ## [0.2.9] - 2026-08-06
 
 ### Added
