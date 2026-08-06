@@ -5,6 +5,20 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-08-06
+
+### Added
+
+- Added a macOS Input Device submenu with a live System Default option and
+  persistent per-device microphone overrides.
+
+### Fixed
+
+- Replaced fragile macOS aggregate-device recording with microphone-only
+  capture so Bluetooth sample-rate changes no longer stop recording silently.
+- Preserved audio resampling across capture chunks and now fail immediately
+  when the active microphone disconnects, is interrupted, or stops unexpectedly.
+
 ## [0.2.8] - 2026-08-06
 
 ### Fixed
@@ -315,7 +329,8 @@ Initial release, tested and supported on x86-64 Arch Linux with Omarchy.
 - Persistent privacy-safe transcription metrics and microphone diagnostics.
 - systemd user services and Hyprland hotkey integration.
 
-[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.2.8...HEAD
+[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.2.9...HEAD
+[0.2.9]: https://github.com/saiemsaeed/sayall/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/saiemsaeed/sayall/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/saiemsaeed/sayall/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/saiemsaeed/sayall/compare/v0.2.5...v0.2.6
