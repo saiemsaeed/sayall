@@ -1,0 +1,51 @@
+name: Live Deepgram worker benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      enforce:
+        description: Enforce canary connectivity (quality remains advisory without configured thresholds)
+        type: boolean
+        default: false
+  schedule:
+    - cron: '17 6 * * 3'
+
+concurrency:
+  group: deepgram-live-benchmark
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install pinned fixture tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends espeak-ng=1.51+dfsg-12build1 sox=14.4.2+git20190427-4build4
+      - name: Install Zig 0.16.0
+        uses: mlugg/setup-zig@8d6198c65fb0feaa111df26e6b467fea8345e46f # v2.0.5
+        with:
+          version: 0.16.0
+      - name: Unit tests and worker build
+        run: |
+          python3 -m unittest discover -s tests/deepgram_benchmark -p 'test_*.py'
+          zig build process -Doptimize=ReleaseSafe
+      - name: Run live REST and streaming canaries
+        env:
+          SAYALL_DEEPGRAM_BENCHMARK_API_KEY: ${{ secrets.SAYALL_DEEPGRAM_BENCHMARK_API_KEY }}
+        run: |
+          enforce=''
+          if [[ '${{ github.event_name }}' == workflow_dispatch && '${{ inputs.enforce }}' == 'true' ]]; then enforce=--enforce; fi
+          python3 tests/deepgram_benchmark/benchmark.py --mode both $enforce --output deepgram-benchmark.json
+      - name: Upload privacy-safe report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: deepgram-benchmark-${{ github.run_id }}-${{ github.run_attempt }}
+          path: deepgram-benchmark.json
+          if-no-files-found: error
+          retention-days: 30

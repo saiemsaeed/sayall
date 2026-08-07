@@ -10,6 +10,9 @@ because they contain credentials and platform-owned secure audio paths; their
 typed schemas and bounds remain tested in Zig and Swift.
 `worker-info`, both ready modes, and `worker-finish` contain no credentials and
 freeze the compatibility and streaming control frames shared by future hosts.
+Terminal worker results may include the authoritative additive `transport`
+field (`rest` or `stream`); older hosts ignore it, while qualification tooling
+uses it to distinguish a completed stream from automatic REST fallback.
 
 `host-*` fixtures freeze the future unified native-host control protocol
 version 2. Version 2 is intentionally distinct from the released private macOS

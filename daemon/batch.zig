@@ -40,12 +40,14 @@ pub const ErrorCode = enum {
 };
 pub const Warning = enum { cleanup_failed };
 pub const Status = enum { success, no_speech, @"error" };
+pub const Transport = enum { rest, stream };
 pub const Result = struct {
     version: u32 = 1,
     status: Status,
     text: ?[]const u8 = null,
     warning: ?Warning = null,
     @"error": ?ErrorCode = null,
+    transport: ?Transport = null,
 };
 pub const WireResult = struct {
     version: u32,
@@ -53,6 +55,7 @@ pub const WireResult = struct {
     text: ?[]const u8 = null,
     warning: ?Warning = null,
     @"error": ?ErrorCode = null,
+    transport: ?Transport = null,
 };
 pub const Seam = struct {
     context: ?*anyopaque = null,
@@ -101,6 +104,7 @@ pub fn processWithTranscript(gpa: std.mem.Allocator, io: std.Io, r: Request, sea
     };
     var context: CoreContext = .{ .io = io, .request = &r, .seam = seam, .stt = &stt, .wav = wav };
     const streamed_owned = if (streamed) |text| gpa.dupe(u8, text) catch return fail(.internal) else null;
+    const transport: Transport = if (streamed != null) .stream else .rest;
     const outcome = provider_processing.process(gpa, streamed_owned, r.cleanup_enabled and r.groq_api_key.len > 0, .{
         .max_bytes = max_output_bytes,
         .require_utf8 = true,
@@ -108,13 +112,17 @@ pub fn processWithTranscript(gpa: std.mem.Allocator, io: std.Io, r: Request, sea
         .context = &context,
         .rest = coreRest,
         .cleanup = coreCleanup,
-    }) catch |err| return fail(if (err == error.ResponseTooLarge) .response_too_large else mapDeepgramError(err));
+    }) catch |err| return failWithTransport(
+        if (err == error.ResponseTooLarge) .response_too_large else mapDeepgramError(err),
+        transport,
+    );
     return switch (outcome) {
-        .no_speech => .{ .status = .no_speech },
+        .no_speech => .{ .status = .no_speech, .transport = transport },
         .success => |value| .{
             .status = .success,
             .text = value.text,
             .warning = if (value.warning != null) .cleanup_failed else null,
+            .transport = transport,
         },
     };
 }
@@ -144,6 +152,10 @@ fn coreCleanup(context_ptr: ?*anyopaque, gpa: std.mem.Allocator, raw: []const u8
 
 fn fail(code: ErrorCode) Result {
     return .{ .status = .@"error", .@"error" = code };
+}
+
+fn failWithTransport(code: ErrorCode, transport: Transport) Result {
+    return .{ .status = .@"error", .@"error" = code, .transport = transport };
 }
 
 fn safeSecret(secret: []const u8) bool {
@@ -297,8 +309,15 @@ test "process validates canonical audio and preserves raw transcript when cleanu
     const result = process(std.testing.allocator, std.testing.io, request, fake.seam());
     defer if (result.text) |text| std.testing.allocator.free(text);
     try std.testing.expectEqual(.success, result.status);
+    try std.testing.expectEqual(Transport.rest, result.transport.?);
     try std.testing.expectEqual(Warning.cleanup_failed, result.warning.?);
     try std.testing.expectEqualStrings("München", result.text.?);
+
+    const streamed = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "streamed");
+    defer if (streamed.text) |text| std.testing.allocator.free(text);
+    try std.testing.expectEqual(.success, streamed.status);
+    try std.testing.expectEqual(Transport.stream, streamed.transport.?);
+    try std.testing.expectEqualStrings("streamed", streamed.text.?);
 }
 
 test "process distinguishes short and invalid audio without calling providers" {
