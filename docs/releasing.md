@@ -15,13 +15,18 @@ the control protocol merely for an application release.
 
 | Platform / target | Release status |
 | --- | --- |
-| x86-64 Arch Linux with Omarchy (Wayland/Hyprland) | Supported; Linux archive and AUR packages; every candidate requires physical qualification |
+| Current, fully updated x86-64 Arch Linux with Omarchy (Wayland/Hyprland) | Supported; Arch-targeted Linux archive and AUR packages; every candidate requires physical qualification |
 | Apple Silicon arm64, macOS 15.0+ | Supported since 0.1.7; each release requires protected signing and physical qualification |
 | Windows (`x86_64-windows` compile target) | Core compile readiness only; no app, runtime, package, or installable output |
 
-Release binaries may work on related Linux Wayland systems, but that is not
-part of the compatibility promise. The Darwin core check is distinct from the
-native macOS app build. The Windows check is not a release artifact. See the
+Arch X11, Arch GNOME/KDE portal sessions, Ubuntu LTS GNOME, Fedora current
+GNOME, and KDE on other distributions are exploratory/non-blocking. They are
+not release cells until intentionally supported and packaged, and the
+Arch-built archive is not a universal Linux artifact. Published Linux inputs
+are identity-bound by the recorded checksum manifest; published macOS inputs
+must additionally be Developer ID signed, notarized, and stapled. The Darwin
+core check is distinct from the native macOS app build. The Windows check is
+not a release artifact. See the
 accepted [0.1.6 macOS ADR](adr-macos-0.1.6.md), the
 [macOS qualification gate](macos-release-qualification.md), the
 [Linux qualification gate](linux-release-qualification.md), and the accepted
@@ -114,9 +119,10 @@ the gate.
     publication remains blocked. Generate release-commit candidate AUR recipes
     from its checksums and complete every non-`N/A` row in
     [the Linux qualification checklist](linux-release-qualification.md),
-    including standalone archive, 0.1.8 upgrade, service retirement,
-    Wayland/X11 delivery, GNOME/KDE portal, recovery, uninstall, soak, and
-    rollback gates. Record the workflow run attempt and exact candidate
+    including standalone archive, upgrade from the immediately preceding public
+    release/candidate, applicable historical migrations, supported Hyprland
+    delivery, recovery, uninstall, soak, and rollback gates. Run the separate
+    X11/GNOME/KDE/distro matrix as exploratory coverage. Record the workflow run attempt and exact candidate
     `SHA256SUMS` file's SHA-256. Do not approve publication if any row is
     incomplete.
 11. After the unsigned macOS job succeeds, approve the
@@ -157,6 +163,21 @@ assets.
 Treat a successfully published release branch as frozen. If publication
 succeeds and a defect is found afterward, prepare a new patch version rather
 than pushing replacement artifacts to the same branch.
+
+## Stable-readiness phase boundary
+
+Phase 5 requires a frozen exact candidate (commit plus checksum-bound Linux
+artifacts and signed/notarized macOS artifact) and a separate, explicit user
+approval after qualification. Completion of earlier readiness phases does not
+authorize creating, naming, or publishing a candidate, and approval of one
+platform or an unfrozen build cannot be carried forward.
+
+For stable 1.x, public configuration and control contracts evolve additively
+within the major version and persisted-format changes require migrations. The
+private worker remains a same-version implementation detail, atomically
+packaged with host and CLI; mismatches are rejected loudly. Qualification must
+prove metrics/state migration and backup, plus rollback that either preserves
+data or clearly refuses state an older release cannot safely consume.
 
 ## Automated Homebrew Cask publishing
 

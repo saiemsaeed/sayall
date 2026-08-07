@@ -96,6 +96,20 @@ sayall doctor
 Record the three version outputs. They must identify one candidate version.
 `command -v sayall-process` must fail because the worker is private.
 
+## Severity and supported release cell
+
+The sole blocking Linux cell is a current, fully updated x86-64 Arch Linux
+installation running Omarchy with Hyprland Wayland. The archive is built and
+qualified for that Arch environment; it is not a universal Linux archive.
+
+A **P0** is a supported-cell failure that exposes a transcript to the wrong
+target, leaks secrets or retained audio, duplicates delivery, or corrupts user
+data/configuration. A **P1** is inability to install, launch, or complete
+dictation in the supported cell; unbounded or stuck capture/processing/worker
+behavior; or singleton/service failure that does not recover. Any P0 or P1 is a
+release blocker. Lower-severity defects block only when the release approver
+explicitly promotes them.
+
 ## Package lifecycle matrix
 
 Run each required row in a clean x86-64 Arch environment. Preserve a copy of
@@ -108,8 +122,8 @@ credential, not a personal production secret.
 | Clean install `sayall` from source | ☐ | |
 | Clean install `sayall-bin` | ☐ | |
 | Clean build/install `sayall-git` | ☐ | |
-| Upgrade `sayall` from 0.1.8 | ☐ | |
-| Upgrade `sayall-bin` from 0.1.8 | ☐ | |
+| Upgrade `sayall` from the immediately preceding public release or release candidate | ☐ | Record exact source version |
+| Upgrade `sayall-bin` from the immediately preceding public release or release candidate | ☐ | Record exact source version |
 | Switch `sayall` ↔ `sayall-bin` ↔ `sayall-git` | ☐ | |
 | Migrate installed `sayall-src` to `sayall` | ☐ | |
 | Uninstall each current variant | ☐ | |
@@ -144,32 +158,45 @@ remove the package, run `systemctl --user daemon-reload`, and verify no package
 binary, desktop file, icon, or system unit remains. User configuration must
 remain unless the tester explicitly removes it.
 
-## Functional parity matrix
+## Blocking supported matrix
 
-Run on supported Omarchy/Hyprland Wayland, an X11 session, and representative
-GNOME and KDE portal sessions. Every checkbox below that is not explicitly
-`N/A` is a publication blocker for the current candidate.
+Run every row on the supported Omarchy/Hyprland Wayland cell. Every unchecked
+row is a publication blocker for the current candidate.
 
-| Behavior | Wayland/Hyprland | X11 | GNOME/KDE portal | Evidence / notes |
-| --- | --- | --- | --- | --- |
-| Login starts one silent host | ☐ | ☐ | ☐ | |
-| `sayall status` is read-only | ☐ | ☐ | ☐ | |
-| `sayall toggle` starts/stops exactly once | ☐ | ☐ | ☐ | |
-| Native shortcut toggles exactly once | ☐ | N/A | ☐ | |
-| Capture level and timer update | ☐ | ☐ | ☐ | |
-| Streaming transcription succeeds | ☐ | ☐ | ☐ | |
-| REST fallback succeeds once | ☐ | ☐ | ☐ | |
-| Type delivery targets the focused app | ☐ | ☐ | ☐ | |
-| Clipboard mode preserves exact text | ☐ | ☐ | ☐ | |
-| Type failure falls back once to clipboard | ☐ | ☐ | ☐ | |
-| Cancellation returns to idle | ☐ | ☐ | ☐ | |
-| Config change applies after host restart | ☐ | ☐ | ☐ | |
-| Missing key uses native error UI/notification | ☐ | ☐ | ☐ | |
-| Microphone failure uses native error UI/notification | ☐ | ☐ | ☐ | |
-| Worker crash is bounded and next toggle recovers | ☐ | ☐ | ☐ | |
-| Host crash restarts without a stale socket owner | ☐ | ☐ | ☐ | |
-| Logout/login restores expected shortcut state | ☐ | ☐ | ☐ | |
-| Portal restart/session loss downgrades status safely | N/A | N/A | ☐ | |
+| Behavior | Result | Evidence / notes |
+| --- | --- | --- |
+| Login starts one silent host; `status` is read-only | ☐ | |
+| CLI and managed Hyprland shortcut each toggle exactly once | ☐ | |
+| Capture level/timer update; cancellation returns to idle | ☐ | |
+| Streaming succeeds; REST fallback occurs at most once | ☐ | |
+| `type` delivers once to the field focused at delivery time | ☐ | Linux does not retain/revalidate the recording-start target |
+| Focus change during recording and processing follows the documented delivery-time-focus rule without disclosure to any other field | ☐ | |
+| Secure/password fields do not receive automatic disclosure; transcript is preserved safely with clear notice | ☐ | |
+| Clipboard mode preserves exact text; type failure falls back once without auto-pasting into a different target | ☐ | |
+| Missing key and microphone/permission failure use native error UI/notification and recover after correction | ☐ | |
+| Built-in/default input and hotplug/default-input changes between recordings behave predictably | ☐ | Record PipeWire device/default |
+| Raw audio is removed on success, cancellation, provider failure, worker/host kill, and timeout | ☐ | No transcript/key/audio leakage in argv, logs, or persistent history |
+| Startup scavenges audio left by a simulated interruption without exposing it | ☐ | |
+| Config change applies after restart without corruption | ☐ | |
+| Worker crash/timeout is bounded and the next toggle recovers | ☐ | |
+| Host kill is recovered by systemd with one owner and no stale socket | ☐ | |
+| Logout/login restores expected shortcut state | ☐ | |
+
+## Exploratory matrix (non-blocking)
+
+Reuse the blocking behavior rows above in each environment; record deviations
+but do not hold publication unless they reproduce in the supported cell or meet
+a P0 privacy/integrity threshold. These cells are not supported until they are
+intentionally adopted and packaged.
+
+| Exploratory cell | Result | Evidence / notes |
+| --- | --- | --- |
+| Arch x86-64, X11 | ☐ | |
+| Arch x86-64, GNOME portal session | ☐ | Portal consent/session-loss behavior |
+| Arch x86-64, KDE portal session | ☐ | Portal consent/session-loss behavior |
+| Ubuntu LTS, GNOME | ☐ | No Arch archive portability claim |
+| Fedora current, GNOME | ☐ | No Arch archive portability claim |
+| KDE on other distributions | ☐ | Record distribution/version |
 
 Portal consent must occur only after the explicit Settings action. Declining or
 closing the prompt must not prevent normal host startup or create a second
@@ -177,8 +204,9 @@ shortcut owner.
 
 ## Upgrade and rollback evidence
 
-The 0.1.8 upgrade is intentionally two-phase. After the package transaction,
-run the newly installed `sayall setup` and retain:
+Upgrade from the actual immediately preceding public release (or the exact
+candidate that would immediately precede this one). Record both versions and,
+after the package transaction, run the newly installed `sayall setup` and retain:
 
 ```sh
 systemctl --user status sayall.service sayall-hud.service --no-pager
@@ -189,6 +217,11 @@ sayall doctor --json
 The candidate fails qualification if the old service remains active, both hosts
 handle a shortcut, text is delivered twice, the private worker is public, or a
 stale socket prevents recovery.
+
+Where the preceding version is 0.1.8, also retain the historical two-phase
+service-retirement migration check. Keep `sayall-src`, manual-unit, keyword,
+metrics-v1, and other historical migration fixtures as regression coverage;
+they do not replace the immediately-preceding-version upgrade.
 
 Before publication, prove rollback in a disposable environment: stop the
 candidate host, downgrade all package-owned components together, reload the user
@@ -201,9 +234,12 @@ and result here:
 
 Run a minimum two-hour soak containing at least 50 complete toggle → capture →
 process → delivery cycles, three intentional native-host kills followed by
-systemd recovery, and one logout/login. Retain the user-service journal and
-record the cycle counts. Any duplicate delivery, duplicate owner, unexpected
-service restart, unrecovered crash, or stale socket fails the soak.
+systemd recovery, one worker kill, one logout/login, hotplug/default-input
+changes, and sleep/wake where the test hardware supports it. Retain the
+user-service journal, record cycle counts, and verify no audio remains after
+each terminal path and after startup scavenging. Any duplicate delivery,
+duplicate owner, unexpected service restart, unrecovered crash, stale socket,
+or retained audio fails the soak.
 
 - Soak start/end:
 - Successful cycles:
@@ -213,7 +249,8 @@ service restart, unrecovered crash, or stale socket fails the soak.
 
 ## Decision
 
-- [ ] Every non-`N/A` row passed with the exact frozen candidate.
+- [ ] Every package-lifecycle and blocking supported-matrix row passed with the
+  exact frozen candidate; exploratory results are recorded separately.
 - [ ] Failures and deviations are linked to blocking issues.
 - [ ] Release-candidate soak completed without duplicate owners or delivery.
 - [ ] Rollback was demonstrated and approved.
