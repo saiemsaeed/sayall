@@ -436,7 +436,7 @@ mod tests {
         assert!(!pcm.exists());
         assert_eq!(fs::metadata(&wav).unwrap().mode() & 0o777, 0o600);
         cleanup(&wav);
-        fs::remove_dir(root).unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
