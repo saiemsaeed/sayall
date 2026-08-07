@@ -274,13 +274,36 @@ fn write_wav(w: &mut impl Write, pcm: &[u8]) -> io::Result<()> {
 mod tests {
     use super::*;
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt, symlink};
+    use std::ops::Deref;
 
-    fn private_root(name: &str) -> PathBuf {
+    struct TestRoot(PathBuf);
+
+    impl Deref for TestRoot {
+        type Target = Path;
+
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
+    impl AsRef<Path> for TestRoot {
+        fn as_ref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn private_root(name: &str) -> TestRoot {
         let root =
             std::env::temp_dir().join(format!("sayall-capture-test-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
-        root
+        TestRoot(root)
     }
 
     #[test]
@@ -376,6 +399,77 @@ mod tests {
                 .any(|line| line.starts_with("DEEPGRAM_API_KEY="))
         );
         capture.cancel();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stop_wraps_fake_pcm_byte_exactly_and_preserves_private_permissions() {
+        let root = private_root("stop-wav");
+        let script = root.join("fake-pw-record");
+        fs::write(
+            &script,
+            b"#!/bin/sh\nfor last do :; done\nprintf '\\001\\000\\377\\177\\000\\200' > \"$last\"\ntrap 'exit 0' INT TERM\nwhile :; do /bin/sleep 1; done\n",
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let capture = Capture::start_with_program(&root, 9, "", Ok(script)).unwrap();
+        let pcm = root.join("session-9/audio.pcm");
+        let mut pcm_ready = false;
+        for _ in 0..100 {
+            if fs::metadata(&pcm).map_or(false, |m| m.len() == 6) {
+                pcm_ready = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(pcm_ready, "fake capture did not write PCM before deadline");
+        assert_eq!(
+            fs::metadata(root.join("session-9")).unwrap().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(fs::metadata(&pcm).unwrap().mode() & 0o777, 0o600);
+
+        let wav = capture.stop().unwrap();
+        let mut expected = Vec::new();
+        write_wav(&mut expected, &[1, 0, 255, 127, 0, 128]).unwrap();
+        assert_eq!(fs::read(&wav).unwrap(), expected);
+        assert!(!pcm.exists());
+        assert_eq!(fs::metadata(&wav).unwrap().mode() & 0o777, 0o600);
+        cleanup(&wav);
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn cancel_and_nonzero_exit_remove_all_session_artifacts() {
+        let root = private_root("terminal-cleanup");
+        let sleeper = root.join("sleeper");
+        fs::write(
+            &sleeper,
+            b"#!/bin/sh\ntrap 'exit 0' INT TERM\nwhile :; do /bin/sleep 1; done\n",
+        )
+        .unwrap();
+        fs::set_permissions(&sleeper, fs::Permissions::from_mode(0o700)).unwrap();
+        Capture::start_with_program(&root, 10, "", Ok(sleeper))
+            .unwrap()
+            .cancel();
+        assert!(!root.join("session-10").exists());
+
+        let failing = root.join("failing");
+        fs::write(&failing, b"#!/bin/sh\nexit 23\n").unwrap();
+        fs::set_permissions(&failing, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut capture = Capture::start_with_program(&root, 11, "", Ok(failing)).unwrap();
+        let mut exited = false;
+        for _ in 0..100 {
+            if !capture.alive().unwrap() {
+                exited = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(exited, "fake capture did not exit before deadline");
+        let error = capture.stop().unwrap_err();
+        assert!(error.to_string().contains("23"));
+        assert!(!root.join("session-11").exists());
         fs::remove_dir_all(root).unwrap();
     }
 }
