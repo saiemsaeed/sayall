@@ -94,6 +94,35 @@ At minimum, qualify:
   menu installer's ownership checks, and preserves `~/.config/sayall` unless
   explicit `--zap` is used.
 
+## Upgrade, rollback, and soak
+
+- [ ] Upgrade from the actual immediately preceding public release (or exact
+  immediately preceding candidate), preserving configuration and Application
+  Support state and confirming all bundled components report one version.
+- [ ] In a disposable test environment, quit the candidate, restore the prior
+  app and all bundled components atomically, and document whether migrated
+  metrics/state are readable. Rollback must preserve accepted data or reject
+  incompatible state loudly; never mix host, CLI, and worker versions.
+- [ ] Complete a minimum two-hour soak with at least 50 full capture → process
+  → delivery cycles, built-in and external/default-input hotplug changes, three
+  intentional app kills and worker recovery, sleep/wake, network/fallback
+  paths, and permission denial/regrant.
+- [ ] Verify singleton recovery, at-most-once delivery, bounded capture/worker
+  completion, startup scavenging, and no retained raw audio after every normal,
+  failure, kill, and restart path.
+
+- Rollback result/evidence:
+- Soak start/end and successful cycles:
+- Kill/recovery and sleep/wake evidence:
+- Audio-cleanup/scavenging evidence:
+
+## Release-blocking severity
+
+A **P0** is wrong-target disclosure, secrets/audio leakage, duplicate delivery,
+or data/config corruption. A **P1** is supported-cell install, launch, or
+dictation failure; unbounded/stuck capture or worker behavior; or an
+unrecovered singleton/service failure. Any P0 or P1 blocks publication.
+
 ## Publication decision
 
 - [ ] All required rows pass or accepted limitations have linked release notes.
@@ -102,6 +131,7 @@ At minimum, qualify:
 - [ ] Release approver records name, date, candidate SHA-256, and go/no-go.
 - [ ] The exact candidate SHA-256 matches the `candidate-identities` job summary
   before the protected publish job is approved.
+- [ ] Rollback and the two-hour/50-cycle soak passed.
 
 Until every publication item is checked, the current supported macOS release
 remains latest and the candidate must not be published.

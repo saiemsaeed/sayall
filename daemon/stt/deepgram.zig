@@ -72,12 +72,17 @@ pub fn transcribe(gpa: Allocator, io: Io, cfg: *const config.SttConfig, wav: []c
         return statusError(@intFromEnum(result.status));
     }
 
+    return decodeResponse(gpa, response_bytes) catch |err| {
+        if (err == error.BadResponse) logVerbose(verbose, "deepgram returned invalid JSON", .{});
+        return err;
+    };
+}
+
+/// Pure response decoding seam used by both the network path and offline tests.
+fn decodeResponse(gpa: Allocator, response_bytes: []const u8) TranscribeError![]u8 {
     const parsed = std.json.parseFromSlice(DeepgramResponse, gpa, response_bytes, .{
         .ignore_unknown_fields = true,
-    }) catch {
-        logVerbose(verbose, "deepgram returned invalid JSON", .{});
-        return error.BadResponse;
-    };
+    }) catch return error.BadResponse;
     defer parsed.deinit();
 
     const channels = parsed.value.results.channels;
@@ -130,12 +135,25 @@ test "parses a realistic deepgram response" {
         \\{"metadata":{"transaction_key":"deprecated","request_id":"abc","sha256":"x","created":"2026-07-17T00:00:00.000Z","duration":1.5,"channels":1},
         \\"results":{"channels":[{"alternatives":[{"transcript":" hello world ","confidence":0.99,"words":[],"paragraphs":{}}]}]}}
     ;
-    const parsed = try std.json.parseFromSlice(DeepgramResponse, std.testing.allocator, json, .{
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-    const t = parsed.value.results.channels[0].alternatives[0].transcript;
-    try std.testing.expectEqualStrings(" hello world ", t);
+    const transcript = try decodeResponse(std.testing.allocator, json);
+    defer std.testing.allocator.free(transcript);
+    try std.testing.expectEqualStrings("hello world", transcript);
+}
+
+test "response decoder handles empty shapes additions and malformed JSON" {
+    const empty_shapes = [_][]const u8{
+        "{\"results\":{\"channels\":[]}}",
+        "{\"results\":{\"channels\":[{\"alternatives\":[]}]}}",
+    };
+    for (empty_shapes) |json| {
+        const transcript = try decodeResponse(std.testing.allocator, json);
+        defer std.testing.allocator.free(transcript);
+        try std.testing.expectEqualStrings("", transcript);
+    }
+    const additive = try decodeResponse(std.testing.allocator, "{\"future\":true,\"results\":{\"channels\":[{\"alternatives\":[{\"transcript\":\"  kept  \",\"confidence\":1}],\"future\":{}}]}}");
+    defer std.testing.allocator.free(additive);
+    try std.testing.expectEqualStrings("kept", additive);
+    try std.testing.expectError(error.BadResponse, decodeResponse(std.testing.allocator, "{broken"));
 }
 
 test "regional endpoints are allow-listed" {

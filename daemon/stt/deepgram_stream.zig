@@ -471,3 +471,29 @@ test "streaming preserves dictated newlines between final segments" {
     }, &metadata);
     try std.testing.expectEqualStrings("first line\nsecond line", transcript.items);
 }
+
+test "streaming event failures and repeated finals are deterministic" {
+    var transcript: std.ArrayList(u8) = .empty;
+    defer transcript.deinit(std.testing.allocator);
+    var metadata = false;
+    var final = "{\"type\":\"Results\",\"is_final\":true,\"channel\":{\"alternatives\":[{\"transcript\":\"same\"}]}}".*;
+    try processMessage(std.testing.allocator, &transcript, .{ .type = .text, .data = &final }, &metadata);
+    try processMessage(std.testing.allocator, &transcript, .{ .type = .text, .data = &final }, &metadata);
+    try std.testing.expectEqualStrings("same same", transcript.items);
+    var provider_error = "{\"type\":\"Error\",\"message\":\"bad\"}".*;
+    try std.testing.expectError(error.ProviderError, processMessage(std.testing.allocator, &transcript, .{ .type = .text, .data = &provider_error }, &metadata));
+    var malformed = "{".*;
+    try std.testing.expectError(error.UnexpectedEndOfInput, processMessage(std.testing.allocator, &transcript, .{ .type = .text, .data = &malformed }, &metadata));
+    var close_data: [0]u8 = .{};
+    try std.testing.expectError(error.ProviderClosed, processMessage(std.testing.allocator, &transcript, .{ .type = .close, .data = &close_data }, &metadata));
+}
+
+test "streaming transcript bound is enforced before append" {
+    var transcript: std.ArrayList(u8) = .empty;
+    defer transcript.deinit(std.testing.allocator);
+    try transcript.appendNTimes(std.testing.allocator, 'x', 1024 * 1024);
+    var metadata = false;
+    var final = "{\"type\":\"Results\",\"is_final\":true,\"channel\":{\"alternatives\":[{\"transcript\":\"y\"}]}}".*;
+    try std.testing.expectError(error.TranscriptTooLarge, processMessage(std.testing.allocator, &transcript, .{ .type = .text, .data = &final }, &metadata));
+    try std.testing.expectEqual(@as(usize, 1024 * 1024), transcript.items.len);
+}

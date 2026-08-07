@@ -114,6 +114,7 @@ tar --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner \
     -C "$root" -czf "$source_archive" "${source_paths[@]}"
 (cd dist && sha256sum "${name}.tar.gz" "${source_name}.tar.gz" > SHA256SUMS)
 bash tests/linux-package-layout.sh "$version" "$archive" "$source_archive"
+bash tests/linux-installed-artifact-smoke.sh "$version" "$archive"
 
 printf 'created %s\ncreated %s\ncreated dist/SHA256SUMS\n' \
     "$archive" "$source_archive"

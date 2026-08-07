@@ -4,6 +4,8 @@ zig-pkg/
 ui/linux/target/
 ui/macos/.build/
 dist/
+__pycache__/
+*.pyc
 
 .env
 .env.*

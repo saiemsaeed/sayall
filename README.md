@@ -18,11 +18,15 @@ cleanup is configured, filler words and false starts are removed before output.
 
 | Platform / target | Current status |
 | --- | --- |
-| x86-64 Arch Linux with Omarchy (Wayland/Hyprland) | Supported and tested; native host/CLI and AUR or archive distribution |
+| Current, fully updated x86-64 Arch Linux with Omarchy (Wayland/Hyprland) | Supported and tested; native host/CLI and AUR or Arch-targeted archive distribution |
 | Apple Silicon (`arm64`), macOS 15.0 or later | Supported since 0.1.7 as a signed, notarized, and stapled native app |
 | Windows (`x86_64-windows` compile target) | Core compile readiness only; no app, runtime, package, or installable output |
 
-Other Linux systems may work but are not tested or supported. Each macOS
+Arch X11, Arch GNOME/KDE portal sessions, Ubuntu LTS GNOME, Fedora current
+GNOME, and KDE on other distributions are exploratory and non-blocking until
+they are intentionally supported and packaged. The Arch-built archive is not a
+universal Linux binary. Other Linux systems may work but are not supported.
+Each macOS
 release remains gated on signing, notarization, and physical qualification;
 unsigned CI candidates are never distributed. Windows readiness does not
 constitute product or runtime support. The accepted
@@ -323,6 +327,18 @@ yay -Rns sayall # or sayall-bin / sayall-git
 If disable reports that the shortcut is an external manual binding, remove
 that `sayall toggle` line from `~/.config/hypr/bindings.conf` instead.
 
+For a standalone release-archive installation, replace the `yay` command above
+with removal of the files installed by the archive, then reload the user manager:
+
+```sh
+rm -f ~/.local/bin/sayall ~/.local/bin/sayall-hud \
+  ~/.local/lib/sayall/sayall-process \
+  ~/.config/systemd/user/sayall-hud.service \
+  ~/.local/share/applications/dev.sayall.Hud.desktop \
+  ~/.local/share/icons/hicolor/scalable/apps/dev.sayall.Hud.svg
+systemctl --user daemon-reload
+```
+
 Package removal deliberately preserves user configuration. To remove every
 shortcut trace as well, delete the block between `BEGIN SAYALL MANAGED
 SHORTCUT` and `END SAYALL MANAGED SHORTCUT` in
@@ -527,7 +543,9 @@ Output method `clipboard` copies without inserting. On macOS, `type` inserts
 at the verified original cursor using clipboard-backed `Command+V`; `paste` is
 an explicit name for the same robust macOS behavior. On Linux, `type` passes
 the transcript directly to `wtype` or `xdotool`, while `paste` copies and sends
-one `Ctrl+V`. Terminals commonly reserve `Ctrl+V` for literal input and may
+one `Ctrl+V` to the field focused at delivery time; Linux does not retain and
+revalidate the recording-start target as macOS does. Terminals commonly reserve
+`Ctrl+V` for literal input and may
 require a user keybinding that maps it to clipboard paste, or can use
 `clipboard` instead. If insertion becomes unsafe or fails, SayAll preserves
 the transcript on the clipboard and reports the fallback.
@@ -625,10 +643,12 @@ satisfied.
 
 ## Limitations
 
-- **Support scope** — Linux support is limited to x86-64 Arch Linux running
-  Omarchy. macOS support is limited to Apple Silicon running macOS 15.0 or
-  later; Windows is unsupported. Other environments may work but are not
-  supported.
+- **Support scope** — Linux support is limited to current, fully updated x86-64
+  Arch Linux running Omarchy with Hyprland Wayland. Arch X11, Arch GNOME/KDE
+  portal sessions, Ubuntu LTS GNOME, Fedora current GNOME, and KDE elsewhere
+  are exploratory/non-blocking and are not supported release cells. The Linux
+  archive targets Arch; it is not a universal Linux package. macOS support is
+  limited to Apple Silicon running macOS 15.0 or later; Windows is unsupported.
 - **macOS distribution** — source and CI readiness are not a distributable
   product; no unsigned, unnotarized, or unqualified macOS build is published.
 - **REST network deadlines** — provider responses are memory-bounded, but an
@@ -652,9 +672,16 @@ CLI, macOS app, and bundled private workers share one product version. macOS
 release artifacts remain unpublished until they complete signing, notarization,
 and physical qualification. Protocol versions are independent of product versions.
 
-During the pre-1.0 period, patch releases remain backward-compatible whenever
-possible. A minor release may make a documented breaking change to
-configuration or behavior. See `CHANGELOG.md` for user-visible changes and
-`docs/releasing.md` for the release process.
+For stable 1.x releases, public configuration and control protocols remain
+backward compatible within the major version: extensions are additive, and
+persisted-format changes include tested migrations. The private processing
+worker is not a public compatibility surface; it ships atomically at the same
+product version as its host and CLI, and version/protocol mismatch must be
+rejected loudly rather than guessed around. Metrics and other persistent state
+must migrate without losing accepted data; qualification covers backup,
+upgrade, and rollback behavior, including an explicit warning or refusal when
+an older release cannot safely read migrated state. See `CHANGELOG.md` for
+user-visible changes, [the unified architecture](docs/adr-unified-core-cli-and-native-hosts.md)
+for protocol boundaries, and `docs/releasing.md` for the release process.
 
 SayAll is licensed under the MIT License. See `LICENSE`.

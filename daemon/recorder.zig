@@ -235,3 +235,33 @@ test "raw PCM can be analyzed and wrapped as WAV" {
     const info = try inspectWav(wav);
     try std.testing.expectEqual(@as(usize, pcm.len), info.data_bytes);
 }
+
+test "generated silence tone and clipping fixtures have exact levels and duration" {
+    const pcm = [_]u8{
+        0, 0, // silence
+        0xe8, 0x03, // +1000 tone sample
+        0x18, 0xfc, // -1000 tone sample
+        0xff, 0x7f, // positive clipping boundary
+        0x00, 0x80, // negative clipping boundary
+    };
+    const wav = try wavFromPcm(std.testing.allocator, &pcm);
+    defer std.testing.allocator.free(wav);
+    const info = try inspectWav(wav);
+    try std.testing.expectEqual(@as(f64, 5.0 / 16000.0), info.seconds);
+    const levels = try analyzeLevels(wav);
+    try std.testing.expectEqual(@as(u16, 32768), levels.peak);
+}
+
+test "canonical generator and parser reject odd PCM and malformed formats" {
+    try std.testing.expectError(error.InvalidPcm, wavFromPcm(std.testing.allocator, &.{0}));
+    var wav = try wavFromPcm(std.testing.allocator, &.{ 0, 0, 0, 0 });
+    defer std.testing.allocator.free(wav);
+    wav[22] = 2; // channels no longer agrees with byte rate/alignment
+    try std.testing.expectError(error.InvalidWav, inspectWav(wav));
+    wav[22] = 1;
+    std.mem.writeInt(u32, wav[24..28], 8000, .little); // rate no longer agrees with byte rate
+    try std.testing.expectError(error.InvalidWav, inspectWav(wav));
+    std.mem.writeInt(u32, wav[24..28], 16000, .little);
+    std.mem.writeInt(u32, wav[40..44], 3, .little);
+    try std.testing.expectError(error.InvalidWav, inspectWav(wav));
+}
