@@ -35,6 +35,11 @@ validate_package() {
     test ! -e "$tree/usr/lib/systemd/user/sayall.service"
     test -f "$tree/usr/share/applications/dev.sayall.Hud.desktop"
     test -f "$tree/usr/share/icons/hicolor/scalable/apps/dev.sayall.Hud.svg"
+    [[ $("$tree/usr/bin/sayall" --version) == "sayall $version" ]]
+    [[ $("$tree/usr/bin/sayall-hud" --version) == "sayall-hud $version" ]]
+    [[ $("$tree/usr/lib/sayall/sayall-process" --version) == "sayall-process $version" ]]
+    bash "$root/tests/worker-info-wait.sh" \
+        "$tree/usr/lib/sayall/sayall-process"
 }
 
 package_variant() {
