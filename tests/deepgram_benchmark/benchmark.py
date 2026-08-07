@@ -6,6 +6,13 @@ import argparse, datetime, hashlib, json, math, os, pathlib, selectors
 import struct, subprocess, sys, tempfile, time, unicodedata, wave
 
 HARNESS_VERSION = "1.0.0"
+MAX_FRAME_BYTES = 1024 * 1024
+ERROR_CODES = {"invalid_request", "incompatible_version", "invalid_audio", "audio_too_short",
+               "audio_too_long", "missing_deepgram_key", "deepgram_unauthorized",
+               "deepgram_rate_limited", "deepgram_server", "deepgram_network",
+               "response_too_large", "internal"}
+
+class ProtocolError(RuntimeError): pass
 
 def normalize(text: str) -> str:
     text = unicodedata.normalize("NFKC", text).casefold()
@@ -96,35 +103,46 @@ def request(clip, wav_path, pcm_path, key, args):
             "groq_api_key": "", "cleanup_enabled": False}
 
 def read_line(proc, timeout):
-    sel = selectors.DefaultSelector(); sel.register(proc.stdout, selectors.EVENT_READ)
-    if not sel.select(timeout): raise TimeoutError("worker output timed out")
-    line = proc.stdout.readline()
-    if not line: raise RuntimeError("worker exited before protocol frame")
-    return json.loads(line)
+    deadline, frame = time.monotonic() + timeout, bytearray()
+    descriptor = proc.stdout.fileno(); os.set_blocking(descriptor, False)
+    with selectors.DefaultSelector() as sel:
+        sel.register(descriptor, selectors.EVENT_READ)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not sel.select(remaining): raise TimeoutError("worker output timed out")
+            chunk = os.read(descriptor, min(4096, MAX_FRAME_BYTES + 1 - len(frame)))
+            if not chunk: raise ProtocolError("worker exited before protocol frame")
+            frame.extend(chunk)
+            if len(frame) > MAX_FRAME_BYTES: raise ProtocolError("worker protocol frame too large")
+            newline = frame.find(b"\n")
+            if newline >= 0:
+                try: return json.loads(frame[:newline])
+                except (json.JSONDecodeError, UnicodeError) as error: raise ProtocolError("invalid worker JSON") from error
 
 def validate_ready(frame):
-    if (frame.get("version") != 1 or frame.get("event") != "ready"
+    if (not isinstance(frame, dict) or frame.get("version") != 1 or frame.get("event") != "ready"
             or not isinstance(frame.get("streaming"), bool)):
-        raise RuntimeError("invalid worker ready frame")
+        raise ProtocolError("invalid worker ready frame")
 
 def validate_result(frame):
+    if not isinstance(frame, dict): raise ProtocolError("worker result is not an object")
     status = frame.get("status")
     if frame.get("version") != 1 or status not in ("success", "no_speech", "error"):
-        raise RuntimeError("invalid worker result frame")
+        raise ProtocolError("invalid worker result frame")
     if frame.get("transport") not in ("rest", "stream"):
-        raise RuntimeError("worker result omitted authoritative transport")
-    text = frame.get("text")
-    if status == "success" and (not isinstance(text, str) or not text):
-        raise RuntimeError("successful worker result omitted text")
-    if status == "no_speech" and text is not None:
-        raise RuntimeError("no-speech worker result included text")
-    if status == "error" and not isinstance(frame.get("error"), str):
-        raise RuntimeError("worker error result omitted error code")
+        raise ProtocolError("worker result omitted authoritative transport")
+    text, error = frame.get("text"), frame.get("error")
+    if status == "success" and (not isinstance(text, str) or not text or error is not None):
+        raise ProtocolError("successful worker result violated its field contract")
+    if status == "no_speech" and (text is not None or error is not None):
+        raise ProtocolError("no-speech worker result violated its field contract")
+    if status == "error" and (text is not None or not isinstance(error, str) or error not in ERROR_CODES):
+        raise ProtocolError("worker error result violated its field contract")
 
 def error_category(error):
     if isinstance(error, (TimeoutError, subprocess.TimeoutExpired)):
         return "timeout"
-    if isinstance(error, (json.JSONDecodeError, UnicodeError)):
+    if isinstance(error, (ProtocolError, json.JSONDecodeError, UnicodeError)):
         return "protocol"
     if isinstance(error, (BrokenPipeError, ConnectionError)):
         return "process"
@@ -159,7 +177,15 @@ def run_worker(worker, mode, req, pcm, timeout):
 def worker_identity(worker):
     p = subprocess.run([str(worker), "--worker-info"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                        env={}, timeout=10, check=True)
-    return json.loads(p.stdout)
+    try: frame = json.loads(p.stdout)
+    except (json.JSONDecodeError, UnicodeError) as error: raise ProtocolError("invalid worker identity JSON") from error
+    if (not isinstance(frame, dict) or type(frame.get("protocol_version")) is not int
+            or frame["protocol_version"] != 1
+            or not isinstance(frame.get("build_version"), str)
+            or not frame["build_version"] or len(frame["build_version"]) > 128
+            or any(character.isspace() for character in frame["build_version"])):
+        raise ProtocolError("invalid worker identity frame")
+    return {"protocol_version": frame["protocol_version"], "build_version": frame["build_version"]}
 
 def positive_finite(value):
     number = float(value)
@@ -231,7 +257,7 @@ def main(argv=None):
                 try:
                     wav_path, pcm = make_audio(clip, pathlib.Path(td))
                     digest = hashlib.sha256(wav_path.read_bytes()).hexdigest()
-                except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+                except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, wave.Error):
                     for mode in modes: report["clips"].append(failure_clip(clip, mode, metadata, "audio_generation"))
                     continue
                 for mode in modes:
@@ -250,7 +276,9 @@ def main(argv=None):
                     transport = result.get("transport")
                     report["clips"].append({"id": clip["id"], "language": clip["language"], "mode": mode,
                         "expect_no_speech": clip["expect_no_speech"], "classification": classify(clip["expect_no_speech"], result),
-                        "worker_status": result.get("status"), "worker_error": result.get("error"), "streaming_active": active,
+                        "worker_status": result.get("status"),
+                        "worker_error": result.get("error") if result.get("status") == "error" else None,
+                        "streaming_active": active,
                         "harness_error": result.get("harness_error"), "effective_transport": transport,
                         "elapsed_ms": elapsed, "audio_sha256": digest, **metadata, **counts,
                         "wer": counts["word_edits"]/counts["reference_words"] if counts["reference_words"] else None,

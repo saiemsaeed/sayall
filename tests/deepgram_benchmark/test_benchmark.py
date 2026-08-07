@@ -2,11 +2,13 @@ import json
 import os
 import pathlib
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 import wave
 from unittest import mock
-from benchmark import aggregate, classify, edit_distance, error_counts, main, make_audio, nonnegative_finite, normalize, positive_finite, thresholds_pass, validate_ready, validate_result
+from benchmark import ProtocolError, aggregate, classify, edit_distance, error_counts, main, make_audio, nonnegative_finite, normalize, positive_finite, read_line, thresholds_pass, validate_ready, validate_result, worker_identity
 
 class MetricsTests(unittest.TestCase):
     def test_normalize(self): self.assertEqual(normalize(" HéLLo,\tWORLD! "), "héllo world")
@@ -33,6 +35,12 @@ class MetricsTests(unittest.TestCase):
         validate_result({"version":1, "status":"success", "text":"hello", "transport":"stream"})
         with self.assertRaises(RuntimeError): validate_result({"version":1, "status":"success", "text":"hello"})
         with self.assertRaises(RuntimeError): validate_result({"version":1, "status":"no_speech", "text":"" , "transport":"rest"})
+        with self.assertRaises(ProtocolError): validate_result({"version":1, "status":"error", "error":"secret provider body", "transport":"rest"})
+        with self.assertRaises(ProtocolError): validate_result({"version":1, "status":"success", "text":"hello", "error":"secret", "transport":"rest"})
+        with self.assertRaises(ProtocolError): validate_result({"version":1, "status":"no_speech", "error":"secret", "transport":"rest"})
+        with self.assertRaises(ProtocolError): validate_result({"version":1, "status":"error", "text":["secret"], "error":"internal", "transport":"rest"})
+        with self.assertRaises(ProtocolError): validate_result({"version":1, "status":"error", "error":[], "transport":"rest"})
+        with self.assertRaises(ProtocolError): validate_ready(["not", "an", "object"])
 
     def test_dry_run_needs_no_worker_key_or_synthesis_tools(self):
         manifest = pathlib.Path(__file__).with_name("manifest-v1.json")
@@ -81,5 +89,21 @@ class MetricsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, mock.patch("benchmark.subprocess.run", side_effect=fake_run):
             wav_path, _ = make_audio(clip, pathlib.Path(directory))
             self.assertEqual(wav_path.stat().st_mode & 0o777, 0o600)
+
+    def test_identity_projects_only_validated_public_fields(self):
+        completed = subprocess.CompletedProcess([], 0, stdout=b'{"protocol_version":1,"build_version":"0.2.10","untrusted":"drop me"}\n')
+        with mock.patch("benchmark.subprocess.run", return_value=completed):
+            self.assertEqual(worker_identity(pathlib.Path("worker")), {"protocol_version":1, "build_version":"0.2.10"})
+        completed.stdout = b'["invalid"]\n'
+        with mock.patch("benchmark.subprocess.run", return_value=completed), self.assertRaises(ProtocolError):
+            worker_identity(pathlib.Path("worker"))
+
+    def test_partial_stream_frame_obeys_deadline(self):
+        process = subprocess.Popen([sys.executable, "-c", "import sys,time; sys.stdout.write('{'); sys.stdout.flush(); time.sleep(5)"],
+                                   stdout=subprocess.PIPE)
+        try:
+            with self.assertRaises(TimeoutError): read_line(process, 0.05)
+        finally:
+            process.kill(); process.wait(); process.stdout.close()
 
 if __name__ == "__main__": unittest.main()
