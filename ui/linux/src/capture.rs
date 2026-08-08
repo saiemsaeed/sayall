@@ -273,8 +273,8 @@ fn write_wav(w: &mut impl Write, pcm: &[u8]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt, symlink};
     use std::ops::Deref;
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt, symlink};
 
     struct TestRoot(PathBuf);
 
@@ -408,15 +408,16 @@ mod tests {
         let script = root.join("fake-pw-record");
         fs::write(
             &script,
-            b"#!/bin/sh\nfor last do :; done\nprintf '\\001\\000\\377\\177\\000\\200' > \"$last\"\ntrap 'exit 0' INT TERM\nwhile :; do /bin/sleep 1; done\n",
+            b"#!/bin/sh\nfor last do :; done\nprintf '\\001\\000\\377\\177\\000\\200' > \"$last\"\ntrap 'exit 0' INT TERM\n: > \"$last.ready\"\nwhile :; do /bin/sleep 1; done\n",
         )
         .unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
         let capture = Capture::start_with_program(&root, 9, "", Ok(script)).unwrap();
         let pcm = root.join("session-9/audio.pcm");
+        let ready = root.join("session-9/audio.pcm.ready");
         let mut pcm_ready = false;
         for _ in 0..100 {
-            if fs::metadata(&pcm).map_or(false, |m| m.len() == 6) {
+            if ready.exists() && fs::metadata(&pcm).map_or(false, |m| m.len() == 6) {
                 pcm_ready = true;
                 break;
             }
