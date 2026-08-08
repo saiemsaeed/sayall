@@ -5,12 +5,12 @@ from __future__ import annotations
 import argparse, base64, html, json, pathlib, statistics
 
 METRICS = [("WER", "wer", True), ("CER", "cer", True),
-           ("REST request → result", "rest_ms", False),
-           ("Stream connection ready", "stream_ready_ms", False),
-           ("Stream audio duration", "audio_duration_ms", False),
-           ("Paced audio feed", "audio_feed_ms", False),
-           ("Stream finish → final transcript", "post_stop_ms", False),
-           ("Stream total including paced audio", "stream_total_ms", False)]
+           ("REST speech request → result", "rest_ms", False),
+           ("Stream speech connection ready", "stream_ready_ms", False),
+           ("Stream speech audio duration", "audio_duration_ms", False),
+           ("Paced speech audio feed", "audio_feed_ms", False),
+           ("Stream speech finish → final transcript", "post_stop_ms", False),
+           ("Stream speech total including paced audio", "stream_total_ms", False)]
 ACCEPTED = ("speech_ok", "expected_no_speech")
 IDENTITY_FIELDS = ("model", "region", "corpus_id", "manifest_schema_version", "manifest_sha256")
 
@@ -20,8 +20,8 @@ def median(values):
 
 def summarize(report):
     clips = report.get("clips", [])
-    rest = [c for c in clips if c.get("mode") == "rest" and c.get("effective_transport") == "rest" and c.get("classification") in ACCEPTED]
-    stream = [c for c in clips if c.get("mode") == "stream" and c.get("effective_transport") == "stream" and c.get("classification") in ACCEPTED]
+    rest = [c for c in clips if c.get("mode") == "rest" and c.get("effective_transport") == "rest" and c.get("classification") in ACCEPTED and not c.get("expect_no_speech", False)]
+    stream = [c for c in clips if c.get("mode") == "stream" and c.get("effective_transport") == "stream" and c.get("classification") in ACCEPTED and not c.get("expect_no_speech", False)]
     return {
         "wer": report.get("corpus", {}).get("wer"),
         "cer": report.get("corpus", {}).get("cer"),

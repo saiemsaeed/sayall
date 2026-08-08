@@ -47,6 +47,8 @@ finish command until the validated final transcript arrives. `post_stop_ms` is
 the closest synthetic canary measurement of user-visible release-to-result
 latency. REST records `request_to_result_ms` after the complete WAV exists, so
 REST and total streaming duration must not be compared as equivalent intervals.
+Headline latency medians use speech clips only; silence remains visible in the
+per-clip evidence without skewing the representative dictation latency.
 
 ## Reading CI evidence
 

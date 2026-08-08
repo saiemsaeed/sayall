@@ -19,7 +19,7 @@ class ComparisonTests(unittest.TestCase):
         self.assertEqual(summarize(report())["post_stop_ms"], 250)
         args = SimpleNamespace(current_run_url="https://current", previous_run_url="https://previous", ui_run_url="https://ui")
         rendered = markdown_report(report(650, 200, .08), report(), args)
-        self.assertIn("Stream finish → final transcript", rendered)
+        self.assertIn("Stream speech finish → final transcript", rendered)
         self.assertIn("-50.00 ms better", rendered)
         self.assertIn("-2.00 pp better", rendered)
 
@@ -40,8 +40,8 @@ class ComparisonTests(unittest.TestCase):
             clip.pop("audio_duration_ms", None); clip.pop("audio_feed_ms", None); clip.pop("post_stop_ms", None)
         args = SimpleNamespace(current_run_url="", previous_run_url="", ui_run_url="")
         rendered = markdown_report(current, previous, args)
-        self.assertIn("| REST request → result | 700 ms | 700 ms | no change |", rendered)
-        self.assertIn("| Stream finish → final transcript | 250 ms | — | — |", rendered)
+        self.assertIn("| REST speech request → result | 700 ms | 700 ms | no change |", rendered)
+        self.assertIn("| Stream speech finish → final transcript | 250 ms | — | — |", rendered)
 
     def test_incompatible_manifest_suppresses_deltas(self):
         previous = report(); previous["manifest_sha256"] = "different"
