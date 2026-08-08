@@ -611,7 +611,7 @@ mod tests {
         };
         barrier.wait();
         accepted_rx.recv().unwrap();
-        assert_eq!(result_rx.recv().unwrap(), Err(ToggleError::Busy));
+        assert!(matches!(result_rx.recv().unwrap(), Err(ToggleError::Busy)));
         release_tx.send(()).unwrap();
         assert!(result_rx.recv().unwrap().is_ok());
         worker.join().unwrap();
@@ -633,7 +633,7 @@ mod tests {
             join: Mutex::new(None),
         }));
 
-        assert_eq!(controller.reload(), Err(ToggleError::Busy));
+        assert!(matches!(controller.reload(), Err(ToggleError::Busy)));
         assert!(rx.try_recv().is_err());
     }
 
