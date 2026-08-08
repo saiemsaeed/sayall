@@ -1,12 +1,13 @@
 # SayAll
 
 A voice-dictation product for Linux and macOS. Toggle a hotkey,
-speak, toggle again, and text is inserted into your focused window. When Groq
-cleanup is configured, filler words and false starts are removed before output.
+speak, toggle again, and text is inserted into your focused window. An optional
+Groq pass can format the transcript and correct contextually clear terminology
+without rewriting the speaker's words.
 
 - **STT:** Deepgram Nova-3 (cloud streaming with REST fallback)
-- **Cleanup:** LLM pass (Groq `llama-3.1-8b-instant`) — removes filler words,
-  false starts, stutters; fixes grammar and punctuation without changing meaning
+- **Formatting:** optional structured edit-plan pass (Groq `openai/gpt-oss-20b`) — corrects
+  terminology and structures dictated text without rewriting it
 - **Zig dependencies:** one pinned WebSocket library; otherwise Zig's standard
   library
 - **Runtime dependencies:** PipeWire `pw-record`, `notify-send`, and either
@@ -423,11 +424,14 @@ defined by the [unified architecture ADR](docs/adr-unified-core-cli-and-native-h
 | OpenAI gpt-4o-transcribe | $0.36 | ~1–2s | Strong alternative; not implemented yet |
 | AssemblyAI Universal-3.5 | $0.21 | slowest | Upload→poll model; wrong fit for dictation |
 
-### LLM cleanup: Groq `llama-3.1-8b-instant`
+### Optional LLM formatting: Groq `openai/gpt-oss-20b`
 
-840 tok/s, $0.05/$0.08 per 1M tokens — sub-500ms and effectively free at
-dictation volume (~100 tokens per 30s clip). OpenAI-compatible chat-completions
-API = plain JSON from Zig. Only the Groq provider is currently implemented.
+The formatter makes one low-reasoning chat-completions request with a strict
+JSON schema. The model returns only anchored edits; Zig validates and renders
+them from the original Deepgram lexical tokens. It therefore cannot append an
+answer or recommendation. Any provider, schema, anchor, correction, rendering,
+or provenance failure falls back to the raw transcript with a warning. Check
+Groq's current model page for speed and pricing. Only Groq is implemented.
 
 **Realistic cost:** ~2h dictation/day → ~$10/mo STT (after free credit) + ~$0.15/mo LLM.
 
@@ -468,14 +472,17 @@ sayall/
    punctuation, spoken dictation commands, numerals, measurements, and keyterm
    prompting. REST responses parse
    `results.channels[0].alternatives[0].transcript`.
-4. **LLM cleanup** — Groq chat completions, temperature 0, controlled by the
-   configuration. System prompt:
-
-   > Rewrite the following speech transcript into clean written text. Remove
-   > filler words (um, uh, like, you know), false starts, and stutters. Fix
-   > grammar and punctuation. Never add information, never change meaning,
-   > never answer questions in the text. Preserve the speaker's tone and word
-   > choice wherever possible. Output ONLY the rewritten text.
+4. **Optional LLM formatting** — Groq chat completions, temperature 0,
+   disabled by default and controlled by the configuration. The pass preserves
+   every spoken word while correcting contextually unambiguous terminology,
+   punctuation, and capitalization; adding paragraph breaks; and formatting
+   clearly dictated or enumerated lists as bullets. When uncertain, it keeps
+   the original text. The effective keyword list is supplied as a spelling
+   glossary for terms such as `SayAll`. The transcript is treated as data, and
+   the prompt forbids adding, removing, reordering, summarizing, or paraphrasing
+   words. An anchored edit-plan validator and source-based renderer reject
+   answers and broad rewrites even if the model ignores those instructions;
+   rejection falls back to the unchanged Deepgram transcript.
 
 5. **Output** — type the complete transcript with `wtype`, copy it with
     `wl-copy`, or copy and paste it with one `Ctrl+V` shortcut. This works in
@@ -505,8 +512,8 @@ the process environment):
   "llm": {
     "provider": "groq",
     "api_key": "$GROQ_API_KEY",
-    "model": "llama-3.1-8b-instant",
-    "enabled": true
+    "model": "openai/gpt-oss-20b",
+    "enabled": false
   },
   "output": { "method": "type", "trailing_space": true },
   "recording": { "max_seconds": 300, "min_ms": 300, "source": "" },
@@ -515,6 +522,15 @@ the process environment):
   "notifications": true
 }
 ```
+
+LLM formatting is opt-in. To enable it, set `llm.enabled` to `true` and provide
+a Groq API key. If disabled, no transcript is sent to Groq. If an enabled
+request fails, SayAll falls back to the unchanged Deepgram transcript.
+The legacy `llama-3.1-8b-instant` model remains syntactically accepted for
+configuration compatibility, but is deprecated and unsupported for formatting;
+it cannot be used by the strict structured edit-plan formatter. Use
+`openai/gpt-oss-20b` (the default) or `openai/gpt-oss-120b` when enabling
+formatting.
 
 `hud.show_timer` defaults to `true` and displays recording duration as `mm:ss`.
 Set it to `false` for the centered recording layout without a timer or reserved

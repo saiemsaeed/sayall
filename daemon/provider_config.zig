@@ -14,7 +14,7 @@ pub const SttConfig = struct {
 pub const LlmConfig = struct {
     provider: []const u8 = "groq",
     api_key: []const u8 = "",
-    model: []const u8 = "llama-3.1-8b-instant",
+    model: []const u8 = "openai/gpt-oss-20b",
     base_url: []const u8 = "https://api.groq.com/openai/v1/chat/completions",
-    enabled: bool = true,
+    enabled: bool = false,
 };

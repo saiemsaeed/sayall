@@ -144,9 +144,9 @@ impl Default for Llm {
         Self {
             provider: "groq".into(),
             api_key: String::new(),
-            model: "llama-3.1-8b-instant".into(),
+            model: "openai/gpt-oss-20b".into(),
             base_url: "https://api.groq.com/openai/v1/chat/completions".into(),
-            enabled: Some(true),
+            enabled: Some(false),
         }
     }
 }
@@ -229,7 +229,7 @@ pub fn load() -> io::Result<SessionConfig> {
         || cfg.llm.provider != "groq"
         || !safe_value(&model)
         || !safe_value(&language)
-        || !safe_value(&groq_model)
+        || !safe_llm_model(&groq_model)
         || !["global", "eu", "au"].contains(&region.as_str())
         || base != "https://api.groq.com/openai/v1/chat/completions"
         || keyterms.len() > 0 && model != "nova-3" && !model.starts_with("nova-3-")
@@ -259,7 +259,7 @@ pub fn load() -> io::Result<SessionConfig> {
             groq_api_key: groq_api_key.clone(),
             groq_model,
             groq_base_url: base,
-            cleanup: cfg.llm.enabled.unwrap_or(true) && !groq_api_key.is_empty(),
+            cleanup: cfg.llm.enabled.unwrap_or(false) && !groq_api_key.is_empty(),
         },
     })
 }
@@ -301,6 +301,14 @@ fn safe_value(v: &str) -> bool {
         && v.len() <= 64
         && v.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"-._".contains(&b))
+}
+fn safe_llm_model(v: &str) -> bool {
+    v.len() <= 64
+        && match v.split('/').collect::<Vec<_>>().as_slice() {
+            [one] => safe_value(one),
+            [namespace, model] => safe_value(namespace) && safe_value(model),
+            _ => false,
+        }
 }
 fn load_keywords(dir: &Path, fallback: Vec<String>) -> io::Result<Vec<String>> {
     let p = dir.join("keywords.json");
@@ -411,6 +419,7 @@ mod tests {
         let omitted: Config = serde_json::from_str("{}").unwrap();
         assert_eq!(omitted.stt.model, "nova-3");
         assert_eq!(omitted.llm.provider, "groq");
+        assert_eq!(omitted.llm.enabled, Some(false));
         assert!(omitted.hud.show_timer);
         let explicit: Config = serde_json::from_str(
             r#"{"stt":{"model":"","provider":""},"llm":{"provider":"","model":""}}"#,
@@ -420,6 +429,15 @@ mod tests {
         assert!(explicit.stt.provider.is_empty());
         assert!(explicit.llm.provider.is_empty());
         assert!(explicit.llm.model.is_empty());
+    }
+
+    #[test]
+    fn llm_model_accepts_one_optional_namespace() {
+        assert!(safe_llm_model("openai/gpt-oss-20b"));
+        for invalid in ["/openai", "openai/", "a/b/c"] {
+            assert!(!safe_llm_model(invalid));
+        }
+        assert!(!safe_llm_model(&"a".repeat(65)));
     }
 
     #[test]

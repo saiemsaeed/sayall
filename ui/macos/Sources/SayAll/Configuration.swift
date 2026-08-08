@@ -70,7 +70,7 @@ struct ConfigurationLoader {
         let keyterms = try loadKeyterms(fallback: document.stt?.keyterms ?? [])
         let streaming = document.stt?.streaming ?? true
         let finalizeTimeout = document.stt?.streamFinalizeTimeoutMs ?? 2_000
-        let groqModel = document.llm?.model ?? "llama-3.1-8b-instant"
+        let groqModel = document.llm?.model ?? "openai/gpt-oss-20b"
         let groqBaseURL = document.llm?.baseURL ?? "https://api.groq.com/openai/v1/chat/completions"
         guard let outputMethod = OutputMethod(rawValue: document.output?.method ?? "type") else {
             throw ConfigurationError.invalidOutputMethod
@@ -82,7 +82,7 @@ struct ConfigurationLoader {
         guard Self.safeSecret(deepgram), Self.safeSecret(groq) else { throw ConfigurationError.invalidSecret }
         guard (document.stt?.provider ?? "deepgram") == "deepgram",
               (document.llm?.provider ?? "groq") == "groq",
-              Self.safeProviderValue(model), Self.safeProviderValue(language), Self.safeProviderValue(groqModel),
+              Self.safeProviderValue(model), Self.safeProviderValue(language), Self.safeLLMModel(groqModel),
               ["global", "eu", "au"].contains(region),
               (250...10_000).contains(finalizeTimeout),
               groqBaseURL == "https://api.groq.com/openai/v1/chat/completions",
@@ -100,7 +100,7 @@ struct ConfigurationLoader {
             groqAPIKey: groq,
             groqModel: groqModel,
             groqBaseURL: groqBaseURL,
-            cleanupEnabled: (document.llm?.enabled ?? true) && !groq.isEmpty,
+            cleanupEnabled: (document.llm?.enabled ?? false) && !groq.isEmpty,
             showTimer: document.hud?.showTimer ?? true,
             outputMethod: outputMethod,
             trailingSpace: document.output?.trailingSpace ?? true,
@@ -152,6 +152,12 @@ struct ConfigurationLoader {
         !value.isEmpty && value.utf8.count <= 64 && value.utf8.allSatisfy {
             ($0 >= 48 && $0 <= 57) || ($0 >= 65 && $0 <= 90) || ($0 >= 97 && $0 <= 122) || [45, 46, 95].contains($0)
         }
+    }
+
+    private static func safeLLMModel(_ value: String) -> Bool {
+        let parts = value.split(separator: "/", omittingEmptySubsequences: false)
+        return value.utf8.count <= 64 && (parts.count == 1 || parts.count == 2)
+            && parts.allSatisfy { safeProviderValue(String($0)) }
     }
 
     private struct Document: Decodable {

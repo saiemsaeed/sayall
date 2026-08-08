@@ -20,7 +20,7 @@ pub const Request = struct {
     deepgram_region: []const u8 = "global",
     deepgram_keyterms: []const []const u8 = &.{},
     groq_api_key: []const u8,
-    groq_model: []const u8 = "llama-3.1-8b-instant",
+    groq_model: []const u8 = "openai/gpt-oss-20b",
     groq_base_url: []const u8 = "https://api.groq.com/openai/v1/chat/completions",
     cleanup_enabled: bool,
 };
@@ -77,7 +77,7 @@ pub fn processWithTranscript(gpa: std.mem.Allocator, io: std.Io, r: Request, sea
     if (r.deepgram_api_key.len == 0) return fail(.missing_deepgram_key);
     if (!safeSecret(r.deepgram_api_key) or !safeSecret(r.groq_api_key)) return fail(.invalid_request);
     if (!safeProviderValue(r.deepgram_model) or !safeProviderValue(r.deepgram_language) or
-        !safeProviderValue(r.groq_model) or !validRegion(r.deepgram_region) or
+        !safeLlmModel(r.groq_model) or !validRegion(r.deepgram_region) or
         !std.mem.eql(u8, r.groq_base_url, "https://api.groq.com/openai/v1/chat/completions")) return fail(.invalid_request);
     keywords.validate(r.deepgram_keyterms) catch return fail(.invalid_request);
     if (r.deepgram_keyterms.len > 0 and !std.mem.eql(u8, r.deepgram_model, "nova-3") and
@@ -171,8 +171,27 @@ fn safeProviderValue(value: []const u8) bool {
     return true;
 }
 
+pub fn safeLlmModel(value: []const u8) bool {
+    if (value.len == 0 or value.len > 64) return false;
+    const slash = std.mem.indexOfScalar(u8, value, '/');
+    if (slash) |at| {
+        if (at == 0 or at + 1 == value.len or std.mem.indexOfScalar(u8, value[at + 1 ..], '/') != null) return false;
+        return safeProviderValue(value[0..at]) and safeProviderValue(value[at + 1 ..]);
+    }
+    return safeProviderValue(value);
+}
+
 fn validRegion(region: []const u8) bool {
     return std.mem.eql(u8, region, "global") or std.mem.eql(u8, region, "eu") or std.mem.eql(u8, region, "au");
+}
+
+test "batch LLM model validation accepts one optional namespace" {
+    try std.testing.expect(safeLlmModel("openai/gpt-oss-20b"));
+    try std.testing.expect(!safeLlmModel("/openai"));
+    try std.testing.expect(!safeLlmModel("openai/"));
+    try std.testing.expect(!safeLlmModel("a/b/c"));
+    var overlong: [65]u8 = @splat('a');
+    try std.testing.expect(!safeLlmModel(&overlong));
 }
 
 pub fn mapDeepgramError(err: anyerror) ErrorCode {
