@@ -58,14 +58,19 @@ connection time, stream post-stop latency, total paced-stream time, transport,
 and per-clip results. The workflow compares with the newest retained successful
 benchmark artifact; the first run or an expired 30-day artifact has no baseline.
 
+A successful **Release** workflow automatically benchmarks its exact release
+commit. Ordinary pushes and pull requests do not run the live benchmark or
+receive its provider secret. To evaluate a branch separately, manually run
+**Live Deepgram worker benchmark** from the Actions tab and select that branch.
+Failed or cancelled release workflows do not run the benchmark.
+
 Download the `deepgram-benchmark-<run>-<attempt>` artifact and open
 `benchmark-report.html` for the same tables plus every macOS and Linux HUD PNG
 from the successful CI run at the benchmarked commit. The raw privacy-safe data
 is in `deepgram-benchmark.json`; `benchmark-comparison.md` is the exact job
-summary. To evaluate a PR before merge, manually run this workflow and select
-the PR branch. Live provider results remain separate from ordinary PR CI so
-untrusted pull requests never receive the benchmark secret and normal code
-changes do not spend provider quota automatically.
+summary. Live provider results remain separate from ordinary PR CI so untrusted
+pull requests never receive the benchmark secret and normal code changes do not
+spend provider quota automatically.
 
 ## Adding real speech
 

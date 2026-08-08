@@ -7,8 +7,9 @@ on:
         description: Enforce canary connectivity (quality remains advisory without configured thresholds)
         type: boolean
         default: false
-  schedule:
-    - cron: '17 6 * * 3'
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
 
 concurrency:
   group: deepgram-live-benchmark
@@ -16,13 +17,18 @@ concurrency:
 
 jobs:
   benchmark:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      BENCHMARK_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
     permissions:
       actions: read
       contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ env.BENCHMARK_SHA }}
       - name: Install pinned fixture tools
         run: |
           sudo apt-get update
@@ -70,7 +76,7 @@ jobs:
 
           ci_runs=''
           if ! ci_runs=$(gh api \
-            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&status=success&per_page=10" \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$BENCHMARK_SHA&status=success&per_page=10" \
             --jq '.workflow_runs[] | [.id, .html_url] | @tsv' 2>/dev/null); then
             echo '::warning::Could not query matching CI runs; continuing without HUD screenshots.'
           fi
