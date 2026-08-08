@@ -15,6 +15,11 @@ pub const Request = struct {
     deepgram_language: []const u8 = "en",
     deepgram_region: []const u8 = "global",
     deepgram_keyterms: []const []const u8 = &.{},
+    deepgram_smart_format: bool = false,
+    deepgram_punctuate: bool = false,
+    deepgram_dictation: bool = false,
+    deepgram_numerals: bool = false,
+    deepgram_measurements: bool = false,
     stream_finalize_timeout_ms: u32 = 2000,
     groq_api_key: []const u8,
     groq_model: []const u8 = "openai/gpt-oss-20b",
@@ -50,6 +55,11 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
         .language = request.deepgram_language,
         .region = request.deepgram_region,
         .keyterms = request.deepgram_keyterms,
+        .smart_format = request.deepgram_smart_format,
+        .punctuate = request.deepgram_punctuate,
+        .dictation = request.deepgram_dictation,
+        .numerals = request.deepgram_numerals,
+        .measurements = request.deepgram_measurements,
         .streaming = true,
         .stream_finalize_timeout_ms = request.stream_finalize_timeout_ms,
     };
@@ -78,7 +88,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
     };
     defer parsed_finish.deinit();
     const finish = parsed_finish.value;
-    if (finish.version != 1 or !std.mem.eql(u8, finish.command, "finish")) {
+    if (finish.version != worker_protocol.version or !std.mem.eql(u8, finish.command, "finish")) {
         if (session) |active| active.cancel();
         return writeResult(gpa, io, .{ .status = .@"error", .@"error" = .invalid_request });
     }
@@ -117,7 +127,8 @@ fn readLine(reader: *std.Io.Reader) !?[]const u8 {
 }
 
 fn validateAndOpenAudio(io: std.Io, request: Request) !std.Io.File {
-    if (request.version != 1 or request.deepgram_api_key.len == 0) return error.InvalidRequest;
+    if (request.version != worker_protocol.version or request.deepgram_api_key.len == 0) return error.InvalidRequest;
+    if (request.deepgram_dictation and !request.deepgram_punctuate) return error.InvalidRequest;
     if (!std.fs.path.isAbsolute(request.wav_path) or !std.fs.path.isAbsolute(request.pcm_path)) return error.InvalidRequest;
     if (std.mem.eql(u8, request.wav_path, request.pcm_path)) return error.InvalidRequest;
     if (!safeSecret(request.deepgram_api_key) or !safeSecret(request.groq_api_key)) return error.InvalidRequest;
@@ -146,6 +157,11 @@ fn batchRequest(request: Request) batch.Request {
         .deepgram_language = request.deepgram_language,
         .deepgram_region = request.deepgram_region,
         .deepgram_keyterms = request.deepgram_keyterms,
+        .deepgram_smart_format = request.deepgram_smart_format,
+        .deepgram_punctuate = request.deepgram_punctuate,
+        .deepgram_dictation = request.deepgram_dictation,
+        .deepgram_numerals = request.deepgram_numerals,
+        .deepgram_measurements = request.deepgram_measurements,
         .groq_api_key = request.groq_api_key,
         .groq_model = request.groq_model,
         .groq_base_url = request.groq_base_url,
@@ -189,7 +205,7 @@ fn writeLine(io: std.Io, bytes: []const u8) !void {
 }
 
 test "stream request is strict and preserves regional provider settings" {
-    const json = "{\"version\":1,\"wav_path\":\"/tmp/a.wav\",\"pcm_path\":\"/tmp/a.pcm\",\"deepgram_api_key\":\"d\",\"deepgram_model\":\"nova-3\",\"deepgram_language\":\"en-GB\",\"deepgram_region\":\"eu\",\"groq_api_key\":\"\",\"cleanup_enabled\":false}";
+    const json = "{\"version\":2,\"wav_path\":\"/tmp/a.wav\",\"pcm_path\":\"/tmp/a.pcm\",\"deepgram_api_key\":\"d\",\"deepgram_model\":\"nova-3\",\"deepgram_language\":\"en-GB\",\"deepgram_region\":\"eu\",\"groq_api_key\":\"\",\"cleanup_enabled\":false}";
     const parsed = try parseRequest(std.testing.allocator, json);
     defer parsed.deinit();
     try std.testing.expectEqualStrings("eu", parsed.value.deepgram_region);

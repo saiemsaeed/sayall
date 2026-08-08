@@ -261,6 +261,11 @@ fn cloneConfig(gpa: Allocator, source: *const config.SttConfig) !config.SttConfi
         .language = language,
         .keyterms = keyterms,
         .region = region,
+        .smart_format = source.smart_format,
+        .punctuate = source.punctuate,
+        .dictation = source.dictation,
+        .numerals = source.numerals,
+        .measurements = source.measurements,
         .streaming = source.streaming,
         .stream_finalize_timeout_ms = source.stream_finalize_timeout_ms,
     };
@@ -277,10 +282,12 @@ fn freeConfig(gpa: Allocator, cfg: config.SttConfig) void {
 }
 
 fn listenPath(gpa: Allocator, cfg: *const config.SttConfig) ![]u8 {
+    const formatting_params = try deepgram.formattingParams(gpa, cfg);
+    defer gpa.free(formatting_params);
     const base_path = try std.fmt.allocPrint(
         gpa,
         "/v1/listen?model={s}&language={s}&encoding=linear16&sample_rate=16000&channels=1&{s}&interim_results=true&endpointing=300",
-        .{ cfg.model, cfg.language, deepgram.formatting_params },
+        .{ cfg.model, cfg.language, formatting_params },
     );
     defer gpa.free(base_path);
     return deepgram.addKeyterms(gpa, base_path, cfg.keyterms);
@@ -420,7 +427,13 @@ test "regional streaming hosts are allow-listed" {
 }
 
 test "streaming path uses effective keyterms" {
-    var cfg: config.SttConfig = .{};
+    var cfg: config.SttConfig = .{
+        .smart_format = true,
+        .punctuate = true,
+        .dictation = true,
+        .numerals = true,
+        .measurements = true,
+    };
     cfg.keyterms = &.{ "SayAll", "Model Context Protocol", "München" };
     const path = try listenPath(std.testing.allocator, &cfg);
     defer std.testing.allocator.free(path);
@@ -434,6 +447,17 @@ test "streaming path uses effective keyterms" {
         path,
         "&keyterm=SayAll&keyterm=Model%20Context%20Protocol&keyterm=M%C3%BCnchen",
     ));
+}
+
+test "streaming path disables formatting by default" {
+    const cfg: config.SttConfig = .{};
+    const path = try listenPath(std.testing.allocator, &cfg);
+    defer std.testing.allocator.free(path);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        path,
+        "&smart_format=false&punctuate=false&dictation=false&numerals=false&measurements=false&",
+    ) != null);
 }
 
 test "stream session configuration owns all caller-backed values" {

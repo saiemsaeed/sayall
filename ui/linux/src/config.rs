@@ -78,6 +78,11 @@ pub struct ProviderConfig {
     pub deepgram_language: String,
     pub deepgram_region: String,
     pub keyterms: Vec<String>,
+    pub smart_format: bool,
+    pub punctuate: bool,
+    pub dictation: bool,
+    pub numerals: bool,
+    pub measurements: bool,
     pub streaming: bool,
     pub finalize_ms: u32,
     pub groq_api_key: String,
@@ -113,6 +118,11 @@ struct Stt {
     language: String,
     region: String,
     keyterms: Vec<String>,
+    smart_format: bool,
+    punctuate: bool,
+    dictation: bool,
+    numerals: bool,
+    measurements: bool,
     streaming: Option<bool>,
     stream_finalize_timeout_ms: Option<u32>,
 }
@@ -125,6 +135,11 @@ impl Default for Stt {
             language: "en".into(),
             region: "global".into(),
             keyterms: Vec::new(),
+            smart_format: false,
+            punctuate: false,
+            dictation: false,
+            numerals: false,
+            measurements: false,
             streaming: Some(true),
             stream_finalize_timeout_ms: Some(2000),
         }
@@ -232,6 +247,7 @@ pub fn load() -> io::Result<SessionConfig> {
         || !safe_llm_model(&groq_model)
         || !["global", "eu", "au"].contains(&region.as_str())
         || base != "https://api.groq.com/openai/v1/chat/completions"
+        || cfg.stt.dictation && !cfg.stt.punctuate
         || keyterms.len() > 0 && model != "nova-3" && !model.starts_with("nova-3-")
     {
         return Err(invalid("invalid provider configuration"));
@@ -254,6 +270,11 @@ pub fn load() -> io::Result<SessionConfig> {
             deepgram_language: language,
             deepgram_region: region,
             keyterms,
+            smart_format: cfg.stt.smart_format,
+            punctuate: cfg.stt.punctuate,
+            dictation: cfg.stt.dictation,
+            numerals: cfg.stt.numerals,
+            measurements: cfg.stt.measurements,
             streaming: cfg.stt.streaming.unwrap_or(true),
             finalize_ms: finalize,
             groq_api_key: groq_api_key.clone(),
@@ -418,6 +439,11 @@ mod tests {
     fn provider_defaults_apply_only_to_omitted_fields() {
         let omitted: Config = serde_json::from_str("{}").unwrap();
         assert_eq!(omitted.stt.model, "nova-3");
+        assert!(!omitted.stt.smart_format);
+        assert!(!omitted.stt.punctuate);
+        assert!(!omitted.stt.dictation);
+        assert!(!omitted.stt.numerals);
+        assert!(!omitted.stt.measurements);
         assert_eq!(omitted.llm.provider, "groq");
         assert_eq!(omitted.llm.enabled, Some(false));
         assert!(omitted.hud.show_timer);

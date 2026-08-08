@@ -729,23 +729,23 @@ final class AudioCaptureConversionTests: XCTestCase {
 
 final class HelperDecoderTests: XCTestCase {
     func testSuccessAndNoSpeechDecode() throws {
-        XCTAssertEqual(try HelperDecoder.decode(Data(#"{"version":1,"status":"success","text":"hello"}"#.utf8)).text, "hello")
-        XCTAssertEqual(try HelperDecoder.decode(Data(#"{"version":1,"status":"no_speech"}"#.utf8)).status, .noSpeech)
+        XCTAssertEqual(try HelperDecoder.decode(Data(#"{"version":2,"status":"success","text":"hello"}"#.utf8)).text, "hello")
+        XCTAssertEqual(try HelperDecoder.decode(Data(#"{"version":2,"status":"no_speech"}"#.utf8)).status, .noSpeech)
     }
     func testStableErrorMapping() {
-        XCTAssertThrowsError(try HelperDecoder.decode(Data(#"{"version":1,"status":"error","error":"network"}"#.utf8))) { XCTAssertEqual($0 as? HelperFailure, .unsuccessful("network")) }
+        XCTAssertThrowsError(try HelperDecoder.decode(Data(#"{"version":2,"status":"error","error":"network"}"#.utf8))) { XCTAssertEqual($0 as? HelperFailure, .unsuccessful("network")) }
         XCTAssertThrowsError(try HelperDecoder.decode(Data("nope".utf8))) { XCTAssertEqual($0 as? HelperFailure, .malformedOutput) }
         XCTAssertThrowsError(try HelperDecoder.decode(Data(repeating: 0, count: HelperDecoder.maximumOutputBytes + 1))) { XCTAssertEqual($0 as? HelperFailure, .oversizedOutput) }
     }
 
     func testStreamingDecoderRequiresReadyAndTerminalFrames() throws {
-        let ready = try StreamingHelperDecoder.decodeReady(Data(#"{"version":1,"event":"ready","streaming":true}"#.utf8))
+        let ready = try StreamingHelperDecoder.decodeReady(Data(#"{"version":2,"event":"ready","streaming":true}"#.utf8))
         XCTAssertTrue(ready.streaming)
-        let rest = try StreamingHelperDecoder.decodeReady(Data(#"{"version":1,"event":"ready","streaming":false}"#.utf8))
+        let rest = try StreamingHelperDecoder.decodeReady(Data(#"{"version":2,"event":"ready","streaming":false}"#.utf8))
         XCTAssertFalse(rest.streaming)
-        XCTAssertEqual(try StreamingHelperDecoder.decode(Data(#"{"version":1,"status":"success","text":"hello"}"#.utf8)).text, "hello")
+        XCTAssertEqual(try StreamingHelperDecoder.decode(Data(#"{"version":2,"status":"success","text":"hello"}"#.utf8)).text, "hello")
         XCTAssertThrowsError(try StreamingHelperDecoder.decodeReady(Data("{}".utf8)))
-        XCTAssertThrowsError(try StreamingHelperDecoder.decodeReady(Data(#"{"version":2,"event":"ready","streaming":true}"#.utf8)))
+        XCTAssertThrowsError(try StreamingHelperDecoder.decodeReady(Data(#"{"version":1,"event":"ready","streaming":true}"#.utf8)))
         XCTAssertThrowsError(try StreamingHelperDecoder.decodeReady(Data(repeating: 0, count: StreamingHelperDecoder.maximumReadyBytes + 1)))
     }
 }
@@ -794,7 +794,7 @@ final class HelperRunnerTests: XCTestCase {
 int main(void) {
     signal(SIGTERM, SIG_IGN);
     usleep(700000);
-    fputs("{\"protocol_version\":1,\"build_version\":\"test-build\"}\n", stdout);
+    fputs("{\"protocol_version\":2,\"build_version\":\"test-build\"}\n", stdout);
     fflush(stdout);
     sleep(3);
     return 0;
@@ -835,7 +835,7 @@ extern char **environ;
 int main(void) {
     if (environ[0] != NULL) return 4;
     while (getchar() != EOF) {}
-    fputs("{\"version\":1,\"status\":\"success\",\"text\":\"ok\"}", stdout);
+    fputs("{\"version\":2,\"status\":\"success\",\"text\":\"ok\"}", stdout);
     return 0;
 }
 """#.utf8).write(to: source)
@@ -862,10 +862,10 @@ int main(int argc, char **argv) {
     char line[65536];
     if (environ[0] != NULL) return 4;
     if (argc != 2 || strcmp(argv[1], "--stream") != 0 || !fgets(line, sizeof(line), stdin)) return 2;
-    fputs("{\"version\":1,\"event\":\"ready\",\"streaming\":true}\n", stdout);
+    fputs("{\"version\":2,\"event\":\"ready\",\"streaming\":true}\n", stdout);
     fflush(stdout);
     if (!fgets(line, sizeof(line), stdin) || !strstr(line, "\"command\":\"finish\"")) return 3;
-    fputs("{\"version\":1,\"status\":\"success\",\"text\":\"streamed\"}\n", stdout);
+    fputs("{\"version\":2,\"status\":\"success\",\"text\":\"streamed\"}\n", stdout);
     return 0;
 }
 """#.utf8).write(to: source)
@@ -887,9 +887,9 @@ int main(int argc, char **argv) {
 int main(void) {
     char line[65536];
     if (!fgets(line, sizeof(line), stdin)) return 2;
-    fputs("{\"version\":1,\"event\":\"ready\",\"streaming\":true}\n", stdout); fflush(stdout);
+    fputs("{\"version\":2,\"event\":\"ready\",\"streaming\":true}\n", stdout); fflush(stdout);
     if (!fgets(line, sizeof(line), stdin)) return 3;
-    fputs("{\"version\":1,\"status\":\"error\",\"error\":\"deepgram_network\"}\n", stdout);
+    fputs("{\"version\":2,\"status\":\"error\",\"error\":\"deepgram_network\"}\n", stdout);
     return 0;
 }
 """#.utf8).write(to: source)
@@ -919,7 +919,7 @@ int main(void) {
     char line[65536];
     for (int number = 1; number < 32; number++) signal(number, SIG_IGN);
     if (!fgets(line, sizeof(line), stdin)) return 2;
-    fputs("{\"version\":1,\"event\":\"ready\",\"streaming\":true}\n", stdout); fflush(stdout);
+    fputs("{\"version\":2,\"event\":\"ready\",\"streaming\":true}\n", stdout); fflush(stdout);
     for (;;) pause();
 }
 """#.utf8).write(to: source)
@@ -977,7 +977,7 @@ int main(void) {
     char line[65536];
     for (int number = 1; number < 32; number++) signal(number, SIG_IGN);
     if (!fgets(line, sizeof(line), stdin)) return 2;
-    fputs("{\"version\":1,\"event\":\"ready\",\"streaming\":true}\n", stdout); fflush(stdout);
+    fputs("{\"version\":2,\"event\":\"ready\",\"streaming\":true}\n", stdout); fflush(stdout);
     if (!fgets(line, sizeof(line), stdin)) return 3;
     for (;;) pause();
 }
@@ -1006,16 +1006,20 @@ int main(void) {
     }
 
     private func batchRequest() -> HelperRequest {
-        HelperRequest(version: 1, wavPath: "/tmp/audio.wav", deepgramAPIKey: "key",
+        HelperRequest(version: ProcessingProtocol.version, wavPath: "/tmp/audio.wav", deepgramAPIKey: "key",
             deepgramModel: "nova-3", deepgramLanguage: "en", deepgramRegion: "eu",
-            deepgramKeyterms: ["SayAll"], groqAPIKey: "", groqModel: "llama-3.1-8b-instant",
+            deepgramKeyterms: ["SayAll"], smartFormat: false, punctuate: false,
+            dictation: false, numerals: false, measurements: false,
+            groqAPIKey: "", groqModel: "llama-3.1-8b-instant",
             groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", cleanupEnabled: false)
     }
 
     private func streamRequest() -> StreamingHelperRequest {
-        StreamingHelperRequest(version: 1, wavPath: "/tmp/audio.wav", pcmPath: "/tmp/audio.pcm",
+        StreamingHelperRequest(version: ProcessingProtocol.version, wavPath: "/tmp/audio.wav", pcmPath: "/tmp/audio.pcm",
             deepgramAPIKey: "key", deepgramModel: "nova-3", deepgramLanguage: "en",
-            deepgramRegion: "eu", deepgramKeyterms: ["SayAll"], streamFinalizeTimeoutMs: 2_000,
+            deepgramRegion: "eu", deepgramKeyterms: ["SayAll"],
+            smartFormat: false, punctuate: false, dictation: false, numerals: false, measurements: false,
+            streamFinalizeTimeoutMs: 2_000,
             groqAPIKey: "", groqModel: "llama-3.1-8b-instant",
             groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", cleanupEnabled: false)
     }
@@ -1059,14 +1063,14 @@ final class SharedBackendContractTests: XCTestCase {
 
     func testWorkerFixturesMatchTheSwiftDecoder() throws {
         let info = try JSONDecoder().decode(WorkerInfo.self, from: fixture("worker-info"))
-        XCTAssertEqual(info, WorkerInfo(protocolVersion: 1, buildVersion: "0.1.8"))
+        XCTAssertEqual(info, WorkerInfo(protocolVersion: ProcessingProtocol.version, buildVersion: "0.1.8"))
         let ready = try JSONDecoder().decode(WorkerReady.self, from: fixture("worker-ready-streaming"))
-        XCTAssertEqual(ready.version, 1)
+        XCTAssertEqual(ready.version, ProcessingProtocol.version)
         XCTAssertEqual(ready.event, "ready")
         XCTAssertTrue(ready.streaming)
         XCTAssertFalse(try JSONDecoder().decode(WorkerReady.self, from: fixture("worker-ready-rest")).streaming)
         XCTAssertEqual(try JSONDecoder().decode(StreamingHelperFinish.self, from: fixture("worker-finish")),
-            StreamingHelperFinish(version: 1, command: "finish", forceRest: false))
+            StreamingHelperFinish(version: ProcessingProtocol.version, command: "finish", forceRest: false))
 
         let success = try HelperDecoder.decode(fixture("worker-result-success"))
         XCTAssertEqual(success.status, .success)
@@ -1109,13 +1113,15 @@ final class ConfigurationLoaderTests: XCTestCase {
         let directory = home.appendingPathComponent(".config/sayall")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: home) }
-        try Data(#"{"stt":{"provider":"deepgram","api_key":"deepgram","model":"nova-3","language":"en-GB","region":"eu","streaming":false,"stream_finalize_timeout_ms":3500},"llm":{"provider":"groq","api_key":"groq","model":"llama-3.1-8b-instant","base_url":"https://api.groq.com/openai/v1/chat/completions","enabled":true},"output":{"method":"paste","trailing_space":false},"metrics":{"enabled":false,"history_max_entries":12},"hud":{"show_timer":false}}"#.utf8)
+        try Data(#"{"stt":{"provider":"deepgram","api_key":"deepgram","model":"nova-3","language":"en-GB","region":"eu","smart_format":true,"punctuate":true,"dictation":true,"numerals":true,"measurements":true,"streaming":false,"stream_finalize_timeout_ms":3500},"llm":{"provider":"groq","api_key":"groq","model":"llama-3.1-8b-instant","base_url":"https://api.groq.com/openai/v1/chat/completions","enabled":true},"output":{"method":"paste","trailing_space":false},"metrics":{"enabled":false,"history_max_entries":12},"hud":{"show_timer":false}}"#.utf8)
             .write(to: directory.appendingPathComponent("config.json"))
         try Data(#"{"version":1,"keywords":["SayAll","München"]}"#.utf8)
             .write(to: directory.appendingPathComponent("keywords.json"))
         XCTAssertEqual(try ConfigurationLoader(environment: [:], homeDirectory: home).load(),
             ProviderSettings(deepgramAPIKey: "deepgram", deepgramModel: "nova-3", deepgramLanguage: "en-GB",
-                deepgramRegion: "eu", deepgramKeyterms: ["SayAll", "München"], streamingEnabled: false,
+                deepgramRegion: "eu", deepgramKeyterms: ["SayAll", "München"],
+                smartFormat: true, punctuate: true, dictation: true, numerals: true, measurements: true,
+                streamingEnabled: false,
                 streamFinalizeTimeoutMs: 3_500, groqAPIKey: "groq", groqModel: "llama-3.1-8b-instant",
                 groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", cleanupEnabled: true,
                 showTimer: false, outputMethod: .paste, trailingSpace: false,
@@ -1133,7 +1139,9 @@ final class ConfigurationLoaderTests: XCTestCase {
             "FILE_DG": "resolved", "GROQ_API_KEY": "override"]
         XCTAssertEqual(try ConfigurationLoader(environment: environment, homeDirectory: home).load(),
             ProviderSettings(deepgramAPIKey: "resolved", deepgramModel: "nova-3", deepgramLanguage: "en",
-                deepgramRegion: "global", deepgramKeyterms: [], streamingEnabled: true,
+                deepgramRegion: "global", deepgramKeyterms: [],
+                smartFormat: false, punctuate: false, dictation: false, numerals: false, measurements: false,
+                streamingEnabled: true,
                 streamFinalizeTimeoutMs: 2_000, groqAPIKey: "override", groqModel: "openai/gpt-oss-20b",
                 groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", cleanupEnabled: false,
                 showTimer: true, outputMethod: .type, trailingSpace: true,

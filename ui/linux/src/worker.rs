@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 const CONTROL_MAX: usize = 64 * 1024;
 const RESULT_MAX: usize = 1024 * 1024;
 const SUPERVISED_MAX: usize = 4097;
+const PROTOCOL_VERSION: u32 = 2;
 
 pub struct SupervisedOutput {
     pub status: ExitStatus,
@@ -147,6 +148,11 @@ struct Request<'a> {
     deepgram_language: &'a str,
     deepgram_region: &'a str,
     deepgram_keyterms: &'a [String],
+    deepgram_smart_format: bool,
+    deepgram_punctuate: bool,
+    deepgram_dictation: bool,
+    deepgram_numerals: bool,
+    deepgram_measurements: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_finalize_timeout_ms: Option<u32>,
     groq_api_key: &'a str,
@@ -244,7 +250,7 @@ impl Worker {
             terminate(&mut running.child, ready_deadline);
             e
         })?;
-        if ready.version != 1 || ready.event != "ready" {
+        if ready.version != PROTOCOL_VERSION || ready.event != "ready" {
             terminate(&mut running.child, ready_deadline);
             return Err("processing worker protocol is incompatible".into());
         }
@@ -282,7 +288,7 @@ impl Worker {
                 Err(mpsc::TryRecvError::Empty) => {}
             }
             let finish = serde_json::to_vec(
-                &serde_json::json!({"version":1,"command":"finish","force_rest":false}),
+                &serde_json::json!({"version":PROTOCOL_VERSION,"command":"finish","force_rest":false}),
             )
             .unwrap();
             if let Err(first) = write_line(
@@ -346,7 +352,7 @@ impl Drop for Worker {
 
 fn encode(wav: &Path, pcm: Option<&Path>, c: &ProviderConfig) -> Result<Vec<u8>, String> {
     let r = Request {
-        version: 1,
+        version: PROTOCOL_VERSION,
         wav_path: wav,
         pcm_path: pcm,
         deepgram_api_key: &c.deepgram_api_key,
@@ -354,6 +360,11 @@ fn encode(wav: &Path, pcm: Option<&Path>, c: &ProviderConfig) -> Result<Vec<u8>,
         deepgram_language: &c.deepgram_language,
         deepgram_region: &c.deepgram_region,
         deepgram_keyterms: &c.keyterms,
+        deepgram_smart_format: c.smart_format,
+        deepgram_punctuate: c.punctuate,
+        deepgram_dictation: c.dictation,
+        deepgram_numerals: c.numerals,
+        deepgram_measurements: c.measurements,
         stream_finalize_timeout_ms: pcm.map(|_| c.finalize_ms),
         groq_api_key: &c.groq_api_key,
         groq_model: &c.groq_model,
@@ -384,7 +395,7 @@ fn probe(path: &Path, shutdown: &Arc<AtomicBool>) -> Result<(), String> {
             return Err(error);
         }
     };
-    if info.protocol_version != 1 {
+    if info.protocol_version != PROTOCOL_VERSION {
         terminate(&mut r.child, deadline);
         return Err("processing worker protocol is incompatible".into());
     }
@@ -622,7 +633,7 @@ fn decode<T: for<'a> Deserialize<'a>>(b: Vec<u8>) -> Result<T, String> {
 }
 fn decode_result(b: Vec<u8>) -> Result<Outcome, String> {
     let r: ResultFrame = decode(b)?;
-    if r.version != 1 {
+    if r.version != PROTOCOL_VERSION {
         return Err("processing worker protocol is incompatible".into());
     }
     match r.status.as_str() {
@@ -818,6 +829,11 @@ mod tests {
             deepgram_language: "en".into(),
             deepgram_region: "global".into(),
             keyterms: vec![],
+            smart_format: false,
+            punctuate: false,
+            dictation: false,
+            numerals: false,
+            measurements: false,
             streaming,
             finalize_ms: 2000,
             groq_api_key: String::new(),
@@ -850,7 +866,7 @@ mod tests {
     fn probe() -> String {
         format!(
             r#"if [ "${{1-}}" = "--worker-info" ]; then
-  printf '%s\n' '{{"protocol_version":1,"build_version":"{}"}}'
+  printf '%s\n' '{{"protocol_version":2,"build_version":"{}"}}'
   IFS= read -r ignored || true
   exit 0
 fi"#,
@@ -866,10 +882,10 @@ fi"#,
 [ "${{1-}}" = "--stream" ]
 IFS= read -r request
 case "$request" in *secret-deepgram*) ;; *) exit 31;; esac
-printf '%s\n' '{{"version":1,"event":"ready","streaming":true}}'
+printf '%s\n' '{{"version":2,"event":"ready","streaming":true}}'
 IFS= read -r finish
-[ "$finish" = '{{"command":"finish","force_rest":false,"version":1}}' ]
-printf '%s\n' '{{"version":1,"status":"success","text":"hello"}}'"#,
+[ "$finish" = '{{"command":"finish","force_rest":false,"version":2}}' ]
+printf '%s\n' '{{"version":2,"status":"success","text":"hello"}}'"#,
             probe()
         );
         let fixture = Fixture::new(&body);
@@ -896,7 +912,7 @@ printf '%s\n' '{{"version":1,"status":"success","text":"hello"}}'"#,
 if [ "${{1-}}" = "--stream" ]; then exit 32; fi
 IFS= read -r request
 case "$request" in *pcm_path*) exit 33;; esac
-printf '%s' '{{"version":1,"status":"no_speech"}}'"#,
+printf '%s' '{{"version":2,"status":"no_speech"}}'"#,
             probe()
         );
         let fixture = Fixture::new(&body);
@@ -926,12 +942,12 @@ printf '%s' '{{"version":1,"status":"no_speech"}}'"#,
 if [ "${{1-}}" = "--stream" ]; then
   printf S >> '{}'
   IFS= read -r request
-  printf '%s\n' '{{"version":1,"event":"ready","streaming":true}}'
+  printf '%s\n' '{{"version":2,"event":"ready","streaming":true}}'
   exit 0
 fi
 printf B >> '{}'
 IFS= read -r request
-printf '%s' '{{"version":1,"status":"success","text":"fallback"}}'"#,
+printf '%s' '{{"version":2,"status":"success","text":"fallback"}}'"#,
             probe(),
             log.display(),
             log.display()
@@ -965,7 +981,7 @@ printf '%s' '{{"version":1,"status":"success","text":"fallback"}}'"#,
 if [ "${{1-}}" = "--stream" ]; then
   printf S >> '{}'
   IFS= read -r request
-  printf '%s\n' '{{"version":1,"event":"ready","streaming":true}}'
+  printf '%s\n' '{{"version":2,"event":"ready","streaming":true}}'
   IFS= read -r finish
   printf '%s\n' '{{'
   exit 0
@@ -1002,7 +1018,7 @@ exit 34"#,
 if [ "${{1-}}" = "--stream" ]; then
   printf S >> '{}'
   IFS= read -r request
-  printf '%s\n' '{{"version":1,"event":"ready","streaming":true}}'
+  printf '%s\n' '{{"version":2,"event":"ready","streaming":true}}'
   IFS= read -r finish
   printf '{{'
   /bin/sleep 2
@@ -1040,8 +1056,8 @@ exit 35"#,
 if [ "${{1-}}" = "--stream" ]; then
   printf S >> '{}'
   IFS= read -r request
-  printf '%s\n' '{{"version":1,"event":"ready","streaming":true}}'
-  printf '%s\n' '{{"version":1,"status":"success","text":"unsolicited"}}'
+  printf '%s\n' '{{"version":2,"event":"ready","streaming":true}}'
+  printf '%s\n' '{{"version":2,"status":"success","text":"unsolicited"}}'
   IFS= read -r finish || true
   exit 0
 fi
@@ -1070,7 +1086,7 @@ exit 36"#,
     fn incompatible_worker_build_is_rejected() {
         let fixture = Fixture::new(
             r#"if [ "${1-}" = "--worker-info" ]; then
-  printf '%s\n' '{"protocol_version":1,"build_version":"different"}'
+  printf '%s\n' '{"protocol_version":2,"build_version":"different"}'
   IFS= read -r ignored || true
 fi"#,
         );

@@ -204,10 +204,12 @@ final class Coordinator {
             if config.streamingEnabled {
                 phaseStarted = DispatchTime.now().uptimeNanoseconds
                 session = try await helper.launchStreaming(
-                    StreamingHelperRequest(version: 1, wavPath: recording.wavURL.path, pcmPath: recording.pcmURL.path,
+                    StreamingHelperRequest(version: ProcessingProtocol.version, wavPath: recording.wavURL.path, pcmPath: recording.pcmURL.path,
                         deepgramAPIKey: config.deepgramAPIKey, deepgramModel: config.deepgramModel,
                         deepgramLanguage: config.deepgramLanguage, deepgramRegion: config.deepgramRegion,
                         deepgramKeyterms: config.deepgramKeyterms,
+                        smartFormat: config.smartFormat, punctuate: config.punctuate,
+                        dictation: config.dictation, numerals: config.numerals, measurements: config.measurements,
                         streamFinalizeTimeoutMs: config.streamFinalizeTimeoutMs,
                         groqAPIKey: config.groqAPIKey, groqModel: config.groqModel,
                         groqBaseURL: config.groqBaseURL, cleanupEnabled: config.cleanupEnabled),
@@ -273,9 +275,11 @@ final class Coordinator {
                 finish(id, as: .error, message: "SayAll configuration is unavailable")
                 return
             }
-            let request = HelperRequest(version: 1, wavPath: recording.wavURL.path, deepgramAPIKey: config.deepgramAPIKey,
+            let request = HelperRequest(version: ProcessingProtocol.version, wavPath: recording.wavURL.path, deepgramAPIKey: config.deepgramAPIKey,
                 deepgramModel: config.deepgramModel, deepgramLanguage: config.deepgramLanguage,
                 deepgramRegion: config.deepgramRegion, deepgramKeyterms: config.deepgramKeyterms,
+                smartFormat: config.smartFormat, punctuate: config.punctuate,
+                dictation: config.dictation, numerals: config.numerals, measurements: config.measurements,
                 groqAPIKey: config.groqAPIKey, groqModel: config.groqModel,
                 groqBaseURL: config.groqBaseURL, cleanupEnabled: config.cleanupEnabled)
             do {

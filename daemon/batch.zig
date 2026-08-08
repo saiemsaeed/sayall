@@ -19,6 +19,11 @@ pub const Request = struct {
     deepgram_language: []const u8 = "en",
     deepgram_region: []const u8 = "global",
     deepgram_keyterms: []const []const u8 = &.{},
+    deepgram_smart_format: bool = false,
+    deepgram_punctuate: bool = false,
+    deepgram_dictation: bool = false,
+    deepgram_numerals: bool = false,
+    deepgram_measurements: bool = false,
     groq_api_key: []const u8,
     groq_model: []const u8 = "openai/gpt-oss-20b",
     groq_base_url: []const u8 = "https://api.groq.com/openai/v1/chat/completions",
@@ -42,7 +47,7 @@ pub const Warning = enum { cleanup_failed };
 pub const Status = enum { success, no_speech, @"error" };
 pub const Transport = enum { rest, stream };
 pub const Result = struct {
-    version: u32 = 1,
+    version: u32 = worker_protocol.version,
     status: Status,
     text: ?[]const u8 = null,
     warning: ?Warning = null,
@@ -73,8 +78,9 @@ pub fn process(gpa: std.mem.Allocator, io: std.Io, r: Request, seam: Seam) Resul
 }
 
 pub fn processWithTranscript(gpa: std.mem.Allocator, io: std.Io, r: Request, seam: Seam, streamed: ?[]const u8) Result {
-    if (r.version != 1) return fail(.incompatible_version);
+    if (r.version != worker_protocol.version) return fail(.incompatible_version);
     if (r.deepgram_api_key.len == 0) return fail(.missing_deepgram_key);
+    if (r.deepgram_dictation and !r.deepgram_punctuate) return fail(.invalid_request);
     if (!safeSecret(r.deepgram_api_key) or !safeSecret(r.groq_api_key)) return fail(.invalid_request);
     if (!safeProviderValue(r.deepgram_model) or !safeProviderValue(r.deepgram_language) or
         !safeLlmModel(r.groq_model) or !validRegion(r.deepgram_region) or
@@ -100,6 +106,11 @@ pub fn processWithTranscript(gpa: std.mem.Allocator, io: std.Io, r: Request, sea
         .language = r.deepgram_language,
         .region = r.deepgram_region,
         .keyterms = r.deepgram_keyterms,
+        .smart_format = r.deepgram_smart_format,
+        .punctuate = r.deepgram_punctuate,
+        .dictation = r.deepgram_dictation,
+        .numerals = r.deepgram_numerals,
+        .measurements = r.deepgram_measurements,
         .streaming = false,
     };
     var context: CoreContext = .{ .io = io, .request = &r, .seam = seam, .stt = &stt, .wav = wav };
@@ -246,10 +257,14 @@ const FakeProvider = struct {
     transcript: []const u8 = "München",
     cleanup_fails: bool = false,
     expected_region: []const u8 = "global",
+    expected_formatting: bool = false,
 
     fn transcribe(context: ?*anyopaque, gpa: std.mem.Allocator, _: std.Io, cfg: *const provider.SttConfig, _: []const u8) ![]u8 {
         const self: *FakeProvider = @ptrCast(@alignCast(context.?));
         if (!std.mem.eql(u8, cfg.region, self.expected_region)) return error.UnexpectedRegion;
+        if (cfg.smart_format != self.expected_formatting or cfg.punctuate != self.expected_formatting or
+            cfg.dictation != self.expected_formatting or cfg.numerals != self.expected_formatting or
+            cfg.measurements != self.expected_formatting) return error.UnexpectedFormatting;
         return gpa.dupe(u8, self.transcript);
     }
 
@@ -283,7 +298,7 @@ fn writeTestWav(tmp: *std.testing.TmpDir, sample_bytes: usize) ![]u8 {
 }
 
 test "strict bounded request and result JSON" {
-    const json = "{\"version\":1,\"wav_path\":\"/a\",\"deepgram_api_key\":\"d\",\"groq_api_key\":\"g\",\"cleanup_enabled\":true}";
+    const json = "{\"version\":2,\"wav_path\":\"/a\",\"deepgram_api_key\":\"d\",\"groq_api_key\":\"g\",\"cleanup_enabled\":true}";
     const parsed = try parseRequest(std.testing.allocator, json);
     defer parsed.deinit();
     try std.testing.expectError(error.InvalidRequest, parseRequest(std.testing.allocator, json ++ "x"));
@@ -293,15 +308,15 @@ test "strict bounded request and result JSON" {
 }
 
 test "worker result decoder requires fields and status semantics" {
-    const valid = try parseResult(std.testing.allocator, "{\"version\":1,\"status\":\"success\",\"text\":\"hello\",\"future\":true}");
+    const valid = try parseResult(std.testing.allocator, "{\"version\":2,\"status\":\"success\",\"text\":\"hello\",\"future\":true}");
     defer valid.deinit();
     try std.testing.expectEqualStrings("hello", valid.value.text.?);
     for ([_][]const u8{
         "{\"status\":\"success\",\"text\":\"hello\"}",
-        "{\"version\":1,\"status\":\"success\"}",
-        "{\"version\":1,\"status\":\"success\",\"text\":\"\"}",
-        "{\"version\":1,\"status\":\"no_speech\",\"text\":\"unexpected\"}",
-        "{\"version\":1,\"status\":\"error\"}",
+        "{\"version\":2,\"status\":\"success\"}",
+        "{\"version\":2,\"status\":\"success\",\"text\":\"\"}",
+        "{\"version\":2,\"status\":\"no_speech\",\"text\":\"unexpected\"}",
+        "{\"version\":2,\"status\":\"error\"}",
     }) |invalid_json| try std.testing.expectError(error.InvalidResult, parseResult(std.testing.allocator, invalid_json));
 }
 
@@ -317,14 +332,19 @@ test "process validates canonical audio and preserves raw transcript when cleanu
     const path = try writeTestWav(&tmp, 16_000);
     defer std.testing.allocator.free(path);
     const request: Request = .{
-        .version = 1,
+        .version = worker_protocol.version,
         .wav_path = path,
         .deepgram_api_key = "deepgram",
         .deepgram_region = "eu",
+        .deepgram_smart_format = true,
+        .deepgram_punctuate = true,
+        .deepgram_dictation = true,
+        .deepgram_numerals = true,
+        .deepgram_measurements = true,
         .groq_api_key = "groq",
         .cleanup_enabled = true,
     };
-    var fake: FakeProvider = .{ .cleanup_fails = true, .expected_region = "eu" };
+    var fake: FakeProvider = .{ .cleanup_fails = true, .expected_region = "eu", .expected_formatting = true };
     const result = process(std.testing.allocator, std.testing.io, request, fake.seam());
     defer if (result.text) |text| std.testing.allocator.free(text);
     try std.testing.expectEqual(.success, result.status);
@@ -345,7 +365,7 @@ test "process distinguishes short and invalid audio without calling providers" {
     const path = try writeTestWav(&tmp, 2);
     defer std.testing.allocator.free(path);
     const request: Request = .{
-        .version = 1,
+        .version = worker_protocol.version,
         .wav_path = path,
         .deepgram_api_key = "deepgram",
         .groq_api_key = "",
@@ -380,7 +400,7 @@ test "process rejects incompatible requests and oversized provider output" {
     const path = try writeTestWav(&tmp, 16_000);
     defer std.testing.allocator.free(path);
     const result = process(std.testing.allocator, std.testing.io, .{
-        .version = 1,
+        .version = worker_protocol.version,
         .wav_path = path,
         .deepgram_api_key = "deepgram",
         .groq_api_key = "",
