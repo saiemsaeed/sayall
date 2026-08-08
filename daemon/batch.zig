@@ -383,7 +383,7 @@ test "process distinguishes short and invalid audio without calling providers" {
 test "process rejects incompatible requests and oversized provider output" {
     var fake: FakeProvider = .{};
     const incompatible = process(std.testing.allocator, std.testing.io, .{
-        .version = 2,
+        .version = worker_protocol.version - 1,
         .wav_path = "/unused",
         .deepgram_api_key = "deepgram",
         .groq_api_key = "",
