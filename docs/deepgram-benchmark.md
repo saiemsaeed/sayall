@@ -41,6 +41,32 @@ automatic REST result and is reported as such. Run the workflow several times
 across normal provider variance before selecting thresholds. Record the model,
 region, manifest hash and individual JSON artifacts used for a baseline.
 
+Streaming timing separates connection readiness, paced audio feed duration,
+total session time, and `post_stop_ms`: the time from sending the explicit
+finish command until the validated final transcript arrives. `post_stop_ms` is
+the closest synthetic canary measurement of user-visible release-to-result
+latency. REST records `request_to_result_ms` after the complete WAV exists, so
+REST and total streaming duration must not be compared as equivalent intervals.
+Headline latency medians use speech clips only; silence remains visible in the
+per-clip evidence without skewing the representative dictation latency.
+
+## Reading CI evidence
+
+Open **Actions → Live Deepgram worker benchmark → the run → Summary** for a
+current-versus-previous table covering WER, CER, REST request latency, stream
+connection time, stream post-stop latency, total paced-stream time, transport,
+and per-clip results. The workflow compares with the newest retained successful
+benchmark artifact; the first run or an expired 30-day artifact has no baseline.
+
+Download the `deepgram-benchmark-<run>-<attempt>` artifact and open
+`benchmark-report.html` for the same tables plus every macOS and Linux HUD PNG
+from the successful CI run at the benchmarked commit. The raw privacy-safe data
+is in `deepgram-benchmark.json`; `benchmark-comparison.md` is the exact job
+summary. To evaluate a PR before merge, manually run this workflow and select
+the PR branch. Live provider results remain separate from ordinary PR CI so
+untrusted pull requests never receive the benchmark secret and normal code
+changes do not spend provider quota automatically.
+
 ## Adding real speech
 
 Add small, consented recordings or clearly CC-licensed material to a new

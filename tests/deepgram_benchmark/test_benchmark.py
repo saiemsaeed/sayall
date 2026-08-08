@@ -5,10 +5,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import wave
 from unittest import mock
-from benchmark import ProtocolError, aggregate, classify, edit_distance, error_counts, main, make_audio, nonnegative_finite, normalize, positive_finite, read_line, thresholds_pass, validate_ready, validate_result, worker_identity
+from benchmark import ProtocolError, aggregate, classify, edit_distance, error_counts, main, make_audio, nonnegative_finite, normalize, positive_finite, read_line, run_worker, thresholds_pass, validate_ready, validate_result, worker_identity
 
 class MetricsTests(unittest.TestCase):
     def test_normalize(self): self.assertEqual(normalize(" HéLLo,\tWORLD! "), "héllo world")
@@ -105,5 +106,31 @@ class MetricsTests(unittest.TestCase):
             with self.assertRaises(TimeoutError): read_line(process, 0.05)
         finally:
             process.kill(); process.wait(); process.stdout.close()
+
+    def test_stream_timing_separates_ready_feed_and_post_stop(self):
+        script = """#!/usr/bin/env python3
+import json, sys, time
+if '--stream' not in sys.argv:
+    json.load(sys.stdin); print(json.dumps({'version':1,'status':'success','text':'ok','transport':'rest'})); raise SystemExit
+json.loads(sys.stdin.readline()); print(json.dumps({'version':1,'event':'ready','streaming':True}), flush=True)
+json.loads(sys.stdin.readline()); time.sleep(0.03)
+print(json.dumps({'version':1,'status':'success','text':'ok','transport':'stream'}), flush=True)
+"""
+        real_validate = validate_result
+        def delayed_validate(frame):
+            time.sleep(0.03)
+            real_validate(frame)
+        with tempfile.TemporaryDirectory() as directory, mock.patch("benchmark.validate_result", side_effect=delayed_validate):
+            worker = pathlib.Path(directory) / "worker"
+            worker.write_text(script); worker.chmod(0o700)
+            pcm_path = pathlib.Path(directory) / "growing.pcm"
+            request = {"pcm_path":str(pcm_path), "stream_finalize_timeout_ms":5000}
+            result, active, timing = run_worker(worker, "stream", request, b"\0" * 3200, 2)
+        self.assertEqual(result["transport"], "stream"); self.assertTrue(active)
+        self.assertEqual(timing["audio_duration_ms"], 100)
+        self.assertGreaterEqual(timing["audio_feed_ms"], 90); self.assertLess(timing["audio_feed_ms"], 180)
+        self.assertGreaterEqual(timing["post_stop_ms"], 50)
+        self.assertGreaterEqual(timing["elapsed_ms"], timing["post_stop_ms"] + timing["audio_feed_ms"])
+        self.assertIsNone(timing["request_to_result_ms"])
 
 if __name__ == "__main__": unittest.main()

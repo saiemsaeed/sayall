@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse, datetime, hashlib, json, math, os, pathlib, selectors
 import struct, subprocess, sys, tempfile, time, unicodedata, wave
 
-HARNESS_VERSION = "1.0.0"
+HARNESS_VERSION = "1.1.0"
 MAX_FRAME_BYTES = 1024 * 1024
 ERROR_CODES = {"invalid_request", "incompatible_version", "invalid_audio", "audio_too_short",
                "audio_too_long", "missing_deepgram_key", "deepgram_unauthorized",
@@ -150,12 +150,19 @@ def error_category(error):
 
 def run_worker(worker, mode, req, pcm, timeout):
     started = time.monotonic()
+    audio_duration_ms = round(len(pcm) / 32)
     if mode == "rest":
         req.pop("pcm_path"); req.pop("stream_finalize_timeout_ms")
         proc = subprocess.run([str(worker)], input=json.dumps(req).encode(), stdout=subprocess.PIPE,
                               stderr=subprocess.DEVNULL, env={}, timeout=timeout, check=False)
         if proc.returncode: raise RuntimeError("worker failed without a result")
         result, active = json.loads(proc.stdout), None
+        validate_result(result)
+        terminal_validated = time.monotonic()
+        timing = {"elapsed_ms": round((terminal_validated-started)*1000),
+                  "audio_duration_ms": audio_duration_ms,
+                  "request_to_result_ms": round((terminal_validated-started)*1000),
+                  "stream_ready_ms": None, "audio_feed_ms": None, "post_stop_ms": None}
     else:
         pcm_path = pathlib.Path(req["pcm_path"]); pcm_path.write_bytes(b""); os.chmod(pcm_path, 0o600)
         proc = subprocess.Popen([str(worker), "--stream"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -163,16 +170,31 @@ def run_worker(worker, mode, req, pcm, timeout):
         try:
             proc.stdin.write(json.dumps(req).encode()+b"\n"); proc.stdin.flush()
             ready = read_line(proc, min(timeout, 15)); validate_ready(ready); active = ready["streaming"]
+            ready_received = time.monotonic()
             # 100 ms chunks approximate capture cadence while Deepgram tails the growing file.
+            feed_started = time.monotonic()
             with pcm_path.open("ab", buffering=0) as out:
                 for offset in range(0, len(pcm), 3200): out.write(pcm[offset:offset+3200]); time.sleep(0.1)
+            feed_finished = time.monotonic()
             proc.stdin.write(b'{"version":1,"command":"finish","force_rest":false}\n'); proc.stdin.flush()
+            finish_sent = time.monotonic()
             result = read_line(proc, timeout)
+            validate_result(result)
+            terminal_validated = time.monotonic()
             if proc.wait(timeout=5) != 0: raise RuntimeError("worker exited unsuccessfully")
+            completed = time.monotonic()
+            timing = {"elapsed_ms": round((completed-started)*1000),
+                      "audio_duration_ms": audio_duration_ms, "request_to_result_ms": None,
+                      "stream_ready_ms": round((ready_received-started)*1000),
+                      "audio_feed_ms": round((feed_finished-feed_started)*1000),
+                      "post_stop_ms": round((terminal_validated-finish_sent)*1000)}
         except BaseException:
             proc.kill(); proc.wait(); raise
-    validate_result(result)
-    return result, active, round((time.monotonic()-started)*1000)
+        finally:
+            for pipe in (proc.stdin, proc.stdout):
+                try: pipe.close()
+                except OSError: pass
+    return result, active, timing
 
 def worker_identity(worker):
     p = subprocess.run([str(worker), "--worker-info"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -205,6 +227,8 @@ def failure_clip(clip, mode, metadata, category):
             "expect_no_speech": clip["expect_no_speech"], "classification": "harness_error",
             "worker_status": None, "worker_error": None, "streaming_active": None,
             "harness_error": category, "effective_transport": None, "elapsed_ms": None,
+            "audio_duration_ms": None, "request_to_result_ms": None, "stream_ready_ms": None,
+            "audio_feed_ms": None, "post_stop_ms": None,
             "audio_sha256": None, **metadata, **counts,
             "wer": counts["word_edits"]/counts["reference_words"] if counts["reference_words"] else None,
             "cer": counts["char_edits"]/counts["reference_chars"] if counts["reference_chars"] else None}
@@ -263,7 +287,7 @@ def main(argv=None):
                 for mode in modes:
                     operation_started = time.monotonic()
                     try:
-                        result, active, elapsed = run_worker(
+                        result, active, timing = run_worker(
                             args.worker.resolve(), mode,
                             request(clip, wav_path, pathlib.Path(td)/(clip["id"]+"-grow.pcm"), key, args),
                             pcm, args.timeout,
@@ -271,7 +295,10 @@ def main(argv=None):
                     except (OSError, ValueError, RuntimeError, TimeoutError, subprocess.SubprocessError, json.JSONDecodeError) as error:
                         result = {"status": "error", "harness_error": error_category(error)}
                         active = None
-                        elapsed = round((time.monotonic()-operation_started)*1000)
+                        timing = {"elapsed_ms": round((time.monotonic()-operation_started)*1000),
+                                  "audio_duration_ms": round(len(pcm) / 32),
+                                  "request_to_result_ms": None, "stream_ready_ms": None,
+                                  "audio_feed_ms": None, "post_stop_ms": None}
                     counts = error_counts(clip["expected_transcript"], result.get("text") or "")
                     transport = result.get("transport")
                     report["clips"].append({"id": clip["id"], "language": clip["language"], "mode": mode,
@@ -280,7 +307,7 @@ def main(argv=None):
                         "worker_error": result.get("error") if result.get("status") == "error" else None,
                         "streaming_active": active,
                         "harness_error": result.get("harness_error"), "effective_transport": transport,
-                        "elapsed_ms": elapsed, "audio_sha256": digest, **metadata, **counts,
+                        **timing, "audio_sha256": digest, **metadata, **counts,
                         "wer": counts["word_edits"]/counts["reference_words"] if counts["reference_words"] else None,
                         "cer": counts["char_edits"]/counts["reference_chars"] if counts["reference_chars"] else None})
     finally:
