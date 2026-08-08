@@ -55,6 +55,12 @@ fn dispatchHostV2(gpa: Allocator, frame: []const u8, current_state: host_control
     };
     defer parsed.deinit();
     if (parsed.value.method == .status) return .{ .version = host_control.version, .ok = true, .state = current_state };
+    if (parsed.value.method == .reload) return .{
+        .version = host_control.version,
+        .ok = false,
+        .state = current_state,
+        .@"error" = .{ .code = "unsupported", .message = "Configuration reload requires the native host" },
+    };
     const result = toggle(context);
     return Daemon.hostV2ToggleResponse(result.state, result.reply);
 }

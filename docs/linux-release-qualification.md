@@ -177,7 +177,7 @@ row is a publication blocker for the current candidate.
 | Built-in/default input and hotplug/default-input changes between recordings behave predictably | ☐ | Record PipeWire device/default |
 | Raw audio is removed on success, cancellation, provider failure, worker/host kill, and timeout | ☐ | No transcript/key/audio leakage in argv, logs, or persistent history |
 | Startup scavenges audio left by a simulated interruption without exposing it | ☐ | |
-| Config change applies after restart without corruption | ☐ | |
+| Config change applies after `sayall reload` without restarting or corrupting an active dictation | ☐ | |
 | Worker crash/timeout is bounded and the next toggle recovers | ☐ | |
 | Host kill is recovered by systemd with one owner and no stale socket | ☐ | |
 | Logout/login restores expected shortcut state | ☐ | |

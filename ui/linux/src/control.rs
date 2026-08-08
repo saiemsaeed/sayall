@@ -133,6 +133,18 @@ fn exchange(mut stream: UnixStream, c: &Controller) -> io::Result<()> {
                 error(c.status(), "unavailable", "host unavailable")
             }
         },
+        Ok((_, method)) if method == "reload" => match c.reload() {
+            Ok(s) => success(s),
+            Err(crate::session::ToggleError::Busy) => error(
+                c.status(),
+                "busy",
+                "SayAll must be idle to reload configuration",
+            ),
+            Err(crate::session::ToggleError::Failed(e)) => error(c.status(), "invalid_config", &e),
+            Err(crate::session::ToggleError::Unavailable) => {
+                error(c.status(), "unavailable", "host unavailable")
+            }
+        },
         Ok(_) => error(c.status(), "invalid_request", "unsupported method"),
         Err(e) => error(c.status(), "invalid_request", &e),
     };
@@ -149,6 +161,7 @@ mod tests {
         for fixture in [
             include_bytes!("../../../tests/contracts-0.2/host-status-request.json").as_slice(),
             include_bytes!("../../../tests/contracts-0.2/host-toggle-request.json").as_slice(),
+            include_bytes!("../../../tests/contracts-0.2/host-reload-request.json").as_slice(),
         ] {
             assert_eq!(decode(fixture).unwrap().0, 2);
         }
@@ -157,6 +170,14 @@ mod tests {
                 .unwrap()
                 .1,
             "status"
+        );
+        assert_eq!(
+            decode(include_bytes!(
+                "../../../tests/contracts-0.2/host-reload-request.json"
+            ))
+            .unwrap()
+            .1,
+            "reload"
         );
     }
 

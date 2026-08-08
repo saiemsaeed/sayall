@@ -45,7 +45,7 @@ fn run(init: std.process.Init) !u8 {
 
     const canonical_candidate = std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "--help") or
         std.mem.eql(u8, cmd, "-h") or std.mem.eql(u8, cmd, "version") or
-        std.mem.eql(u8, cmd, "--version") or std.mem.eql(u8, cmd, "status") or std.mem.eql(u8, cmd, "doctor") or std.mem.eql(u8, cmd, "update") or
+        std.mem.eql(u8, cmd, "--version") or std.mem.eql(u8, cmd, "status") or std.mem.eql(u8, cmd, "reload") or std.mem.eql(u8, cmd, "doctor") or std.mem.eql(u8, cmd, "update") or
         (std.mem.eql(u8, cmd, "toggle") and !(argv.len == 3 and std.mem.eql(u8, std.mem.span(argv[2]), "--raw"))) or
         std.mem.eql(u8, cmd, "config");
     if (canonical_candidate) {
@@ -314,7 +314,7 @@ fn keywordCommand(arena: std.mem.Allocator, io: Io, env: *const std.process.Envi
         for (raw_args[1..], 0..) |arg, index| additions[index] = std.mem.span(arg);
         const updated = store.add(arena, io, legacy, additions) catch |err| return keywordError(err, null);
         try printLine(io, try std.fmt.allocPrint(arena, "Added {d} keyword(s); {d} configured.", .{ additions.len, updated.len }));
-        try keywordRestartInstruction(io);
+        try keywordReloadInstruction(io);
         return 0;
     }
 
@@ -326,7 +326,7 @@ fn keywordCommand(arena: std.mem.Allocator, io: Io, env: *const std.process.Envi
         _ = store.rename(arena, io, legacy, old, replacement) catch |err|
             return keywordError(err, if (err == error.DuplicateKeyword) replacement else old);
         try printLine(io, "Keyword updated.");
-        try keywordRestartInstruction(io);
+        try keywordReloadInstruction(io);
         return 0;
     }
 
@@ -336,7 +336,7 @@ fn keywordCommand(arena: std.mem.Allocator, io: Io, env: *const std.process.Envi
         const value = std.mem.span(raw_args[1]);
         const updated = store.delete(arena, io, legacy, value) catch |err| return keywordError(err, value);
         try printLine(io, try std.fmt.allocPrint(arena, "Keyword deleted; {d} configured.", .{updated.len}));
-        try keywordRestartInstruction(io);
+        try keywordReloadInstruction(io);
         return 0;
     }
 
@@ -347,7 +347,7 @@ fn keywordCommand(arena: std.mem.Allocator, io: Io, env: *const std.process.Envi
         }
         store.clear(arena, io) catch |err| return keywordError(err, null);
         try printLine(io, "All keywords cleared.");
-        try keywordRestartInstruction(io);
+        try keywordReloadInstruction(io);
         return 0;
     }
 
@@ -400,8 +400,8 @@ fn keywordError(err: anyerror, value: ?[]const u8) u8 {
     return 1;
 }
 
-fn keywordRestartInstruction(io: Io) !void {
-    try printLine(io, "Run 'sayall restart' to apply keyword changes to the running daemon.");
+fn keywordReloadInstruction(io: Io) !void {
+    try printLine(io, "Run 'sayall reload' to apply keyword changes to the running application.");
 }
 
 fn invalidArguments(command: []const u8) u8 {

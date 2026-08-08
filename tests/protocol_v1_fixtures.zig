@@ -7,5 +7,6 @@ pub const events_known = @embedFile("protocol-v1/events-known.ndjson");
 pub const event_unknown_additive = @embedFile("protocol-v1/event-unknown-additive.json");
 pub const host_status_request = @embedFile("contracts-0.2/host-status-request.json");
 pub const host_toggle_request = @embedFile("contracts-0.2/host-toggle-request.json");
+pub const host_reload_request = @embedFile("contracts-0.2/host-reload-request.json");
 pub const host_status_response = @embedFile("contracts-0.2/host-status-response.json");
 pub const host_busy_response = @embedFile("contracts-0.2/host-busy-response.json");

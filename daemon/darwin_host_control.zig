@@ -27,7 +27,7 @@ pub const Darwin = struct {
         sleep: *const fn (u64) callconv(.c) void = sayall_darwin_sleep_ns,
     };
     pub fn adapter(self: *Darwin) cli.HostControl {
-        return .{ .context = self, .statusFn = status, .toggleFn = toggle };
+        return .{ .context = self, .statusFn = status, .toggleFn = toggle, .reloadFn = reload };
     }
     fn status(ctx: *anyopaque) cli.HostOutcome {
         return send(@ptrCast(@alignCast(ctx)), .status);
@@ -50,10 +50,17 @@ pub const Darwin = struct {
         // From this point there is one mutating exchange and no retry path.
         return send(self, .toggle);
     }
+    fn reload(ctx: *anyopaque) cli.HostOutcome {
+        return send(@ptrCast(@alignCast(ctx)), .reload);
+    }
     fn send(self: *Darwin, method: protocol.Method) cli.HostOutcome {
         var bytes: ?[*]u8 = null;
         var len: usize = 0;
-        const name: [:0]const u8 = if (method == .status) "status" else "toggle";
+        const name: [:0]const u8 = switch (method) {
+            .status => "status",
+            .toggle => "toggle",
+            .reload => "reload",
+        };
         const code = result(self.ops.exchange(name.ptr, self.ops.now() +| std.time.ns_per_s, &bytes, &len));
         if (code != .success) return classify(code, method == .status);
         defer self.ops.free(bytes);

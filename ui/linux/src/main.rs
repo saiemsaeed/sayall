@@ -370,6 +370,17 @@ fn enable_portal_shortcut() {
     }
 }
 
+fn reload_configuration() -> Result<(), String> {
+    let slot = NATIVE.get().ok_or("native host is unavailable")?;
+    let guard = slot.lock().map_err(|_| "native host is unavailable")?;
+    let native = guard.as_ref().ok_or("native host is unavailable")?;
+    native
+        .controller
+        .reload()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 fn start_native_host() -> io::Result<()> {
     let ownership = runtime::Ownership::acquire(socket_path()?)?;
     let root = runtime::session_root()?;

@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-public enum ControlMethod: String, Codable { case status, toggle }
+public enum ControlMethod: String, Codable { case status, toggle, reload }
 
 public struct ControlRequest: Codable, Equatable {
     public let version: Int
@@ -19,7 +19,7 @@ public struct ControlResponse: Codable, Equatable {
     }
 }
 
-public enum HostControlMethod: String, Codable { case status, toggle }
+public enum HostControlMethod: String, Codable { case status, toggle, reload }
 public enum HostControlState: String, Codable, CaseIterable {
     case idle, starting, recording, stopping, processing, delivering, success, error, cancelled
 }

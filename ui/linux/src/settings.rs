@@ -82,7 +82,7 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
     shortcut.set_wrap(true);
     let init = Button::with_label("Initialize configuration");
     let enable_shortcut = Button::with_label("Enable/configure global shortcut");
-    let reload = Button::with_label("Revalidate status");
+    let reload = Button::with_label("Reload Configuration");
     let login = CheckButton::with_label("Start SayAll at login");
     column.append(&heading);
     column.append(&status);
@@ -187,7 +187,13 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
             gtk::glib::ControlFlow::Break
         });
     });
-    reload.connect_clicked(move |_| refresh());
+    let reload_status = status.clone();
+    reload.connect_clicked(move |_| match crate::reload_configuration() {
+        Ok(()) => {
+            reload_status.set_text("Configuration reloaded. Changes apply to the next dictation.")
+        }
+        Err(e) => reload_status.set_text(&format!("Could not reload configuration: {e}")),
+    });
     let status3 = status.clone();
     let changing2 = changing.clone();
     login.connect_toggled(move |toggle| {

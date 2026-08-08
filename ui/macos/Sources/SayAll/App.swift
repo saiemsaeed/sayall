@@ -75,6 +75,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     @objc private func cancel() { coordinator.cancel() }
     @objc private func trigger() { coordinator.trigger(source: .menu) }
+    @objc private func reloadConfiguration() {
+        let response = coordinator.handleControl(.reload)
+        let alert = NSAlert()
+        alert.messageText = response.ok ? "Configuration reloaded" : "Could not reload configuration"
+        alert.informativeText = response.ok
+            ? "Your changes will be used for the next dictation."
+            : (response.error?.replacingOccurrences(of: "error: ", with: "", options: .anchored)
+                ?? "The configuration could not be loaded.")
+        alert.alertStyle = response.ok ? .informational : .warning
+        alert.runModal()
+    }
     private func triggerShortcut() { coordinator.trigger(source: .shortcut) }
     @objc private func selectMicrophone(_ sender: NSMenuItem) {
         guard coordinator.state == .idle else { return }
@@ -231,6 +242,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         toggle.target = self
         toggle.isEnabled = coordinator.state == .idle || coordinator.state == .recording
         menu.addItem(toggle)
+        let reload = NSMenuItem(title: "Reload Configuration", action: #selector(reloadConfiguration), keyEquivalent: "")
+        reload.target = self
+        reload.isEnabled = coordinator.state == .idle
+        menu.addItem(reload)
         menu.addItem(.separator())
         let cli = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/sayall").path
         let target = "/usr/local/bin/sayall"

@@ -18,7 +18,8 @@ uses it to distinguish a completed stream from automatic REST fallback.
 version 2. Version 2 is intentionally distinct from the released private macOS
 version-1 protocol because errors become structured `{code,message}` values.
 Status never launches a host. Toggle may launch the exact installed host, but a
-client must not retry after the mutation could have been accepted.
+client must not retry after the mutation could have been accepted. Reload
+validates configuration while idle and applies it to the next dictation.
 
 Unknown object fields are additive. Worker status/warning/error values and host
 states are closed unless the architecture ADR explicitly marks a field open;

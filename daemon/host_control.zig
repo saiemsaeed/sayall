@@ -10,7 +10,7 @@ const fixtures = @import("protocol_fixtures");
 pub const version: u16 = 2;
 /// The trailing newline is part of this bound.
 pub const max_frame_len = 64 * 1024;
-pub const Method = enum { status, toggle };
+pub const Method = enum { status, toggle, reload };
 pub const State = enum { idle, starting, recording, stopping, processing, delivering, success, @"error", cancelled };
 pub const Request = struct { version: u16, method: Method };
 pub const Failure = struct { code: []const u8, message: []const u8 };
@@ -63,13 +63,16 @@ pub const Linux = struct {
     exchangeFn: *const fn (*Linux, Method) cli.HostOutcome = productionExchange,
 
     pub fn adapter(self: *Linux) cli.HostControl {
-        return .{ .context = self, .statusFn = status, .toggleFn = toggle };
+        return .{ .context = self, .statusFn = status, .toggleFn = toggle, .reloadFn = reload };
     }
     fn status(ctx: *anyopaque) cli.HostOutcome {
         return send(ctx, .status);
     }
     fn toggle(ctx: *anyopaque) cli.HostOutcome {
         return send(ctx, .toggle);
+    }
+    fn reload(ctx: *anyopaque) cli.HostOutcome {
+        return send(ctx, .reload);
     }
     fn send(ctx: *anyopaque, method: Method) cli.HostOutcome {
         if (builtin.os.tag != .linux) return .unavailable;
@@ -121,7 +124,7 @@ fn diagnostic(arena: Allocator, err: anyerror) []const u8 {
 
 pub const Unavailable = struct {
     pub fn adapter(self: *Unavailable) cli.HostControl {
-        return .{ .context = self, .statusFn = call, .toggleFn = call };
+        return .{ .context = self, .statusFn = call, .toggleFn = call, .reloadFn = call };
     }
     fn call(_: *anyopaque) cli.HostOutcome {
         return .unavailable;
@@ -135,6 +138,9 @@ test "v2 codec fixtures additions closed values semantics and frame bound" {
     const toggle = try parseRequest(std.testing.allocator, fixtures.host_toggle_request);
     defer toggle.deinit();
     try std.testing.expectEqual(Method.toggle, toggle.value.method);
+    const reload = try parseRequest(std.testing.allocator, fixtures.host_reload_request);
+    defer reload.deinit();
+    try std.testing.expectEqual(Method.reload, reload.value.method);
     const idle = try parseResponse(std.testing.allocator, fixtures.host_status_response);
     defer idle.deinit();
     try std.testing.expect(idle.value.ok);
@@ -196,7 +202,7 @@ test "linux transport invokes exchange exactly once without retry" {
     var env = std.process.Environ.Map.init(std.testing.allocator);
     defer env.deinit();
     var linux: Linux = .{ .arena = std.testing.allocator, .io = std.testing.io, .env = &env, .exchangeFn = Fake.call };
-    inline for (.{ Method.status, Method.toggle }) |method| {
+    inline for (.{ Method.status, Method.toggle, Method.reload }) |method| {
         Fake.calls = 0;
         Fake.outcome = .idle;
         _ = sendWithExchange(&linux, method);
