@@ -5,6 +5,44 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-08-08
+
+### Added
+
+- Added optional structured Groq formatting that returns anchored edits for
+  terminology, punctuation, capitalization, paragraphs, and dictated lists;
+  Zig validates and renders every edit from the original Deepgram transcript.
+- Added `sayall reload` on macOS and Linux, plus native menu/settings actions,
+  so valid configuration and keyword changes apply to the next dictation
+  without restarting the application.
+- Added privacy-safe live Deepgram REST and streaming benchmark reports with
+  WER, CER, post-stop latency, historical comparisons, and macOS/Linux HUD
+  evidence.
+
+### Changed
+
+- Changed the optional formatter default to `openai/gpt-oss-20b` and disabled
+  LLM formatting for new configurations. Existing users enabling formatting
+  should select `openai/gpt-oss-20b` or `openai/gpt-oss-120b`; the legacy
+  `llama-3.1-8b-instant` value remains parseable but is unsupported by the
+  structured formatter.
+- Made release publication depend on successful Deepgram REST and authoritative
+  streaming canaries, expected speech/no-speech behavior, and conservative WER
+  and CER limits.
+- Defined the blocking Linux support cell as current x86-64 Arch Linux with
+  Omarchy/Hyprland Wayland; other Linux desktop and distribution combinations
+  remain exploratory rather than claimed release targets.
+
+### Fixed
+
+- Prevented optional LLM formatting from answering questions, following
+  instructions embedded in dictation, or appending generated prose; any unsafe,
+  malformed, or unverifiable plan now returns the unchanged transcript with a
+  warning.
+- Made configuration reload reject busy or invalid changes without terminating
+  the native host or changing the configuration snapshot of an active
+  dictation.
+
 ## [0.2.10] - 2026-08-06
 
 ### Changed
@@ -346,7 +384,9 @@ Initial release, tested and supported on x86-64 Arch Linux with Omarchy.
 - Persistent privacy-safe transcription metrics and microphone diagnostics.
 - systemd user services and Hyprland hotkey integration.
 
-[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.2.9...HEAD
+[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.2.11...HEAD
+[0.2.11]: https://github.com/saiemsaeed/sayall/compare/v0.2.10...v0.2.11
+[0.2.10]: https://github.com/saiemsaeed/sayall/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/saiemsaeed/sayall/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/saiemsaeed/sayall/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/saiemsaeed/sayall/compare/v0.2.6...v0.2.7
