@@ -161,6 +161,7 @@ mod tests {
         for fixture in [
             include_bytes!("../../../tests/contracts-0.2/host-status-request.json").as_slice(),
             include_bytes!("../../../tests/contracts-0.2/host-toggle-request.json").as_slice(),
+            include_bytes!("../../../tests/contracts-0.2/host-reload-request.json").as_slice(),
         ] {
             assert_eq!(decode(fixture).unwrap().0, 2);
         }
@@ -171,7 +172,11 @@ mod tests {
             "status"
         );
         assert_eq!(
-            decode(br#"{"version":2,"method":"reload"}"#).unwrap().1,
+            decode(include_bytes!(
+                "../../../tests/contracts-0.2/host-reload-request.json"
+            ))
+            .unwrap()
+            .1,
             "reload"
         );
     }

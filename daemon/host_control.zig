@@ -138,7 +138,7 @@ test "v2 codec fixtures additions closed values semantics and frame bound" {
     const toggle = try parseRequest(std.testing.allocator, fixtures.host_toggle_request);
     defer toggle.deinit();
     try std.testing.expectEqual(Method.toggle, toggle.value.method);
-    const reload = try parseRequest(std.testing.allocator, "{\"version\":2,\"method\":\"reload\"}");
+    const reload = try parseRequest(std.testing.allocator, fixtures.host_reload_request);
     defer reload.deinit();
     try std.testing.expectEqual(Method.reload, reload.value.method);
     const idle = try parseResponse(std.testing.allocator, fixtures.host_status_response);

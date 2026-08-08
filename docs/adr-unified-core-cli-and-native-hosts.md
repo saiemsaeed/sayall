@@ -87,18 +87,19 @@ or limits requires a worker protocol version change.
 
 The unified native-host control contract starts at version 2 because the
 released private macOS version-1 response used an unstructured error string.
-Version 2 has only `status` and `toggle` initially, returns a canonical state,
-and uses `{code,message}` errors. `status` never launches an application.
-`toggle` may launch the exact installed application, but once a mutating frame
-may have been accepted it is never retried by the client. Unknown additive
-object fields are ignored; changing required fields, meanings, field types, or
-closed state values requires a new version.
+Version 2 supports `status`, `toggle`, and the additive `reload` method, returns
+a canonical state, and uses `{code,message}` errors. `status` never launches an
+application. `toggle` may launch the exact installed application, but once a
+mutating frame may have been accepted it is never retried by the client.
+`reload` validates configuration while idle for use by the next dictation.
+Unknown additive object fields are ignored; changing required fields, meanings,
+field types, or closed state values requires a new version.
 
 Canonical host states are `idle`, `starting`, `recording`, `stopping`,
 `processing`, `delivering`, `success`, `error`, and `cancelled`. Error codes are
 open for additive values; initial common codes include `busy`, `not_running`,
-`incompatible_version`, `invalid_request`, and `unavailable`. Clients branch on
-the code, never the display message.
+`incompatible_version`, `invalid_request`, `invalid_config`, and `unavailable`.
+Clients branch on the code, never the display message.
 
 Language-neutral examples for both contracts live in
 [`tests/contracts-0.2/`](../tests/contracts-0.2/). Zig, Swift, and

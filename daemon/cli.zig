@@ -213,6 +213,16 @@ test "typed adapters have identical presentation and one operation" {
     const reloaded = execute(.reload, "unused", reload_fake.adapter());
     try std.testing.expectEqualStrings("Configuration reloaded.\n", reloaded.stdout);
     try std.testing.expectEqual(@as(usize, 1), reload_fake.reload_calls);
+
+    for ([_]HostOutcome{
+        .{ .busy = "busy: processing\n" },
+        .{ .operation_error = "invalid_config: malformed\n" },
+    }) |failure| {
+        var failed = Fake{ .result = failure };
+        const result = execute(.reload, "unused", failed.adapter());
+        try std.testing.expectEqual(@as(u8, 1), result.exit_code);
+        try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Configuration reloaded") == null);
+    }
 }
 
 test "updates require an idle native host" {

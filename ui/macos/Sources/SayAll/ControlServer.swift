@@ -129,12 +129,12 @@ final class ControlServer: @unchecked Sendable {
                   let requestVersion = object["version"] as? Int else { close(client); return }
             let route = decodeControlRoute(line)
             switch route {
-            case .v2:
+            case .v2(let method):
                 Task { @MainActor in
                     guard let legacy = dispatchControlRoute(route, handler: handler) else { close(client); return }
                     let state = HostControlState(rawValue: legacy.state) ?? .error
                     let response = HostControlResponse(ok: legacy.ok, state: state,
-                        error: legacy.ok ? nil : hostV2Failure(legacy.error ?? "Request failed"))
+                        error: legacy.ok ? nil : hostV2Failure(legacy.error ?? "Request failed", method: method))
                     self.writeV2(response, to: client, deadline: deadline)
                 }
             case .v1:
@@ -189,12 +189,13 @@ final class ControlServer: @unchecked Sendable {
     deinit { stop() }
 }
 
-func hostV2Failure(_ legacy: String) -> HostControlError {
+func hostV2Failure(_ legacy: String, method: HostControlMethod) -> HostControlError {
     if legacy.hasPrefix("busy: ") {
         return .init(code: "busy", message: String(legacy.dropFirst("busy: ".count)))
     }
     if legacy.hasPrefix("error: ") {
-        return .init(code: "unavailable", message: String(legacy.dropFirst("error: ".count)))
+        return .init(code: method == .reload ? "invalid_config" : "unavailable",
+                     message: String(legacy.dropFirst("error: ".count)))
     }
     return .init(code: legacy.hasPrefix("busy") ? "busy" : "unavailable", message: legacy)
 }

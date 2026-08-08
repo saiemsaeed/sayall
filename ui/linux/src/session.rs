@@ -225,9 +225,7 @@ fn run(
                 let result = if shared.lock().unwrap().state != State::Idle || active.is_some() {
                     Err(ToggleError::Busy)
                 } else {
-                    config::load()
-                        .map(|_| shared.lock().unwrap().clone())
-                        .map_err(|e| ToggleError::Failed(e.to_string()))
+                    validate_reload(config::load).map(|()| shared.lock().unwrap().clone())
                 };
                 let _ = reply.send(result);
             }
@@ -444,6 +442,13 @@ fn terminal_message(outcome: Option<desktop::DeliveryOutcome>) -> &'static str {
         _ => "delivery completed",
     }
 }
+
+fn validate_reload<T>(load: impl FnOnce() -> std::io::Result<T>) -> Result<(), ToggleError> {
+    load()
+        .map(|_| ())
+        .map_err(|e| ToggleError::Failed(e.to_string()))
+}
+
 fn deliver_outcome<F>(
     outcome: worker::Outcome,
     delivery: &mut dyn Delivery,
@@ -557,5 +562,91 @@ mod tests {
             1
         );
         assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+    }
+
+    #[test]
+    fn concurrent_reload_and_toggle_admit_exactly_one_mutation() {
+        let (tx, rx) = mpsc::channel();
+        let inner = Arc::new(Inner {
+            tx,
+            snapshot: Arc::new(Mutex::new(Snapshot::default())),
+            admitted: Arc::new(AtomicBool::new(false)),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            join: Mutex::new(None),
+        });
+        let controller = Controller(inner);
+        let mutations = Arc::new(AtomicUsize::new(0));
+        let count = mutations.clone();
+        let (accepted_tx, accepted_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let reply = match rx.recv().unwrap() {
+                Command::Toggle(_, reply) | Command::Reload(reply) => reply,
+                Command::Shutdown => panic!(),
+            };
+            count.fetch_add(1, Ordering::SeqCst);
+            accepted_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            let _ = reply.send(Ok(Snapshot::default()));
+        });
+        let barrier = Arc::new(Barrier::new(3));
+        let (result_tx, result_rx) = mpsc::channel();
+        let reload = {
+            let c = controller.clone();
+            let b = barrier.clone();
+            let results = result_tx.clone();
+            std::thread::spawn(move || {
+                b.wait();
+                results.send(c.reload()).unwrap();
+            })
+        };
+        let toggle = {
+            let c = controller.clone();
+            let b = barrier.clone();
+            let results = result_tx;
+            std::thread::spawn(move || {
+                b.wait();
+                results.send(c.toggle()).unwrap();
+            })
+        };
+        barrier.wait();
+        accepted_rx.recv().unwrap();
+        assert_eq!(result_rx.recv().unwrap(), Err(ToggleError::Busy));
+        release_tx.send(()).unwrap();
+        assert!(result_rx.recv().unwrap().is_ok());
+        worker.join().unwrap();
+        reload.join().unwrap();
+        toggle.join().unwrap();
+        assert_eq!(mutations.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn reload_rejects_non_idle_state_without_dispatching() {
+        let (tx, rx) = mpsc::channel();
+        let mut snapshot = Snapshot::default();
+        snapshot.state = State::Processing;
+        let controller = Controller(Arc::new(Inner {
+            tx,
+            snapshot: Arc::new(Mutex::new(snapshot)),
+            admitted: Arc::new(AtomicBool::new(false)),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            join: Mutex::new(None),
+        }));
+
+        assert_eq!(controller.reload(), Err(ToggleError::Busy));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn reload_validation_recovers_after_invalid_configuration() {
+        assert!(validate_reload(|| Ok(())).is_ok());
+        let invalid = validate_reload::<()>(|| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid config",
+            ))
+        });
+        assert_eq!(invalid, Err(ToggleError::Failed("invalid config".into())));
+        assert!(validate_reload(|| Ok(())).is_ok());
     }
 }

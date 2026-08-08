@@ -8,7 +8,7 @@ const WorkerReady = struct {
     streaming: bool,
 };
 
-const HostMethod = enum { status, toggle };
+const HostMethod = enum { status, toggle, reload };
 const HostState = enum { idle, starting, recording, stopping, processing, delivering, success, @"error", cancelled };
 const HostRequest = struct {
     version: u32,
@@ -58,7 +58,7 @@ test "shared worker fixtures preserve canonical outcomes" {
     try std.testing.expectEqual(batch.ErrorCode.deepgram_rate_limited, failed.value.@"error".?);
 }
 
-test "shared host fixtures preserve status toggle and structured errors" {
+test "shared host fixtures preserve status toggle reload and structured errors" {
     const status = try parse(HostRequest, fixtures.host_status_request);
     defer status.deinit();
     try std.testing.expectEqual(@as(u32, 2), status.value.version);
@@ -67,6 +67,10 @@ test "shared host fixtures preserve status toggle and structured errors" {
     const toggle = try parse(HostRequest, fixtures.host_toggle_request);
     defer toggle.deinit();
     try std.testing.expectEqual(HostMethod.toggle, toggle.value.method);
+
+    const reload = try parse(HostRequest, fixtures.host_reload_request);
+    defer reload.deinit();
+    try std.testing.expectEqual(HostMethod.reload, reload.value.method);
 
     const idle = try parse(HostResponse, fixtures.host_status_response);
     defer idle.deinit();

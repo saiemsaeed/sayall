@@ -72,10 +72,14 @@ final class ControlFoundationTests: XCTestCase {
     }
 
     func testV2FailureBoundaryRemovesOnlyExactLegacyPrefix() {
-        XCTAssertEqual(hostV2Failure("busy: SayAll is processing"),
+        XCTAssertEqual(hostV2Failure("busy: SayAll is processing", method: .toggle),
             HostControlError(code: "busy", message: "SayAll is processing"))
-        XCTAssertEqual(hostV2Failure("error: Failed"), HostControlError(code: "unavailable", message: "Failed"))
-        XCTAssertEqual(hostV2Failure("busywork"), HostControlError(code: "busy", message: "busywork"))
+        XCTAssertEqual(hostV2Failure("error: Failed", method: .toggle),
+            HostControlError(code: "unavailable", message: "Failed"))
+        XCTAssertEqual(hostV2Failure("error: Invalid JSON", method: .reload),
+            HostControlError(code: "invalid_config", message: "Invalid JSON"))
+        XCTAssertEqual(hostV2Failure("busywork", method: .toggle),
+            HostControlError(code: "busy", message: "busywork"))
     }
 
     @MainActor
@@ -97,6 +101,39 @@ final class ControlFoundationTests: XCTestCase {
         _ = dispatchControlRoute(decodeControlRoute(Data("{\"version\":3,\"method\":\"toggle\"}".utf8))) { calls.append($0) }
         _ = dispatchControlRoute(decodeControlRoute(Data("{\"version\":2,\"method\":\"future\"}".utf8))) { calls.append($0) }
         XCTAssertEqual(calls, [.status, .toggle, .reload])
+    }
+}
+
+final class CoordinatorControlTests: XCTestCase {
+    @MainActor
+    func testReloadValidatesConfigurationAndRejectsBusyState() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let loader = ConfigurationLoader(environment: ["DEEPGRAM_API_KEY": "key"], homeDirectory: home)
+        var changes = 0
+        let coordinator = Coordinator(configuration: loader) { changes += 1 }
+
+        let valid = coordinator.handleControl(.reload)
+        XCTAssertTrue(valid.ok)
+        XCTAssertEqual(valid.state, "idle")
+        XCTAssertEqual(changes, 1)
+
+        try FileManager.default.createDirectory(at: loader.url.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try Data("not json".utf8).write(to: loader.url)
+        let invalid = coordinator.handleControl(.reload)
+        XCTAssertFalse(invalid.ok)
+        XCTAssertTrue(invalid.error?.hasPrefix("error: ") == true)
+        XCTAssertEqual(coordinator.state, .idle)
+
+        try Data(#"{"stt":{"api_key":"key"},"output":{"method":"clipboard"},"metrics":{"enabled":false}}"#.utf8)
+            .write(to: loader.url)
+        XCTAssertTrue(coordinator.handleControl(.reload).ok)
+        coordinator.trigger(source: .menu)
+        let busy = coordinator.handleControl(.reload)
+        XCTAssertFalse(busy.ok)
+        XCTAssertTrue(busy.error?.hasPrefix("busy: ") == true)
+        coordinator.cancel()
     }
 }
 
@@ -1051,6 +1088,7 @@ final class SharedBackendContractTests: XCTestCase {
         XCTAssertEqual(status.version, 2)
         XCTAssertEqual(status.method, .status)
         XCTAssertEqual(try decoder.decode(HostControlRequest.self, from: fixture("host-toggle-request")).method, .toggle)
+        XCTAssertEqual(try decoder.decode(HostControlRequest.self, from: fixture("host-reload-request")).method, .reload)
 
         let idle = try decoder.decode(HostControlResponse.self, from: fixture("host-status-response"))
         XCTAssertTrue(idle.ok)

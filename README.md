@@ -74,9 +74,10 @@ sayall config init     # creates ~/.config/sayall/config.json once, mode 0600
 ```
 
 `config init` creates its parent with mode `0700` and leaves the Deepgram key
-empty for the user to fill. App status and toggle use a private, same-UID Unix
-socket; the menu-bar `Coordinator` remains the state owner and transcript
-delivery remains bound to the focus captured when recording starts.
+empty for the user to fill. App status, toggle, and configuration reload use a
+private, same-UID Unix socket; the menu-bar `Coordinator` remains the state
+owner and transcript delivery remains bound to the focus captured when
+recording starts.
 
 ### Install on Arch Linux or Omarchy
 
@@ -360,8 +361,8 @@ bundled `sayall-process` helper once per recording. The Zig helper streams priva
 PCM to Deepgram during capture, validates the completed PCM S16LE mono 16 kHz
 WAV, falls back to REST when streaming fails, and optionally runs Groq cleanup.
 The signed `sayall` helper uses a separate bounded JSON request/response socket
-under a mode-0700 per-user directory for same-UID `status` and `toggle` calls.
-The app's `Coordinator` handles both methods on the main actor; a nonblocking
+under a mode-0700 per-user directory for same-UID `status`, `toggle`, and `reload` calls.
+The app's `Coordinator` handles all three methods on the main actor; a nonblocking
 process lock prevents another app instance from replacing its live endpoint.
 
 The app and helper exchange bounded, versioned JSON over inherited stdin and

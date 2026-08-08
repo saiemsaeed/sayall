@@ -81,7 +81,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.messageText = response.ok ? "Configuration reloaded" : "Could not reload configuration"
         alert.informativeText = response.ok
             ? "Your changes will be used for the next dictation."
-            : (response.error ?? "The configuration could not be loaded.")
+            : (response.error?.replacingOccurrences(of: "error: ", with: "", options: .anchored)
+                ?? "The configuration could not be loaded.")
         alert.alertStyle = response.ok ? .informational : .warning
         alert.runModal()
     }
