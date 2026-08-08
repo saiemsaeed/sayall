@@ -13,6 +13,9 @@ permissions:
 
 jobs:
   deepgram-integration:
+    permissions:
+      actions: read
+      contents: read
     uses: ./.github/workflows/deepgram-benchmark.yml
     with:
       benchmark_sha: ${{ github.sha }}
