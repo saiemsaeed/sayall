@@ -58,11 +58,16 @@ connection time, stream post-stop latency, total paced-stream time, transport,
 and per-clip results. The workflow compares with the newest retained successful
 benchmark artifact; the first run or an expired 30-day artifact has no baseline.
 
-A successful **Release** workflow automatically benchmarks its exact release
-commit. Ordinary pushes and pull requests do not run the live benchmark or
-receive its provider secret. To evaluate a branch separately, manually run
-**Live Deepgram worker benchmark** from the Actions tab and select that branch.
-Failed or cancelled release workflows do not run the benchmark.
+The **Release** workflow benchmarks its exact release commit with enforcement
+enabled before publication. A release cannot publish unless REST and streaming
+canaries succeed, streaming remains authoritative rather than falling back to
+REST, expected speech/no-speech behavior passes, aggregate WER is at most 35%,
+and aggregate CER is at most 20%. Latency remains measured and advisory until
+enough release history exists to establish a stable threshold. Ordinary pushes
+and pull requests do not run the live benchmark or receive its provider secret.
+To evaluate a branch separately, manually run **Live Deepgram worker benchmark**
+from the Actions tab and select that branch. Manual runs are advisory by default
+but can enable the same enforcement.
 
 Download the `deepgram-benchmark-<run>-<attempt>` artifact and open
 `benchmark-report.html` for the same tables plus every macOS and Linux HUD PNG
