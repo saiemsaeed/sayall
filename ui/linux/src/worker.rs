@@ -821,7 +821,7 @@ mod tests {
             streaming,
             finalize_ms: 2000,
             groq_api_key: String::new(),
-            groq_model: "llama-3.1-8b-instant".into(),
+            groq_model: "openai/gpt-oss-20b".into(),
             groq_base_url: "https://api.groq.com/openai/v1/chat/completions".into(),
             cleanup: false,
         }

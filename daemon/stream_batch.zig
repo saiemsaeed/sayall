@@ -17,7 +17,7 @@ pub const Request = struct {
     deepgram_keyterms: []const []const u8 = &.{},
     stream_finalize_timeout_ms: u32 = 2000,
     groq_api_key: []const u8,
-    groq_model: []const u8 = "llama-3.1-8b-instant",
+    groq_model: []const u8 = "openai/gpt-oss-20b",
     groq_base_url: []const u8 = "https://api.groq.com/openai/v1/chat/completions",
     cleanup_enabled: bool,
 };
@@ -124,7 +124,7 @@ fn validateAndOpenAudio(io: std.Io, request: Request) !std.Io.File {
     if (!safeProviderValue(request.deepgram_model) or !safeProviderValue(request.deepgram_language)) return error.InvalidRequest;
     if (!validRegion(request.deepgram_region)) return error.InvalidRequest;
     if (request.stream_finalize_timeout_ms < 250 or request.stream_finalize_timeout_ms > 10_000) return error.InvalidRequest;
-    if (!safeProviderValue(request.groq_model) or
+    if (!batch.safeLlmModel(request.groq_model) or
         !std.mem.eql(u8, request.groq_base_url, "https://api.groq.com/openai/v1/chat/completions")) return error.InvalidRequest;
     keywords.validate(request.deepgram_keyterms) catch return error.InvalidRequest;
     if (request.deepgram_keyterms.len > 0 and !std.mem.eql(u8, request.deepgram_model, "nova-3") and

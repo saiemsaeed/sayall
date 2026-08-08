@@ -1086,14 +1086,14 @@ final class ConfigurationLoaderTests: XCTestCase {
         let directory = home.appendingPathComponent("config/sayall")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: home) }
-        try Data(#"{"stt":{"api_key":"$FILE_DG"},"llm":{"api_key":"unused","enabled":false}}"#.utf8)
+        try Data(#"{"stt":{"api_key":"$FILE_DG"},"llm":{"api_key":"unused"}}"#.utf8)
             .write(to: directory.appendingPathComponent("config.json"))
         let environment = ["XDG_CONFIG_HOME": home.appendingPathComponent("config").path,
             "FILE_DG": "resolved", "GROQ_API_KEY": "override"]
         XCTAssertEqual(try ConfigurationLoader(environment: environment, homeDirectory: home).load(),
             ProviderSettings(deepgramAPIKey: "resolved", deepgramModel: "nova-3", deepgramLanguage: "en",
                 deepgramRegion: "global", deepgramKeyterms: [], streamingEnabled: true,
-                streamFinalizeTimeoutMs: 2_000, groqAPIKey: "override", groqModel: "llama-3.1-8b-instant",
+                streamFinalizeTimeoutMs: 2_000, groqAPIKey: "override", groqModel: "openai/gpt-oss-20b",
                 groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", cleanupEnabled: false,
                 showTimer: true, outputMethod: .type, trailingSpace: true,
                 metricsEnabled: true, metricsHistoryMaxEntries: 1_000))
@@ -1116,6 +1116,20 @@ final class ConfigurationLoaderTests: XCTestCase {
 
         try Data(#"{"stt":{"api_key":"key"},"metrics":{"history_max_entries":100001}}"#.utf8).write(to: loader.url)
         XCTAssertThrowsError(try loader.load()) { XCTAssertEqual($0 as? ConfigurationError, .invalidMetrics) }
+    }
+
+    func testLLMModelAcceptsOneOptionalNamespace() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let loader = ConfigurationLoader(environment: [:], homeDirectory: home)
+        try FileManager.default.createDirectory(at: loader.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"stt":{"api_key":"key"},"llm":{"model":"openai/gpt-oss-20b"}}"#.utf8).write(to: loader.url)
+        XCTAssertEqual(try loader.load().groqModel, "openai/gpt-oss-20b")
+        for model in ["/openai", "openai/", "a/b/c", String(repeating: "a", count: 65)] {
+            let json = #"{"stt":{"api_key":"key"},"llm":{"model":"\#(model)"}}"#
+            try Data(json.utf8).write(to: loader.url)
+            XCTAssertThrowsError(try loader.load()) { XCTAssertEqual($0 as? ConfigurationError, .invalidProvider) }
+        }
     }
 
     func testEnvironmentOnlyConfigurationDoesNotRequireAFile() throws {

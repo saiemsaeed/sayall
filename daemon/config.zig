@@ -275,8 +275,10 @@ pub fn validate(cfg: *const Config) ValidationError!void {
         return invalid("stt.stream_finalize_timeout_ms must be between 250 and 10000");
     if (!std.mem.eql(u8, cfg.llm.base_url, "https://api.groq.com/openai/v1/chat/completions"))
         return invalid("llm.base_url must be the Groq HTTPS endpoint");
-    if (!safeToken(cfg.stt.model) or !safeToken(cfg.stt.language) or !safeToken(cfg.llm.model))
-        return invalid("model and language values may contain only letters, digits, '.', '-', and '_'");
+    if (!safeToken(cfg.stt.model) or !safeToken(cfg.stt.language))
+        return invalid("STT model and language values may contain only letters, digits, '.', '-', and '_'");
+    if (!safeLlmModel(cfg.llm.model))
+        return invalid("llm.model must be one or two '/'-separated segments containing only letters, digits, '.', '-', and '_'");
     if (!safeSecret(cfg.stt.api_key) or !safeSecret(cfg.llm.api_key))
         return invalid("API keys may not contain whitespace or control characters");
     if (cfg.stt.keyterms.len > 0 and !std.mem.eql(u8, cfg.stt.model, "nova-3") and
@@ -309,6 +311,16 @@ fn safeToken(value: []const u8) bool {
     return true;
 }
 
+fn safeLlmModel(value: []const u8) bool {
+    if (value.len == 0 or value.len > 64) return false;
+    const slash = std.mem.indexOfScalar(u8, value, '/');
+    if (slash) |at| {
+        if (at == 0 or at + 1 == value.len or std.mem.indexOfScalar(u8, value[at + 1 ..], '/') != null) return false;
+        return safeToken(value[0..at]) and safeToken(value[at + 1 ..]);
+    }
+    return safeToken(value);
+}
+
 fn invalid(message: []const u8) ValidationError {
     if (!builtin.is_test) std.debug.print("sayall: invalid config: {s}\n", .{message});
     return error.InvalidConfig;
@@ -328,7 +340,7 @@ test "defaults are sensible" {
     try std.testing.expectEqualStrings("nova-3", cfg.stt.model);
     try std.testing.expectEqual(@as(usize, 0), cfg.stt.keyterms.len);
     try std.testing.expectEqualStrings("global", cfg.stt.region);
-    try std.testing.expect(cfg.llm.enabled);
+    try std.testing.expect(!cfg.llm.enabled);
     try std.testing.expectEqualStrings("type", cfg.output.method);
     try std.testing.expect(cfg.output.trailing_space);
     try std.testing.expectEqual(@as(u32, 300), cfg.recording.max_seconds);
@@ -437,6 +449,19 @@ test "provider tokens are bounded consistently with worker protocol" {
     try validate(&cfg);
     var rejected: [65]u8 = @splat('a');
     cfg.stt.model = &rejected;
+    try std.testing.expectError(error.InvalidConfig, validate(&cfg));
+}
+
+test "LLM model accepts one optional namespace and conservative length" {
+    var cfg: Config = .{};
+    cfg.llm.model = "openai/gpt-oss-20b";
+    try validate(&cfg);
+    for ([_][]const u8{ "/openai", "openai/", "a/b/c" }) |model| {
+        cfg.llm.model = model;
+        try std.testing.expectError(error.InvalidConfig, validate(&cfg));
+    }
+    var overlong: [65]u8 = @splat('a');
+    cfg.llm.model = &overlong;
     try std.testing.expectError(error.InvalidConfig, validate(&cfg));
 }
 
