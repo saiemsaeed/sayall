@@ -7,6 +7,11 @@ pub const SttConfig = struct {
     language: []const u8 = "en",
     keyterms: []const []const u8 = &.{},
     region: []const u8 = "global",
+    smart_format: bool = false,
+    punctuate: bool = false,
+    dictation: bool = false,
+    numerals: bool = false,
+    measurements: bool = false,
     streaming: bool = true,
     stream_finalize_timeout_ms: u32 = 2000,
 };

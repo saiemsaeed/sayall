@@ -76,8 +76,8 @@ native UI ─────────▶│ native app host     │
 
 ### Contracts
 
-The private processing worker retains its bounded protocol version 1 while the
-shared core is extracted. Worker requests are strict: unknown or wrongly typed
+The private processing worker uses bounded protocol version 2. Version 2 adds
+explicit Deepgram formatting flags to worker requests. Worker requests are strict: unknown or wrongly typed
 fields fail rather than silently changing provider behavior. Result readers
 validate required fields and ignore unknown additive object fields. Worker
 results distinguish `success`, `no_speech`, and `error`; error and warning codes

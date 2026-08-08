@@ -10,6 +10,11 @@ struct ProviderSettings: Equatable {
     let deepgramLanguage: String
     let deepgramRegion: String
     let deepgramKeyterms: [String]
+    let smartFormat: Bool
+    let punctuate: Bool
+    let dictation: Bool
+    let numerals: Bool
+    let measurements: Bool
     let streamingEnabled: Bool
     let streamFinalizeTimeoutMs: Int
     let groqAPIKey: String
@@ -85,6 +90,7 @@ struct ConfigurationLoader {
               Self.safeProviderValue(model), Self.safeProviderValue(language), Self.safeLLMModel(groqModel),
               ["global", "eu", "au"].contains(region),
               (250...10_000).contains(finalizeTimeout),
+              !(document.stt?.dictation ?? false) || (document.stt?.punctuate ?? false),
               groqBaseURL == "https://api.groq.com/openai/v1/chat/completions",
               keyterms.isEmpty || model == "nova-3" || model.hasPrefix("nova-3-") else {
             throw ConfigurationError.invalidProvider
@@ -95,6 +101,11 @@ struct ConfigurationLoader {
             deepgramLanguage: language,
             deepgramRegion: region,
             deepgramKeyterms: keyterms,
+            smartFormat: document.stt?.smartFormat ?? false,
+            punctuate: document.stt?.punctuate ?? false,
+            dictation: document.stt?.dictation ?? false,
+            numerals: document.stt?.numerals ?? false,
+            measurements: document.stt?.measurements ?? false,
             streamingEnabled: streaming,
             streamFinalizeTimeoutMs: finalizeTimeout,
             groqAPIKey: groq,
@@ -175,10 +186,16 @@ struct ConfigurationLoader {
         let language: String?
         let region: String?
         let keyterms: [String]?
+        let smartFormat: Bool?
+        let punctuate: Bool?
+        let dictation: Bool?
+        let numerals: Bool?
+        let measurements: Bool?
         let streaming: Bool?
         let streamFinalizeTimeoutMs: Int?
         enum CodingKeys: String, CodingKey {
-            case provider, apiKey = "api_key", model, language, region, keyterms, streaming
+            case provider, apiKey = "api_key", model, language, region, keyterms, punctuate, dictation, numerals, measurements, streaming
+            case smartFormat = "smart_format"
             case streamFinalizeTimeoutMs = "stream_finalize_timeout_ms"
         }
     }

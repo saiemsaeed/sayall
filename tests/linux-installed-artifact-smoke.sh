@@ -54,7 +54,7 @@ worker="$home/.local/lib/sayall/sayall-process"
 ! command -v sayall-process >/dev/null 2>&1
 
 info=$("$worker" --worker-info)
-grep -Fq '"protocol_version":1' <<<"$info"
+grep -Fq '"protocol_version":2' <<<"$info"
 grep -Fq "\"build_version\":\"$version\"" <<<"$info"
 bash "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/worker-info-wait.sh" "$worker"
 

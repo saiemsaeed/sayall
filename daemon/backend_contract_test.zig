@@ -1,5 +1,6 @@
 const std = @import("std");
 const batch = @import("batch.zig");
+const worker_protocol = @import("worker_protocol.zig");
 const fixtures = @import("backend_contract_fixtures");
 
 const WorkerReady = struct {
@@ -35,7 +36,7 @@ fn parse(comptime T: type, bytes: []const u8) !std.json.Parsed(T) {
 test "shared worker fixtures preserve canonical outcomes" {
     const ready = try parse(WorkerReady, fixtures.worker_ready_streaming);
     defer ready.deinit();
-    try std.testing.expectEqual(@as(u32, 1), ready.value.version);
+    try std.testing.expectEqual(worker_protocol.version, ready.value.version);
     try std.testing.expectEqualStrings("ready", ready.value.event);
     try std.testing.expect(ready.value.streaming);
 

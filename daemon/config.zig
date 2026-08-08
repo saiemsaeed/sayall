@@ -273,6 +273,8 @@ pub fn validate(cfg: *const Config) ValidationError!void {
         return invalid("stt.region must be 'global', 'eu', or 'au'");
     if (cfg.stt.stream_finalize_timeout_ms < 250 or cfg.stt.stream_finalize_timeout_ms > 10_000)
         return invalid("stt.stream_finalize_timeout_ms must be between 250 and 10000");
+    if (cfg.stt.dictation and !cfg.stt.punctuate)
+        return invalid("stt.dictation requires stt.punctuate");
     if (!std.mem.eql(u8, cfg.llm.base_url, "https://api.groq.com/openai/v1/chat/completions"))
         return invalid("llm.base_url must be the Groq HTTPS endpoint");
     if (!safeToken(cfg.stt.model) or !safeToken(cfg.stt.language))
@@ -340,6 +342,11 @@ test "defaults are sensible" {
     try std.testing.expectEqualStrings("nova-3", cfg.stt.model);
     try std.testing.expectEqual(@as(usize, 0), cfg.stt.keyterms.len);
     try std.testing.expectEqualStrings("global", cfg.stt.region);
+    try std.testing.expect(!cfg.stt.smart_format);
+    try std.testing.expect(!cfg.stt.punctuate);
+    try std.testing.expect(!cfg.stt.dictation);
+    try std.testing.expect(!cfg.stt.numerals);
+    try std.testing.expect(!cfg.stt.measurements);
     try std.testing.expect(!cfg.llm.enabled);
     try std.testing.expectEqualStrings("type", cfg.output.method);
     try std.testing.expect(cfg.output.trailing_space);
@@ -439,6 +446,14 @@ test "validation rejects unknown output methods" {
 test "validation accepts paste output method" {
     var cfg: Config = .{};
     cfg.output.method = "paste";
+    try validate(&cfg);
+}
+
+test "dictation requires punctuation" {
+    var cfg: Config = .{};
+    cfg.stt.dictation = true;
+    try std.testing.expectError(error.InvalidConfig, validate(&cfg));
+    cfg.stt.punctuate = true;
     try validate(&cfg);
 }
 

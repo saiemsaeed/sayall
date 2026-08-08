@@ -3,8 +3,6 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const config = @import("../provider_config.zig");
 
-pub const formatting_params = "smart_format=true&punctuate=true&dictation=true&numerals=true&measurements=true";
-
 pub const TranscribeError = error{
     MissingApiKey,
     Unauthorized,
@@ -32,6 +30,8 @@ const DeepgramResponse = struct {
 pub fn transcribe(gpa: Allocator, io: Io, cfg: *const config.SttConfig, wav: []const u8, verbose: bool) TranscribeError![]u8 {
     if (cfg.api_key.len == 0) return error.MissingApiKey;
 
+    const formatting_params = formattingParams(gpa, cfg) catch return error.OutOfMemory;
+    defer gpa.free(formatting_params);
     const base_url = std.fmt.allocPrint(
         gpa,
         "{s}?model={s}&language={s}&{s}",
@@ -92,6 +92,14 @@ fn decodeResponse(gpa: Allocator, response_bytes: []const u8) TranscribeError![]
 
     const trimmed = std.mem.trim(u8, channels[0].alternatives[0].transcript, " \t\r\n");
     return gpa.dupe(u8, trimmed) catch return error.OutOfMemory;
+}
+
+pub fn formattingParams(gpa: Allocator, cfg: *const config.SttConfig) Allocator.Error![]u8 {
+    return std.fmt.allocPrint(
+        gpa,
+        "smart_format={any}&punctuate={any}&dictation={any}&numerals={any}&measurements={any}",
+        .{ cfg.smart_format, cfg.punctuate, cfg.dictation, cfg.numerals, cfg.measurements },
+    );
 }
 
 pub fn statusError(status: u16) TranscribeError {

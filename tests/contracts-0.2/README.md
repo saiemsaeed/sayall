@@ -3,8 +3,8 @@
 These UTF-8 JSON files are language-neutral compatibility fixtures consumed by
 Zig, Swift, and Rust tests.
 
-`worker-*` fixtures describe the existing private `sayall-process` protocol
-version 1. Request decoders are strict; result readers validate required fields
+`worker-*` fixtures describe the private `sayall-process` protocol version 2,
+which adds explicit Deepgram formatting flags. Request decoders are strict; result readers validate required fields
 and ignore unknown additive object fields. Requests are intentionally omitted
 because they contain credentials and platform-owned secure audio paths; their
 typed schemas and bounds remain tested in Zig and Swift.

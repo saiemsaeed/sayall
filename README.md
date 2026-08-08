@@ -468,9 +468,9 @@ sayall/
 2. **Recording** — capture raw 16 kHz mono s16 PCM, publish live RMS/peak
    events, and generate a WAV for Deepgram after stopping. Reject clips below
    the configured minimum duration.
-3. **Deepgram STT** — streaming Nova-3 with REST fallback, Smart Format,
-   punctuation, spoken dictation commands, numerals, measurements, and keyterm
-   prompting. REST responses parse
+3. **Deepgram STT** — streaming Nova-3 with REST fallback and configurable
+   Smart Format, punctuation, spoken dictation commands, numerals, measurements,
+   and keyterm prompting. REST responses parse
    `results.channels[0].alternatives[0].transcript`.
 4. **Optional LLM formatting** — Groq chat completions, temperature 0,
    disabled by default and controlled by the configuration. The pass preserves
@@ -506,6 +506,11 @@ the process environment):
     "model": "nova-3",
     "language": "en",
     "region": "eu",
+    "smart_format": false,
+    "punctuate": false,
+    "dictation": false,
+    "numerals": false,
+    "measurements": false,
     "streaming": true,
     "stream_finalize_timeout_ms": 2000
   },
@@ -522,6 +527,12 @@ the process environment):
   "notifications": true
 }
 ```
+
+Deepgram formatting is opt-in. Set the corresponding `stt` flags to `true` to
+enable Smart Format, automatic punctuation, spoken dictation commands, numeric
+digits, or abbreviated measurements. SayAll sends every flag explicitly to
+Deepgram for both streaming transcription and the REST fallback; omitted flags
+default to `false`. Deepgram requires `punctuate` when `dictation` is enabled.
 
 LLM formatting is opt-in. To enable it, set `llm.enabled` to `true` and provide
 a Groq API key. If disabled, no transcript is sent to Groq. If an enabled

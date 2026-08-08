@@ -1,5 +1,9 @@
 import Foundation
 
+enum ProcessingProtocol {
+    static let version = 2
+}
+
 enum DictationState: String, CaseIterable {
     case idle, starting, recording, stopping, processing, delivering, success, error, cancelled
 
@@ -35,6 +39,11 @@ struct HelperRequest: Codable, Equatable {
     let deepgramLanguage: String
     let deepgramRegion: String
     let deepgramKeyterms: [String]
+    let smartFormat: Bool
+    let punctuate: Bool
+    let dictation: Bool
+    let numerals: Bool
+    let measurements: Bool
     let groqAPIKey: String
     let groqModel: String
     let groqBaseURL: String
@@ -43,6 +52,8 @@ struct HelperRequest: Codable, Equatable {
         case version, wavPath = "wav_path", deepgramAPIKey = "deepgram_api_key"
         case deepgramModel = "deepgram_model", deepgramLanguage = "deepgram_language"
         case deepgramRegion = "deepgram_region", deepgramKeyterms = "deepgram_keyterms"
+        case smartFormat = "deepgram_smart_format", punctuate = "deepgram_punctuate"
+        case dictation = "deepgram_dictation", numerals = "deepgram_numerals", measurements = "deepgram_measurements"
         case groqAPIKey = "groq_api_key", groqModel = "groq_model", groqBaseURL = "groq_base_url"
         case cleanupEnabled = "cleanup_enabled"
     }
@@ -57,6 +68,11 @@ struct StreamingHelperRequest: Codable, Equatable {
     let deepgramLanguage: String
     let deepgramRegion: String
     let deepgramKeyterms: [String]
+    let smartFormat: Bool
+    let punctuate: Bool
+    let dictation: Bool
+    let numerals: Bool
+    let measurements: Bool
     let streamFinalizeTimeoutMs: Int
     let groqAPIKey: String
     let groqModel: String
@@ -66,6 +82,8 @@ struct StreamingHelperRequest: Codable, Equatable {
         case version, wavPath = "wav_path", pcmPath = "pcm_path", deepgramAPIKey = "deepgram_api_key"
         case deepgramModel = "deepgram_model", deepgramLanguage = "deepgram_language"
         case deepgramRegion = "deepgram_region", deepgramKeyterms = "deepgram_keyterms"
+        case smartFormat = "deepgram_smart_format", punctuate = "deepgram_punctuate"
+        case dictation = "deepgram_dictation", numerals = "deepgram_numerals", measurements = "deepgram_measurements"
         case streamFinalizeTimeoutMs = "stream_finalize_timeout_ms"
         case groqAPIKey = "groq_api_key", groqModel = "groq_model", groqBaseURL = "groq_base_url"
         case cleanupEnabled = "cleanup_enabled"
@@ -105,7 +123,7 @@ enum HelperDecoder {
     static func decode(_ data: Data) throws -> HelperResult {
         guard data.count <= maximumOutputBytes else { throw HelperFailure.oversizedOutput }
         guard let result = try? JSONDecoder().decode(HelperResult.self, from: data) else { throw HelperFailure.malformedOutput }
-        guard result.version == 1 else { throw HelperFailure.unsupportedVersion }
+        guard result.version == ProcessingProtocol.version else { throw HelperFailure.unsupportedVersion }
         if result.status == .error { throw HelperFailure.unsuccessful(result.error ?? "helper_error") }
         return result
     }
@@ -122,7 +140,7 @@ enum StreamingHelperDecoder {
     static func decodeReady(_ data: Data) throws -> Ready {
         guard !data.isEmpty, data.count <= maximumReadyBytes,
               let ready = try? JSONDecoder().decode(Ready.self, from: data),
-              ready.version == 1, ready.event == "ready" else { throw HelperFailure.streamUnavailableBeforeFinish }
+              ready.version == ProcessingProtocol.version, ready.event == "ready" else { throw HelperFailure.streamUnavailableBeforeFinish }
         return ready
     }
 

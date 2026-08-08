@@ -182,7 +182,7 @@ final class HelperRunner {
         }
         guard process.isRunning,
               let info = try? JSONDecoder().decode(WorkerInfo.self, from: frame),
-              info.protocolVersion == 1 else { throw HelperFailure.unsupportedVersion }
+              info.protocolVersion == ProcessingProtocol.version else { throw HelperFailure.unsupportedVersion }
         guard info.buildVersion == buildVersion else { throw HelperFailure.incompatibleBuild }
         try? stdin.fileHandleForWriting.close()
         do {
@@ -373,7 +373,7 @@ final class StreamingHelperSession {
         }
         guard claimed else { throw HelperFailure.malformedOutput }
         do {
-            var finish = try JSONEncoder().encode(StreamingHelperFinish(version: 1, command: "finish", forceRest: forceRest))
+            var finish = try JSONEncoder().encode(StreamingHelperFinish(version: ProcessingProtocol.version, command: "finish", forceRest: forceRest))
             finish.append(0x0A)
             try stdin.fileHandleForWriting.write(contentsOf: finish)
         } catch {
