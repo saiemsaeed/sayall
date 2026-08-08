@@ -8,6 +8,7 @@ pub const help =
     \\  sayall version        print the installed version
     \\  sayall status         print recording state
     \\  sayall toggle         toggle recording
+    \\  sayall reload         reload configuration
     \\  sayall config init    securely create the default configuration
     \\  sayall config validate [--json]
     \\  sayall transcribe <WAV> [--raw] [--json]
@@ -16,7 +17,7 @@ pub const help =
     \\
 ;
 
-pub const Command = enum { help, version, status, toggle, config_init, config_validate, config_validate_json, doctor, doctor_json, update };
+pub const Command = enum { help, version, status, toggle, reload, config_init, config_validate, config_validate_json, doctor, doctor_json, update };
 pub const ParseError = error{InvalidArguments};
 
 pub fn parse(args: []const []const u8) ParseError!Command {
@@ -27,6 +28,7 @@ pub fn parse(args: []const []const u8) ParseError!Command {
         if (std.mem.eql(u8, arg, "version") or std.mem.eql(u8, arg, "--version")) return .version;
         if (std.mem.eql(u8, arg, "status")) return .status;
         if (std.mem.eql(u8, arg, "toggle")) return .toggle;
+        if (std.mem.eql(u8, arg, "reload")) return .reload;
         if (std.mem.eql(u8, arg, "doctor")) return .doctor;
         if (std.mem.eql(u8, arg, "update")) return .update;
     }
@@ -57,12 +59,16 @@ pub const HostControl = struct {
     context: *anyopaque,
     statusFn: *const fn (*anyopaque) HostOutcome,
     toggleFn: *const fn (*anyopaque) HostOutcome,
+    reloadFn: *const fn (*anyopaque) HostOutcome,
 
     pub fn status(self: HostControl) HostOutcome {
         return self.statusFn(self.context);
     }
     pub fn toggle(self: HostControl) HostOutcome {
         return self.toggleFn(self.context);
+    }
+    pub fn reload(self: HostControl) HostOutcome {
+        return self.reloadFn(self.context);
     }
 };
 
@@ -84,8 +90,16 @@ pub fn execute(command: Command, version: []const u8, host: HostControl) Present
         .version => .{ .exit_code = 0, .stdout = version },
         .status => present(host.status()),
         .toggle => present(host.toggle()),
+        .reload => presentReload(host.reload()),
         .config_init, .config_validate, .config_validate_json, .doctor, .doctor_json, .update => unreachable,
     };
+}
+
+fn presentReload(result: HostOutcome) Presentation {
+    return if (result == .idle)
+        .{ .exit_code = 0, .stdout = "Configuration reloaded.\n" }
+    else
+        present(result);
 }
 
 fn present(result: HostOutcome) Presentation {
@@ -110,6 +124,7 @@ const Fake = struct {
     result: HostOutcome,
     status_calls: usize = 0,
     toggle_calls: usize = 0,
+    reload_calls: usize = 0,
     fn status(ctx: *anyopaque) HostOutcome {
         const self: *Fake = @ptrCast(@alignCast(ctx));
         self.status_calls += 1;
@@ -120,8 +135,13 @@ const Fake = struct {
         self.toggle_calls += 1;
         return self.result;
     }
+    fn reload(ctx: *anyopaque) HostOutcome {
+        const self: *Fake = @ptrCast(@alignCast(ctx));
+        self.reload_calls += 1;
+        return self.result;
+    }
     fn adapter(self: *Fake) HostControl {
-        return .{ .context = self, .statusFn = status, .toggleFn = toggle };
+        return .{ .context = self, .statusFn = status, .toggleFn = toggle, .reloadFn = reload };
     }
 };
 
@@ -129,6 +149,7 @@ test "canonical grammar accepts only exact commands" {
     try std.testing.expectEqual(Command.help, try parse(&.{"-h"}));
     try std.testing.expectEqual(Command.help, try parse(&.{"--help"}));
     try std.testing.expectEqual(Command.version, try parse(&.{"--version"}));
+    try std.testing.expectEqual(Command.reload, try parse(&.{"reload"}));
     try std.testing.expectEqual(Command.config_init, try parse(&.{ "config", "init" }));
     try std.testing.expectEqual(Command.config_validate, try parse(&.{ "config", "validate" }));
     try std.testing.expectEqual(Command.config_validate_json, try parse(&.{ "config", "validate", "--json" }));
@@ -187,6 +208,11 @@ test "typed adapters have identical presentation and one operation" {
     _ = execute(.status, "unused", status_fake.adapter());
     try std.testing.expectEqual(@as(usize, 1), status_fake.status_calls);
     try std.testing.expectEqual(@as(usize, 0), status_fake.toggle_calls);
+
+    var reload_fake = Fake{ .result = .idle };
+    const reloaded = execute(.reload, "unused", reload_fake.adapter());
+    try std.testing.expectEqualStrings("Configuration reloaded.\n", reloaded.stdout);
+    try std.testing.expectEqual(@as(usize, 1), reload_fake.reload_calls);
 }
 
 test "updates require an idle native host" {

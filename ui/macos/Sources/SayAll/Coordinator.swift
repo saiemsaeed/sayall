@@ -108,6 +108,20 @@ final class Coordinator {
         switch method {
         case .status:
             return ControlResponse(ok: true, state: controlState)
+        case .reload:
+            guard state == .idle, operationID == nil else {
+                return ControlResponse(ok: false, state: controlState,
+                                       error: "busy: SayAll is \(controlState)")
+            }
+            do {
+                _ = try configuration.load()
+                message = "Configuration reloaded"
+                changed()
+                return ControlResponse(ok: true, state: controlState)
+            } catch {
+                return ControlResponse(ok: false, state: controlState,
+                                       error: "error: \(Self.message(for: error, path: configuration.url.path))")
+            }
         case .toggle:
             guard state == .idle || state == .recording else {
                 return ControlResponse(ok: false, state: controlState,

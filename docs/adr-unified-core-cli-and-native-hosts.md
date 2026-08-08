@@ -181,7 +181,7 @@ wlroots fallback and is not rewritten by the native host.
 ## Public CLI syntax during the 0.2.0 migration
 
 The cross-platform public surface currently consists of `help`, `version`,
-`status`, `toggle`, `config init`, `config validate [--json]`,
+`status`, `toggle`, `reload`, `config init`, `config validate [--json]`,
 `doctor [--json]`, `update`, and:
 
 ```text

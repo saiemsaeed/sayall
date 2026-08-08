@@ -133,6 +133,18 @@ fn exchange(mut stream: UnixStream, c: &Controller) -> io::Result<()> {
                 error(c.status(), "unavailable", "host unavailable")
             }
         },
+        Ok((_, method)) if method == "reload" => match c.reload() {
+            Ok(s) => success(s),
+            Err(crate::session::ToggleError::Busy) => error(
+                c.status(),
+                "busy",
+                "SayAll must be idle to reload configuration",
+            ),
+            Err(crate::session::ToggleError::Failed(e)) => error(c.status(), "invalid_config", &e),
+            Err(crate::session::ToggleError::Unavailable) => {
+                error(c.status(), "unavailable", "host unavailable")
+            }
+        },
         Ok(_) => error(c.status(), "invalid_request", "unsupported method"),
         Err(e) => error(c.status(), "invalid_request", &e),
     };
@@ -157,6 +169,10 @@ mod tests {
                 .unwrap()
                 .1,
             "status"
+        );
+        assert_eq!(
+            decode(br#"{"version":2,"method":"reload"}"#).unwrap().1,
+            "reload"
         );
     }
 

@@ -82,18 +82,21 @@ final class ControlFoundationTests: XCTestCase {
     func testControlRouteDispatchesCompatibleEnvelopesExactlyOnce() throws {
         let v1 = try JSONEncoder().encode(ControlRequest(method: .status))
         let v2 = try JSONEncoder().encode(HostControlRequest(version: 2, method: .toggle))
+        let reload = try JSONEncoder().encode(HostControlRequest(version: 2, method: .reload))
         XCTAssertEqual(decodeControlRoute(v1), .v1(.status))
         XCTAssertEqual(decodeControlRoute(v2), .v2(.toggle))
+        XCTAssertEqual(decodeControlRoute(reload), .v2(.reload))
 
         var calls: [ControlMethod] = []
         _ = dispatchControlRoute(decodeControlRoute(v1)) { calls.append($0) }
         _ = dispatchControlRoute(decodeControlRoute(v2)) { calls.append($0) }
-        XCTAssertEqual(calls, [.status, .toggle])
+        _ = dispatchControlRoute(decodeControlRoute(reload)) { calls.append($0) }
+        XCTAssertEqual(calls, [.status, .toggle, .reload])
 
         _ = dispatchControlRoute(decodeControlRoute(Data("{broken".utf8))) { calls.append($0) }
         _ = dispatchControlRoute(decodeControlRoute(Data("{\"version\":3,\"method\":\"toggle\"}".utf8))) { calls.append($0) }
         _ = dispatchControlRoute(decodeControlRoute(Data("{\"version\":2,\"method\":\"future\"}".utf8))) { calls.append($0) }
-        XCTAssertEqual(calls, [.status, .toggle])
+        XCTAssertEqual(calls, [.status, .toggle, .reload])
     }
 }
 

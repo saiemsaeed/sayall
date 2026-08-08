@@ -80,6 +80,7 @@ impl fmt::Display for ToggleError {
 
 enum Command {
     Toggle(State, mpsc::Sender<Result<Snapshot, ToggleError>>),
+    Reload(mpsc::Sender<Result<Snapshot, ToggleError>>),
     Shutdown,
 }
 struct Inner {
@@ -148,6 +149,27 @@ impl Controller {
         self.0.admitted.store(false, Ordering::Release);
         result
     }
+    pub fn reload(&self) -> Result<Snapshot, ToggleError> {
+        if self.status().state != State::Idle {
+            return Err(ToggleError::Busy);
+        }
+        if self
+            .0
+            .admitted
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(ToggleError::Busy);
+        }
+        let (tx, rx) = mpsc::channel();
+        if self.0.tx.send(Command::Reload(tx)).is_err() {
+            self.0.admitted.store(false, Ordering::Release);
+            return Err(ToggleError::Unavailable);
+        }
+        let result = rx.recv().unwrap_or(Err(ToggleError::Unavailable));
+        self.0.admitted.store(false, Ordering::Release);
+        result
+    }
     pub fn shutdown_and_join(&self) {
         self.0.shutdown.store(true, Ordering::Release);
         let _ = self.0.tx.send(Command::Shutdown);
@@ -198,6 +220,16 @@ fn run(
                     c.cancel();
                 }
                 break;
+            }
+            Ok(Command::Reload(reply)) => {
+                let result = if shared.lock().unwrap().state != State::Idle || active.is_some() {
+                    Err(ToggleError::Busy)
+                } else {
+                    config::load()
+                        .map(|_| shared.lock().unwrap().clone())
+                        .map_err(|e| ToggleError::Failed(e.to_string()))
+                };
+                let _ = reply.send(result);
             }
             Ok(Command::Toggle(expected, reply)) => {
                 let current = shared.lock().unwrap().state;

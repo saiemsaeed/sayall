@@ -24,7 +24,12 @@ func decodeControlRoute(_ data: Data) -> ControlRoute {
 func dispatchControlRoute<T>(_ route: ControlRoute, handler: @MainActor (ControlMethod) -> T) -> T? {
     switch route {
     case .v1(let method): return handler(method)
-    case .v2(let method): return handler(method == .status ? .status : .toggle)
+    case .v2(let method):
+        switch method {
+        case .status: return handler(.status)
+        case .toggle: return handler(.toggle)
+        case .reload: return handler(.reload)
+        }
     case .invalid: return nil
     }
 }

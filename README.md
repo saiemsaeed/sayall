@@ -237,14 +237,13 @@ The Darwin core command is only a portable-core compilation check and is not
 the native macOS product build. The Windows command is likewise a contributor
 readiness check, not an app, runtime, package, or supported product.
 
-After changing `~/.config/sayall/config.json`, restart the systemd user service
-to load the new configuration:
+After changing `~/.config/sayall/config.json`, reload it without restarting the
+application. The host must be idle; validated changes apply to the next
+dictation:
 
 ```sh
-sayall restart
+sayall reload
 ```
-
-This command requires the recommended systemd user-service setup above.
 
 Manage recognition keywords locally with the CLI. Quote phrases and any value
 whose leading or trailing spaces are intentional:
@@ -261,8 +260,8 @@ sayall keywords clear --confirm
 
 Matching for updates and deletion is exact, including spelling, case, Unicode,
 and spaces. Search is a substring search with ASCII case folding. Mutating
-commands print the `sayall restart` command needed to activate the change in a
-running host.
+commands print the command needed to activate the change in a running host; use
+`sayall reload` after editing configuration or keywords.
 
 View persistent transcription metrics:
 
