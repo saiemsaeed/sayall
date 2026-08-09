@@ -103,7 +103,7 @@ pub fn run(
         .groq_api_key = cfg.llm.api_key,
         .groq_model = cfg.llm.model,
         .groq_base_url = cfg.llm.base_url,
-        .cleanup_enabled = cfg.llm.enabled and !options.raw,
+        .processing_profile = if (options.raw) .verbatim else config.effectiveProcessingProfile(&cfg),
     };
     const request_json = try std.json.Stringify.valueAlloc(arena, request, .{});
     if (request_json.len > batch.max_request_bytes) {

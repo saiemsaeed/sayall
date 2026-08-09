@@ -65,16 +65,25 @@ fn run(init: std.process.Init) !void {
     var storage: [batch.max_request_bytes + 1]u8 = undefined;
     var reader = std.Io.File.stdin().reader(io, &storage);
     const input = reader.interface.allocRemaining(gpa, .limited(batch.max_request_bytes + 1)) catch {
-        return write(io, gpa, .{ .status = .@"error", .@"error" = .invalid_request });
+        return writeInvalid(io, gpa);
     };
     defer gpa.free(input);
     const parsed = batch.parseRequest(gpa, input) catch {
-        return write(io, gpa, .{ .status = .@"error", .@"error" = .invalid_request });
+        return writeInvalid(io, gpa);
     };
     defer parsed.deinit();
     const result = batch.process(gpa, io, parsed.value, .{});
     defer if (result.text) |text| gpa.free(text);
     try write(io, gpa, result);
+}
+
+fn writeInvalid(io: std.Io, gpa: std.mem.Allocator) !void {
+    return write(io, gpa, .{
+        .status = .@"error",
+        .@"error" = .invalid_request,
+        .processing_profile = .verbatim,
+        .transport = .rest,
+    });
 }
 
 fn write(io: std.Io, gpa: std.mem.Allocator, result: batch.Result) !void {

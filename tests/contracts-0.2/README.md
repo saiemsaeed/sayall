@@ -3,16 +3,16 @@
 These UTF-8 JSON files are language-neutral compatibility fixtures consumed by
 Zig, Swift, and Rust tests.
 
-`worker-*` fixtures describe the private `sayall-process` protocol version 2,
-which adds explicit Deepgram formatting flags. Request decoders are strict; result readers validate required fields
+`worker-*` fixtures describe the private `sayall-process` protocol version 3,
+which replaces `cleanup_enabled` with a required `processing_profile`. Request decoders are strict; result readers validate required fields
 and ignore unknown additive object fields. Requests are intentionally omitted
 because they contain credentials and platform-owned secure audio paths; their
 typed schemas and bounds remain tested in Zig and Swift.
 `worker-info`, both ready modes, and `worker-finish` contain no credentials and
 freeze the compatibility and streaming control frames shared by future hosts.
-Terminal worker results may include the authoritative additive `transport`
-field (`rest` or `stream`); older hosts ignore it, while qualification tooling
-uses it to distinguish a completed stream from automatic REST fallback.
+Terminal worker results require the effective `processing_profile` and
+authoritative `transport` (`rest` or `stream`) so hosts can distinguish a
+completed stream from automatic REST fallback and report processing routing.
 
 `host-*` fixtures freeze the future unified native-host control protocol
 version 2. Version 2 is intentionally distinct from the released private macOS

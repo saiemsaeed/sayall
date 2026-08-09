@@ -1,6 +1,7 @@
 const std = @import("std");
+const processing = @import("processing.zig");
 
-pub const Warning = enum { cleanup_failed };
+pub const Warning = enum { transformation_failed };
 
 pub const Success = struct {
     text: []u8,
@@ -20,7 +21,8 @@ pub const OutputPolicy = struct {
 pub const Seam = struct {
     context: ?*anyopaque = null,
     rest: *const fn (?*anyopaque, std.mem.Allocator) anyerror![]u8,
-    cleanup: *const fn (?*anyopaque, std.mem.Allocator, []const u8) anyerror![]u8,
+    clean: *const fn (?*anyopaque, std.mem.Allocator, []const u8) anyerror![]u8,
+    planner: *const fn (?*anyopaque, std.mem.Allocator, []const u8) anyerror![]u8,
 };
 
 /// Selects a completed stream (including an empty transcript) or performs one
@@ -30,7 +32,7 @@ pub const Seam = struct {
 pub fn process(
     allocator: std.mem.Allocator,
     streamed_owned: ?[]u8,
-    cleanup_enabled: bool,
+    profile: processing.Profile,
     output_policy: OutputPolicy,
     seam: Seam,
 ) !Outcome {
@@ -43,19 +45,21 @@ pub fn process(
         return .no_speech;
     }
 
-    if (cleanup_enabled) {
-        if (seam.cleanup(seam.context, allocator, raw)) |cleaned| {
-            validate(cleaned, output_policy) catch {
-                allocator.free(cleaned);
-                return .{ .success = .{ .text = raw, .warning = .cleanup_failed } };
-            };
-            allocator.free(raw);
-            return .{ .success = .{ .text = cleaned } };
-        } else |_| {
-            return .{ .success = .{ .text = raw, .warning = .cleanup_failed } };
-        }
+    const transform = switch (profile) {
+        .verbatim => return .{ .success = .{ .text = raw } },
+        .clean => seam.clean,
+        .polished, .legacy_v1 => seam.planner,
+    };
+    if (transform(seam.context, allocator, raw)) |transformed| {
+        validate(transformed, output_policy) catch {
+            allocator.free(transformed);
+            return .{ .success = .{ .text = raw, .warning = .transformation_failed } };
+        };
+        allocator.free(raw);
+        return .{ .success = .{ .text = transformed } };
+    } else |_| {
+        return .{ .success = .{ .text = raw, .warning = .transformation_failed } };
     }
-    return .{ .success = .{ .text = raw } };
 }
 
 fn validate(text: []const u8, policy: OutputPolicy) !void {
@@ -71,7 +75,8 @@ const Fake = struct {
     rest_error: ?anyerror = null,
     cleanup_error: ?anyerror = null,
     rest_calls: usize = 0,
-    cleanup_calls: usize = 0,
+    clean_calls: usize = 0,
+    planner_calls: usize = 0,
 
     fn rest(context: ?*anyopaque, allocator: std.mem.Allocator) ![]u8 {
         const self: *Fake = @ptrCast(@alignCast(context.?));
@@ -80,15 +85,22 @@ const Fake = struct {
         return allocator.dupe(u8, self.rest_text);
     }
 
-    fn cleanup(context: ?*anyopaque, allocator: std.mem.Allocator, _: []const u8) ![]u8 {
+    fn clean(context: ?*anyopaque, allocator: std.mem.Allocator, _: []const u8) ![]u8 {
         const self: *Fake = @ptrCast(@alignCast(context.?));
-        self.cleanup_calls += 1;
+        self.clean_calls += 1;
+        if (self.cleanup_error) |err| return err;
+        return allocator.dupe(u8, self.clean_text);
+    }
+
+    fn planner(context: ?*anyopaque, allocator: std.mem.Allocator, _: []const u8) ![]u8 {
+        const self: *Fake = @ptrCast(@alignCast(context.?));
+        self.planner_calls += 1;
         if (self.cleanup_error) |err| return err;
         return allocator.dupe(u8, self.clean_text);
     }
 
     fn seam(self: *Fake) Seam {
-        return .{ .context = self, .rest = rest, .cleanup = cleanup };
+        return .{ .context = self, .rest = rest, .clean = clean, .planner = planner };
     }
 };
 
@@ -107,7 +119,7 @@ fn owned(text: []const u8) ![]u8 {
 
 test "REST success is attempted exactly once" {
     var fake: Fake = .{};
-    const outcome = try process(std.testing.allocator, null, false, worker_policy, fake.seam());
+    const outcome = try process(std.testing.allocator, null, .verbatim, worker_policy, fake.seam());
     defer freeOutcome(outcome);
     try std.testing.expectEqual(@as(usize, 1), fake.rest_calls);
     try std.testing.expectEqualStrings("raw", outcome.success.text);
@@ -115,51 +127,86 @@ test "REST success is attempted exactly once" {
 
 test "stream success including empty never falls back to REST" {
     var fake: Fake = .{};
-    const streamed = try process(std.testing.allocator, try owned("stream"), false, worker_policy, fake.seam());
+    const streamed = try process(std.testing.allocator, try owned("stream"), .verbatim, worker_policy, fake.seam());
     defer freeOutcome(streamed);
     try std.testing.expectEqual(@as(usize, 0), fake.rest_calls);
     try std.testing.expectEqualStrings("stream", streamed.success.text);
-    const empty = try process(std.testing.allocator, try owned(""), false, worker_policy, fake.seam());
+    const empty = try process(std.testing.allocator, try owned(""), .verbatim, worker_policy, fake.seam());
     try std.testing.expect(empty == .no_speech);
     try std.testing.expectEqual(@as(usize, 0), fake.rest_calls);
 }
 
 test "absent or failed stream is represented by one REST attempt" {
     var fake: Fake = .{ .rest_error = error.RequestFailed };
-    try std.testing.expectError(error.RequestFailed, process(std.testing.allocator, null, false, worker_policy, fake.seam()));
+    try std.testing.expectError(error.RequestFailed, process(std.testing.allocator, null, .verbatim, worker_policy, fake.seam()));
     try std.testing.expectEqual(@as(usize, 1), fake.rest_calls);
 }
 
-test "cleanup succeeds or falls back to raw with warning" {
+test "all profiles route once and verbatim clean never invoke planner" {
     var fake: Fake = .{};
-    const cleaned = try process(std.testing.allocator, null, true, worker_policy, fake.seam());
+    const verbatim = try process(std.testing.allocator, null, .verbatim, worker_policy, fake.seam());
+    defer freeOutcome(verbatim);
+    try std.testing.expectEqualStrings("raw", verbatim.success.text);
+    try std.testing.expectEqual(@as(usize, 0), fake.clean_calls);
+    try std.testing.expectEqual(@as(usize, 0), fake.planner_calls);
+
+    const cleaned = try process(std.testing.allocator, null, .clean, worker_policy, fake.seam());
     defer freeOutcome(cleaned);
     try std.testing.expectEqualStrings("clean", cleaned.success.text);
     try std.testing.expectEqual(@as(?Warning, null), cleaned.success.warning);
+    try std.testing.expectEqual(@as(usize, 1), fake.clean_calls);
+    try std.testing.expectEqual(@as(usize, 0), fake.planner_calls);
+
+    const polished = try process(std.testing.allocator, null, .polished, worker_policy, fake.seam());
+    defer freeOutcome(polished);
+    try std.testing.expectEqual(@as(usize, 1), fake.planner_calls);
+
+    const legacy = try process(std.testing.allocator, null, .legacy_v1, worker_policy, fake.seam());
+    defer freeOutcome(legacy);
+    try std.testing.expectEqual(@as(usize, 2), fake.planner_calls);
 
     fake.cleanup_error = error.RequestFailed;
-    const fallback = try process(std.testing.allocator, try owned("raw"), true, worker_policy, fake.seam());
+    const clean_fallback = try process(std.testing.allocator, try owned("raw"), .clean, worker_policy, fake.seam());
+    defer freeOutcome(clean_fallback);
+    try std.testing.expectEqualStrings("raw", clean_fallback.success.text);
+    try std.testing.expectEqual(Warning.transformation_failed, clean_fallback.success.warning.?);
+    try std.testing.expectEqual(@as(usize, 2), fake.planner_calls);
+
+    const fallback = try process(std.testing.allocator, try owned("raw"), .polished, worker_policy, fake.seam());
     defer freeOutcome(fallback);
     try std.testing.expectEqualStrings("raw", fallback.success.text);
-    try std.testing.expectEqual(Warning.cleanup_failed, fallback.success.warning.?);
+    try std.testing.expectEqual(Warning.transformation_failed, fallback.success.warning.?);
+
+    fake.cleanup_error = null;
+    fake.clean_text = "too long";
+    const invalid_output = try process(
+        std.testing.allocator,
+        try owned("raw"),
+        .clean,
+        .{ .max_bytes = 3, .require_utf8 = true },
+        fake.seam(),
+    );
+    defer freeOutcome(invalid_output);
+    try std.testing.expectEqualStrings("raw", invalid_output.success.text);
+    try std.testing.expectEqual(Warning.transformation_failed, invalid_output.success.warning.?);
 }
 
 test "no speech and output bounds and UTF-8 are canonical" {
     var fake: Fake = .{ .rest_text = "" };
     const small_policy: OutputPolicy = .{ .max_bytes = 3, .require_utf8 = true };
-    const empty = try process(std.testing.allocator, null, false, small_policy, fake.seam());
+    const empty = try process(std.testing.allocator, null, .verbatim, small_policy, fake.seam());
     try std.testing.expect(empty == .no_speech);
     fake.rest_text = "four";
-    try std.testing.expectError(error.ResponseTooLarge, process(std.testing.allocator, null, false, small_policy, fake.seam()));
+    try std.testing.expectError(error.ResponseTooLarge, process(std.testing.allocator, null, .verbatim, small_policy, fake.seam()));
     fake.rest_text = "\xff";
-    try std.testing.expectError(error.ResponseTooLarge, process(std.testing.allocator, null, false, small_policy, fake.seam()));
+    try std.testing.expectError(error.ResponseTooLarge, process(std.testing.allocator, null, .verbatim, small_policy, fake.seam()));
 }
 
 test "worker rejects invalid bytes while daemon accepts them" {
     var fake: Fake = .{ .rest_text = "\xff" };
-    try std.testing.expectError(error.ResponseTooLarge, process(std.testing.allocator, null, false, worker_policy, fake.seam()));
+    try std.testing.expectError(error.ResponseTooLarge, process(std.testing.allocator, null, .verbatim, worker_policy, fake.seam()));
 
-    const daemon = try process(std.testing.allocator, null, false, .{ .max_bytes = null, .require_utf8 = false }, fake.seam());
+    const daemon = try process(std.testing.allocator, null, .verbatim, .{ .max_bytes = null, .require_utf8 = false }, fake.seam());
     defer freeOutcome(daemon);
     try std.testing.expectEqualSlices(u8, "\xff", daemon.success.text);
 }

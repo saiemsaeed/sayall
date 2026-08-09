@@ -45,9 +45,11 @@ test "shared worker fixtures preserve canonical outcomes" {
     try std.testing.expectEqual(.success, success.value.status);
     try std.testing.expectEqualStrings("Hello, world.", success.value.text.?);
 
-    const warning = try parse(batch.Result, fixtures.worker_result_cleanup_warning);
+    const warning = try parse(batch.Result, fixtures.worker_result_transformation_warning);
     defer warning.deinit();
-    try std.testing.expectEqual(batch.Warning.cleanup_failed, warning.value.warning.?);
+    try std.testing.expectEqual(batch.Warning.transformation_failed, warning.value.warning.?);
+    try std.testing.expectEqual(.polished, warning.value.processing_profile);
+    try std.testing.expectEqual(.stream, warning.value.transport);
     try std.testing.expectEqualStrings("raw transcript", warning.value.text.?);
 
     const no_speech = try parse(batch.Result, fixtures.worker_result_no_speech);
