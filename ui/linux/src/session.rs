@@ -391,7 +391,17 @@ fn run(
     }
 }
 
-type DeliveredOutcome = (Option<desktop::DeliveryOutcome>, Option<worker::Warning>);
+enum DeliveryCompletion {
+    NoSpeech,
+    Delivered {
+        outcome: desktop::DeliveryOutcome,
+        warning: Option<worker::Warning>,
+    },
+    Failed {
+        error: String,
+        warning: Option<worker::Warning>,
+    },
+}
 
 fn finish_active<F>(
     active: &mut Option<(
@@ -413,7 +423,7 @@ where
     let (capture, worker, started, cfg, output, show_timer, notifications) =
         active.take().expect("active capture");
     publish(State::Stopping, generation, Some(started), None, show_timer);
-    let outcome = (|| -> Result<DeliveredOutcome, String> {
+    let outcome = (|| -> Result<DeliveryCompletion, String> {
         let wav = capture
             .stop()
             .map_err(|e| format!("capture stop failed: {e}"))?;
@@ -437,7 +447,7 @@ where
             None,
             show_timer,
         );
-        deliver_outcome(
+        Ok(deliver_outcome(
             worker.finish(Duration::from_secs(45))?,
             delivery,
             &output,
@@ -450,24 +460,47 @@ where
                     show_timer,
                 )
             },
-        )
+        ))
     })();
     match outcome {
-        Ok((delivery_outcome, warning)) => {
+        Ok(DeliveryCompletion::NoSpeech) => Ok(publish(
+            State::Success,
+            generation,
+            None,
+            Some("No speech detected".into()),
+            show_timer,
+        )),
+        Ok(DeliveryCompletion::Delivered { outcome, warning }) => {
             if warning == Some(worker::Warning::TransformationFailed) {
                 desktop::notify(
                     notifications,
                     "SayAll processing warning",
-                    "Transformation failed; the raw transcript was delivered",
+                    terminal_message(outcome, warning),
                 );
             }
             Ok(publish(
                 State::Success,
                 generation,
                 None,
-                Some(terminal_message(delivery_outcome, warning).into()),
+                Some(terminal_message(outcome, warning).into()),
                 show_timer,
             ))
+        }
+        Ok(DeliveryCompletion::Failed { error, warning }) => {
+            let message = if warning == Some(worker::Warning::TransformationFailed) {
+                format!("transformation failed; raw transcript delivery also failed: {error}")
+            } else {
+                error
+            };
+            desktop::notify(notifications, "SayAll error", &message);
+            publish(
+                State::Error,
+                generation,
+                None,
+                Some(message.clone()),
+                show_timer,
+            );
+            Err(ToggleError::Failed(message))
         }
         Err(message) => {
             desktop::notify(
@@ -488,18 +521,25 @@ where
     }
 }
 fn terminal_message(
-    outcome: Option<desktop::DeliveryOutcome>,
+    outcome: desktop::DeliveryOutcome,
     warning: Option<worker::Warning>,
 ) -> &'static str {
     if warning == Some(worker::Warning::TransformationFailed) {
-        return "transformation failed; raw transcript delivered";
+        return match outcome {
+            desktop::DeliveryOutcome::ClipboardFallback => {
+                "transformation failed; typing failed and raw transcript was copied to clipboard"
+            }
+            desktop::DeliveryOutcome::Clipboard => {
+                "transformation failed; raw transcript copied to clipboard"
+            }
+            _ => "transformation failed; raw transcript delivered",
+        };
     }
     match outcome {
-        Some(desktop::DeliveryOutcome::ClipboardFallback) => {
+        desktop::DeliveryOutcome::ClipboardFallback => {
             "typing failed; transcript copied to clipboard"
         }
-        Some(desktop::DeliveryOutcome::Clipboard) => "transcript copied to clipboard",
-        None => "No speech detected",
+        desktop::DeliveryOutcome::Clipboard => "transcript copied to clipboard",
         _ => "delivery completed",
     }
 }
@@ -515,17 +555,18 @@ fn deliver_outcome<F>(
     delivery: &mut dyn Delivery,
     output: &config::OutputConfig,
     delivering: F,
-) -> Result<DeliveredOutcome, String>
+) -> DeliveryCompletion
 where
     F: FnOnce() -> Snapshot,
 {
     match outcome {
-        worker::Outcome::NoSpeech { .. } => Ok((None, None)),
+        worker::Outcome::NoSpeech { .. } => DeliveryCompletion::NoSpeech,
         worker::Outcome::Transcript { text, warning, .. } => {
             delivering();
-            delivery
-                .deliver(&text, output)
-                .map(|delivered| (Some(delivered), warning))
+            match delivery.deliver(&text, output) {
+                Ok(outcome) => DeliveryCompletion::Delivered { outcome, warning },
+                Err(error) => DeliveryCompletion::Failed { error, warning },
+            }
         }
     }
 }
@@ -555,6 +596,17 @@ mod tests {
         }
     }
 
+    struct FailingDelivery;
+    impl Delivery for FailingDelivery {
+        fn deliver(
+            &mut self,
+            _: &str,
+            _: &config::OutputConfig,
+        ) -> Result<desktop::DeliveryOutcome, String> {
+            Err("clipboard unavailable".into())
+        }
+    }
+
     #[test]
     fn no_speech_bypasses_delivery_and_transcript_delivers_once() {
         let mut delivery = CountingDelivery(0);
@@ -562,7 +614,7 @@ mod tests {
             method: config::OutputMethod::Type,
             trailing_space: false,
         };
-        deliver_outcome(
+        let no_speech = deliver_outcome(
             worker::Outcome::NoSpeech {
                 processing_profile: config::ProcessingProfile::Verbatim,
                 transport: worker::Transport::Stream,
@@ -570,11 +622,10 @@ mod tests {
             &mut delivery,
             &output,
             Snapshot::default,
-        )
-        .unwrap();
+        );
+        assert!(matches!(no_speech, DeliveryCompletion::NoSpeech));
         assert_eq!(delivery.0, 0);
-        assert_eq!(terminal_message(None, None), "No speech detected");
-        deliver_outcome(
+        let delivered = deliver_outcome(
             worker::Outcome::Transcript {
                 text: "hello".into(),
                 processing_profile: config::ProcessingProfile::Clean,
@@ -584,9 +635,35 @@ mod tests {
             &mut delivery,
             &output,
             Snapshot::default,
-        )
-        .unwrap();
+        );
+        assert!(matches!(delivered, DeliveryCompletion::Delivered { .. }));
         assert_eq!(delivery.0, 1);
+    }
+
+    #[test]
+    fn transformation_warning_survives_delivery_failure() {
+        let output = config::OutputConfig {
+            method: config::OutputMethod::Type,
+            trailing_space: false,
+        };
+        let completion = deliver_outcome(
+            worker::Outcome::Transcript {
+                text: "raw".into(),
+                processing_profile: config::ProcessingProfile::Polished,
+                transport: worker::Transport::Rest,
+                warning: Some(worker::Warning::TransformationFailed),
+            },
+            &mut FailingDelivery,
+            &output,
+            Snapshot::default,
+        );
+        assert!(matches!(
+            completion,
+            DeliveryCompletion::Failed {
+                ref error,
+                warning: Some(worker::Warning::TransformationFailed),
+            } if error == "clipboard unavailable"
+        ));
     }
 
     #[test]
@@ -734,10 +811,17 @@ mod tests {
     fn transformation_warning_is_product_neutral() {
         assert_eq!(
             terminal_message(
-                Some(desktop::DeliveryOutcome::Typed),
+                desktop::DeliveryOutcome::Typed,
                 Some(worker::Warning::TransformationFailed)
             ),
             "transformation failed; raw transcript delivered"
+        );
+        assert_eq!(
+            terminal_message(
+                desktop::DeliveryOutcome::ClipboardFallback,
+                Some(worker::Warning::TransformationFailed)
+            ),
+            "transformation failed; typing failed and raw transcript was copied to clipboard"
         );
     }
 
