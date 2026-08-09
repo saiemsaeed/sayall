@@ -111,6 +111,12 @@ fn providerCleanup(context_ptr: ?*anyopaque, gpa: Allocator, raw: []const u8) ![
     return cleaned;
 }
 
+/// Clean is wired to a deterministic Zig transform in the next stacked
+/// branch. Until then identity preserves the contract without provider I/O.
+fn providerClean(_: ?*anyopaque, gpa: Allocator, raw: []const u8) ![]u8 {
+    return gpa.dupe(u8, raw);
+}
+
 pub fn run(gpa: Allocator, io: Io, cfg: *config.Config, runtime: paths.Runtime, metrics_path: []const u8) !void {
     try runtime.endpoint.validateParent(io);
     const lock_path = try std.fmt.allocPrint(gpa, "{s}.lock", .{runtime.endpoint.path});
@@ -783,13 +789,15 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
     const needs_rest = maybe_transcript == null;
     const transcript_owned = maybe_transcript;
     maybe_transcript = null;
-    const outcome = provider_processing.process(gpa, transcript_owned, !job.raw and d.cfg.llm.enabled, .{
+    const profile = if (job.raw) config.processing.Profile.verbatim else config.effectiveProcessingProfile(&d.cfg);
+    const outcome = provider_processing.process(gpa, transcript_owned, profile, .{
         .max_bytes = null,
         .require_utf8 = false,
     }, .{
         .context = &provider_context,
         .rest = providerRest,
-        .cleanup = providerCleanup,
+        .clean = providerClean,
+        .planner = providerCleanup,
     }) catch |err| {
         completion_reason = "transcription_failed";
         d.publishError("transcription_failed", "Transcription failed");

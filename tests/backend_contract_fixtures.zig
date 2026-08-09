@@ -1,6 +1,6 @@
 pub const worker_ready_streaming = @embedFile("contracts-0.2/worker-ready-streaming.json");
 pub const worker_result_success = @embedFile("contracts-0.2/worker-result-success.json");
-pub const worker_result_cleanup_warning = @embedFile("contracts-0.2/worker-result-cleanup-warning.json");
+pub const worker_result_transformation_warning = @embedFile("contracts-0.2/worker-result-transformation-warning.json");
 pub const worker_result_no_speech = @embedFile("contracts-0.2/worker-result-no-speech.json");
 pub const worker_result_error = @embedFile("contracts-0.2/worker-result-error.json");
 pub const host_status_request = @embedFile("contracts-0.2/host-status-request.json");

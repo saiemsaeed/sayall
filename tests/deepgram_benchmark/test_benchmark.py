@@ -32,15 +32,17 @@ class MetricsTests(unittest.TestCase):
         self.assertFalse(thresholds_pass([{"classification":"missing_speech"}], {"wer":0,"cer":0}))
         self.assertFalse(thresholds_pass([{"classification":"speech_ok", "mode":"stream", "effective_transport":"rest"}], {"wer":0,"cer":0}))
     def test_protocol_validation_requires_authoritative_transport(self):
-        validate_ready({"version":2, "event":"ready", "streaming":True})
-        validate_result({"version":2, "status":"success", "text":"hello", "transport":"stream"})
-        with self.assertRaises(RuntimeError): validate_result({"version":2, "status":"success", "text":"hello"})
-        with self.assertRaises(RuntimeError): validate_result({"version":2, "status":"no_speech", "text":"" , "transport":"rest"})
-        with self.assertRaises(ProtocolError): validate_result({"version":2, "status":"error", "error":"secret provider body", "transport":"rest"})
-        with self.assertRaises(ProtocolError): validate_result({"version":2, "status":"success", "text":"hello", "error":"secret", "transport":"rest"})
-        with self.assertRaises(ProtocolError): validate_result({"version":2, "status":"no_speech", "error":"secret", "transport":"rest"})
-        with self.assertRaises(ProtocolError): validate_result({"version":2, "status":"error", "text":["secret"], "error":"internal", "transport":"rest"})
-        with self.assertRaises(ProtocolError): validate_result({"version":2, "status":"error", "error":[], "transport":"rest"})
+        base = {"version":3, "processing_profile":"verbatim"}
+        validate_ready({"version":3, "event":"ready", "streaming":True})
+        validate_result({**base, "status":"success", "text":"hello", "transport":"stream"})
+        with self.assertRaises(RuntimeError): validate_result({**base, "status":"success", "text":"hello"})
+        with self.assertRaises(RuntimeError): validate_result({"version":3, "status":"success", "text":"hello", "transport":"rest"})
+        with self.assertRaises(RuntimeError): validate_result({**base, "status":"no_speech", "text":"" , "transport":"rest"})
+        with self.assertRaises(ProtocolError): validate_result({**base, "status":"error", "error":"secret provider body", "transport":"rest"})
+        with self.assertRaises(ProtocolError): validate_result({**base, "status":"success", "text":"hello", "error":"secret", "transport":"rest"})
+        with self.assertRaises(ProtocolError): validate_result({**base, "status":"no_speech", "error":"secret", "transport":"rest"})
+        with self.assertRaises(ProtocolError): validate_result({**base, "status":"error", "text":["secret"], "error":"internal", "transport":"rest"})
+        with self.assertRaises(ProtocolError): validate_result({**base, "status":"error", "error":[], "transport":"rest"})
         with self.assertRaises(ProtocolError): validate_ready(["not", "an", "object"])
 
     def test_dry_run_needs_no_worker_key_or_synthesis_tools(self):
@@ -92,9 +94,9 @@ class MetricsTests(unittest.TestCase):
             self.assertEqual(wav_path.stat().st_mode & 0o777, 0o600)
 
     def test_identity_projects_only_validated_public_fields(self):
-        completed = subprocess.CompletedProcess([], 0, stdout=b'{"protocol_version":2,"build_version":"0.2.10","untrusted":"drop me"}\n')
+        completed = subprocess.CompletedProcess([], 0, stdout=b'{"protocol_version":3,"build_version":"0.2.10","untrusted":"drop me"}\n')
         with mock.patch("benchmark.subprocess.run", return_value=completed):
-            self.assertEqual(worker_identity(pathlib.Path("worker")), {"protocol_version":2, "build_version":"0.2.10"})
+            self.assertEqual(worker_identity(pathlib.Path("worker")), {"protocol_version":3, "build_version":"0.2.10"})
         completed.stdout = b'["invalid"]\n'
         with mock.patch("benchmark.subprocess.run", return_value=completed), self.assertRaises(ProtocolError):
             worker_identity(pathlib.Path("worker"))
@@ -111,10 +113,10 @@ class MetricsTests(unittest.TestCase):
         script = """#!/usr/bin/env python3
 import json, sys, time
 if '--stream' not in sys.argv:
-    json.load(sys.stdin); print(json.dumps({'version':2,'status':'success','text':'ok','transport':'rest'})); raise SystemExit
-json.loads(sys.stdin.readline()); print(json.dumps({'version':2,'event':'ready','streaming':True}), flush=True)
+    json.load(sys.stdin); print(json.dumps({'version':3,'status':'success','text':'ok','processing_profile':'verbatim','transport':'rest'})); raise SystemExit
+json.loads(sys.stdin.readline()); print(json.dumps({'version':3,'event':'ready','streaming':True}), flush=True)
 json.loads(sys.stdin.readline()); time.sleep(0.03)
-print(json.dumps({'version':2,'status':'success','text':'ok','transport':'stream'}), flush=True)
+print(json.dumps({'version':3,'status':'success','text':'ok','processing_profile':'verbatim','transport':'stream'}), flush=True)
 """
         real_validate = validate_result
         def delayed_validate(frame):

@@ -40,9 +40,9 @@ pub fn run(arena: std.mem.Allocator, io: std.Io, env: *const std.process.Environ
             if (cfg.stt.api_key.len == 0) {
                 config_ok = false;
                 config_detail = "Deepgram credentials are missing";
-            } else if (cfg.llm.enabled and cfg.llm.api_key.len == 0) {
+            } else if (config.effectiveProcessingProfile(&cfg).usesPlanner() and cfg.llm.api_key.len == 0) {
                 warnings += 1;
-                config_detail = "valid; Groq cleanup credentials are missing";
+                config_detail = "valid; polished processing credentials are missing";
             }
         } else |err| {
             config_ok = false;

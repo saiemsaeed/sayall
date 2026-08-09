@@ -1,1 +1,1 @@
-{"version":2,"status":"success","text":"Hello, world.","transport":"rest"}
+{"version":3,"status":"success","text":"Hello, world.","processing_profile":"legacy_v1","transport":"rest"}

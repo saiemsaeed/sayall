@@ -5,6 +5,7 @@ const Allocator = std.mem.Allocator;
 const keywords = @import("keywords.zig");
 const paths = @import("paths.zig");
 const provider_config = @import("provider_config.zig");
+pub const processing = @import("processing.zig");
 
 pub const SttConfig = provider_config.SttConfig;
 pub const LlmConfig = provider_config.LlmConfig;
@@ -35,6 +36,7 @@ pub const HudConfig = struct {
 pub const Config = struct {
     stt: SttConfig = .{},
     llm: LlmConfig = .{},
+    processing: processing.Config = .{},
     output: OutputConfig = .{},
     recording: RecordingConfig = .{},
     metrics: MetricsConfig = .{},
@@ -48,8 +50,12 @@ pub const ValidationError = error{InvalidConfig};
 /// The single Zig-owned default template. It is serialized from Config so the
 /// initializer cannot drift from runtime defaults and secrets remain empty.
 pub fn defaultTemplate(gpa: Allocator) ![]u8 {
-    const cfg: Config = .{};
+    const cfg: Config = .{ .processing = .{ .mode = .verbatim } };
     return std.json.Stringify.valueAlloc(gpa, cfg, .{ .whitespace = .indent_2 });
+}
+
+pub fn effectiveProcessingProfile(cfg: *const Config) processing.Profile {
+    return processing.effective(cfg.processing, cfg.llm.enabled);
 }
 
 /// Securely creates config.json without replacing any existing filesystem
@@ -348,6 +354,7 @@ test "defaults are sensible" {
     try std.testing.expect(!cfg.stt.numerals);
     try std.testing.expect(!cfg.stt.measurements);
     try std.testing.expect(!cfg.llm.enabled);
+    try std.testing.expectEqual(processing.Profile.verbatim, effectiveProcessingProfile(&cfg));
     try std.testing.expectEqualStrings("type", cfg.output.method);
     try std.testing.expect(cfg.output.trailing_space);
     try std.testing.expectEqual(@as(u32, 300), cfg.recording.max_seconds);
@@ -362,6 +369,22 @@ test "default template parses validates and keeps API keys empty" {
     try validate(&parsed.value);
     try std.testing.expectEqualStrings("", parsed.value.stt.api_key);
     try std.testing.expectEqualStrings("", parsed.value.llm.api_key);
+    try std.testing.expectEqual(processing.Mode.verbatim, parsed.value.processing.mode.?);
+}
+
+test "processing migration matrix and explicit mode precedence" {
+    for ([_]struct { json: []const u8, expected: processing.Profile }{
+        .{ .json = "{}", .expected = .verbatim },
+        .{ .json = "{\"llm\":{\"enabled\":false}}", .expected = .verbatim },
+        .{ .json = "{\"llm\":{\"enabled\":true}}", .expected = .legacy_v1 },
+        .{ .json = "{\"processing\":{\"mode\":\"verbatim\"},\"llm\":{\"enabled\":true}}", .expected = .verbatim },
+        .{ .json = "{\"processing\":{\"mode\":\"clean\"},\"llm\":{\"enabled\":true}}", .expected = .clean },
+        .{ .json = "{\"processing\":{\"mode\":\"polished\"},\"llm\":{\"enabled\":false}}", .expected = .polished },
+    }) |case| {
+        const parsed = try std.json.parseFromSlice(Config, std.testing.allocator, case.json, .{});
+        defer parsed.deinit();
+        try std.testing.expectEqual(case.expected, effectiveProcessingProfile(&parsed.value));
+    }
 }
 
 test "config init honors XDG permissions and never overwrites" {
