@@ -501,7 +501,7 @@ mod tests {
     const WORKER_SUCCESS: &str =
         include_str!("../../../tests/contracts-0.2/worker-result-success.json");
     const WORKER_WARNING: &str =
-        include_str!("../../../tests/contracts-0.2/worker-result-cleanup-warning.json");
+        include_str!("../../../tests/contracts-0.2/worker-result-transformation-warning.json");
     const WORKER_INFO: &str = include_str!("../../../tests/contracts-0.2/worker-info.json");
     const WORKER_READY_REST: &str =
         include_str!("../../../tests/contracts-0.2/worker-ready-rest.json");
@@ -517,6 +517,8 @@ mod tests {
         status: String,
         text: Option<String>,
         warning: Option<String>,
+        processing_profile: String,
+        transport: String,
     }
 
     #[derive(Deserialize)]
@@ -562,26 +564,30 @@ mod tests {
         let info: WorkerInfoFixture = serde_json::from_str(WORKER_INFO).unwrap();
         assert_eq!(
             (info.protocol_version, info.build_version.as_str()),
-            (2, "0.1.8")
+            (3, "0.1.8")
         );
         let ready: WorkerReadyFixture = serde_json::from_str(WORKER_READY_REST).unwrap();
         assert_eq!(
             (ready.version, ready.event.as_str(), ready.streaming),
-            (2, "ready", false)
+            (3, "ready", false)
         );
         let finish: WorkerFinishFixture = serde_json::from_str(WORKER_FINISH).unwrap();
         assert_eq!(
             (finish.version, finish.command.as_str(), finish.force_rest),
-            (2, "finish", false)
+            (3, "finish", false)
         );
         let success: WorkerResultFixture = serde_json::from_str(WORKER_SUCCESS).unwrap();
-        assert_eq!(success.version, 2);
+        assert_eq!(success.version, 3);
         assert_eq!(success.status, "success");
         assert_eq!(success.text.as_deref(), Some("Hello, world."));
+        assert_eq!(success.processing_profile, "legacy_v1");
+        assert_eq!(success.transport, "rest");
 
         let warning: WorkerResultFixture = serde_json::from_str(WORKER_WARNING).unwrap();
-        assert_eq!(warning.warning.as_deref(), Some("cleanup_failed"));
+        assert_eq!(warning.warning.as_deref(), Some("transformation_failed"));
         assert_eq!(warning.text.as_deref(), Some("raw transcript"));
+        assert_eq!(warning.processing_profile, "polished");
+        assert_eq!(warning.transport, "stream");
 
         let request: HostRequestFixture = serde_json::from_str(HOST_STATUS_REQUEST).unwrap();
         assert_eq!(request.version, 2);

@@ -1,8 +1,14 @@
-use serde::Deserialize;
-use std::fs::OpenOptions;
-use std::io::{self, Read};
+use serde::{Deserialize, Serialize};
+use std::ffi::CString;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+
+const CONFIG_NAME: &str = "config.json";
+const LOCK_NAME: &str = ".config.lock";
+const CONFIG_MAX: usize = 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -28,6 +34,7 @@ struct Config {
     recording: RecordingConfig,
     stt: Stt,
     llm: Llm,
+    processing: Processing,
     output: Output,
     hud: Hud,
     notifications: bool,
@@ -38,6 +45,7 @@ impl Default for Config {
             recording: RecordingConfig::default(),
             stt: Stt::default(),
             llm: Llm::default(),
+            processing: Processing::default(),
             output: Output::default(),
             hud: Hud::default(),
             notifications: true,
@@ -88,7 +96,7 @@ pub struct ProviderConfig {
     pub groq_api_key: String,
     pub groq_model: String,
     pub groq_base_url: String,
-    pub cleanup: bool,
+    pub processing_profile: ProcessingProfile,
 }
 #[derive(Clone, Debug)]
 pub struct SessionConfig {
@@ -166,68 +174,163 @@ impl Default for Llm {
     }
 }
 
-pub fn load() -> io::Result<SessionConfig> {
-    let root =
-        if let Some(value) = std::env::var_os("XDG_CONFIG_HOME") {
-            PathBuf::from(value)
-        } else {
-            PathBuf::from(std::env::var_os("HOME").ok_or_else(|| {
-                io::Error::new(io::ErrorKind::NotFound, "config home unavailable")
-            })?)
-            .join(".config")
-        };
-    if !root.is_absolute() {
-        return Err(invalid("config home must be absolute"));
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessingMode {
+    Verbatim,
+    Clean,
+    Polished,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessingProfile {
+    Verbatim,
+    Clean,
+    Polished,
+    LegacyV1,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct Processing {
+    mode: Option<ProcessingMode>,
+}
+
+fn effective_processing_profile(
+    mode: Option<ProcessingMode>,
+    legacy_llm_enabled: bool,
+) -> ProcessingProfile {
+    match mode {
+        Some(ProcessingMode::Verbatim) => ProcessingProfile::Verbatim,
+        Some(ProcessingMode::Clean) => ProcessingProfile::Clean,
+        Some(ProcessingMode::Polished) => ProcessingProfile::Polished,
+        None if legacy_llm_enabled => ProcessingProfile::LegacyV1,
+        None => ProcessingProfile::Verbatim,
     }
-    let path = root.join("sayall/config.json");
-    let parent = path.parent().expect("config parent");
-    match std::fs::symlink_metadata(parent) {
-        Ok(meta)
-            if meta.file_type().is_dir()
-                && meta.uid() == unsafe { libc::geteuid() }
-                && meta.mode() & 0o077 == 0 => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            return Err(invalid("configuration missing"));
-        }
-        _ => {
-            return Err(invalid(
-                "config parent must be a private user-owned directory",
-            ));
-        }
-    }
-    let mut file = match OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&path)
-    {
-        Ok(file) => file,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            return Err(invalid("configuration missing"));
-        }
-        Err(e) => return Err(e),
-    };
-    let meta = file.metadata()?;
-    if !meta.file_type().is_file()
-        || meta.uid() != unsafe { libc::geteuid() }
-        || meta.mode() & 0o077 != 0
-    {
-        return Err(invalid(
-            "config must be a private regular file owned by this user",
-        ));
-    }
-    if meta.len() > 1024 * 1024 {
-        return Err(invalid("config exceeds 1 MiB"));
-    }
-    let mut bytes = Vec::new();
-    file.by_ref()
-        .take(1024 * 1024 + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > 1024 * 1024 {
-        return Err(invalid("config exceeds 1 MiB"));
-    }
+}
+
+pub fn selected_processing_mode() -> io::Result<ProcessingMode> {
+    let (_, bytes) = read_secure_config()?;
     let cfg: Config =
         serde_json::from_slice(&bytes).map_err(|e| invalid(&format!("invalid config: {e}")))?;
+    Ok(
+        match effective_processing_profile(cfg.processing.mode, cfg.llm.enabled.unwrap_or(false)) {
+            ProcessingProfile::Verbatim => ProcessingMode::Verbatim,
+            ProcessingProfile::Clean => ProcessingMode::Clean,
+            ProcessingProfile::Polished | ProcessingProfile::LegacyV1 => ProcessingMode::Polished,
+        },
+    )
+}
+
+pub fn set_processing_mode(mode: ProcessingMode) -> io::Result<()> {
+    let (parent, parent_path) = open_secure_parent()?;
+    set_processing_mode_at(&parent, &parent_path, mode, || {}, || {})
+}
+
+fn set_processing_mode_at<B, A>(
+    parent: &File,
+    parent_path: &Path,
+    mode: ProcessingMode,
+    before_lock: B,
+    after_lock: A,
+) -> io::Result<()>
+where
+    B: FnOnce(),
+    A: FnOnce(),
+{
+    let source = read_config_at(parent)?;
+    before_lock();
+    let _lock = lock_config(parent)?;
+    after_lock();
+    ensure_source_unchanged(parent, &source)?;
+    let output = encode_processing_mode(&source.bytes, mode)?;
+    project_session_config(&output, parent_path)?;
+
+    let mut temporary = None;
+    for attempt in 0..100 {
+        let name = format!(".config.json.tmp-{}-{attempt}", std::process::id());
+        match openat_file(
+            parent,
+            &name,
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        ) {
+            Ok(file) => {
+                temporary = Some((name, file));
+                break;
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    let (temporary_name, mut temporary_file) =
+        temporary.ok_or_else(|| invalid("could not create temporary configuration"))?;
+    let result = (|| {
+        temporary_file.write_all(&output)?;
+        temporary_file.sync_all()?;
+        drop(temporary_file);
+        ensure_source_unchanged(parent, &source)?;
+        renameat(parent, &temporary_name, CONFIG_NAME)?;
+        parent.sync_all()
+    })();
+    if result.is_err() {
+        let _ = unlinkat(parent, &temporary_name);
+    }
+    result
+}
+
+fn encode_processing_mode(bytes: &[u8], mode: ProcessingMode) -> io::Result<Vec<u8>> {
+    let cfg: Config =
+        serde_json::from_slice(&bytes).map_err(|e| invalid(&format!("invalid config: {e}")))?;
+    let groq_api_key = resolve_secret(cfg.llm.api_key, "GROQ_API_KEY");
+    if !valid_processing_credentials(
+        match mode {
+            ProcessingMode::Verbatim => ProcessingProfile::Verbatim,
+            ProcessingMode::Clean => ProcessingProfile::Clean,
+            ProcessingMode::Polished => ProcessingProfile::Polished,
+        },
+        &groq_api_key,
+        &cfg.llm.model,
+    ) {
+        return Err(invalid(
+            "polished mode requires Groq credentials and a supported planner model",
+        ));
+    }
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| invalid(&format!("invalid config: {e}")))?;
+    let root = value
+        .as_object_mut()
+        .ok_or_else(|| invalid("config root must be an object"))?;
+    let processing = root
+        .entry("processing")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or_else(|| invalid("processing must be an object"))?;
+    processing.insert(
+        "mode".into(),
+        serde_json::to_value(mode).expect("processing mode serializes"),
+    );
+    let mut output = serde_json::to_vec_pretty(&value)
+        .map_err(|_| invalid("configuration could not be encoded"))?;
+    output.push(b'\n');
+    if output.len() > CONFIG_MAX {
+        return Err(invalid("config exceeds 1 MiB"));
+    }
+    Ok(output)
+}
+
+pub fn load() -> io::Result<SessionConfig> {
+    let (parent, bytes) = read_secure_config()?;
+    project_session_config(&bytes, &parent)
+}
+
+fn project_session_config(bytes: &[u8], parent: &Path) -> io::Result<SessionConfig> {
+    let cfg: Config =
+        serde_json::from_slice(bytes).map_err(|e| invalid(&format!("invalid config: {e}")))?;
     validate(&cfg.recording)?;
+    let processing_profile =
+        effective_processing_profile(cfg.processing.mode, cfg.llm.enabled.unwrap_or(false));
     let deepgram_api_key = resolve_secret(cfg.stt.api_key, "DEEPGRAM_API_KEY");
     let groq_api_key = resolve_secret(cfg.llm.api_key, "GROQ_API_KEY");
     let model = cfg.stt.model;
@@ -245,6 +348,7 @@ pub fn load() -> io::Result<SessionConfig> {
         || !safe_value(&model)
         || !safe_value(&language)
         || !safe_llm_model(&groq_model)
+        || !valid_processing_credentials(processing_profile, &groq_api_key, &groq_model)
         || !["global", "eu", "au"].contains(&region.as_str())
         || base != "https://api.groq.com/openai/v1/chat/completions"
         || cfg.stt.dictation && !cfg.stt.punctuate
@@ -277,12 +381,190 @@ pub fn load() -> io::Result<SessionConfig> {
             measurements: cfg.stt.measurements,
             streaming: cfg.stt.streaming.unwrap_or(true),
             finalize_ms: finalize,
-            groq_api_key: groq_api_key.clone(),
+            groq_api_key,
             groq_model,
             groq_base_url: base,
-            cleanup: cfg.llm.enabled.unwrap_or(false) && !groq_api_key.is_empty(),
+            processing_profile,
         },
     })
+}
+
+fn valid_processing_credentials(
+    profile: ProcessingProfile,
+    groq_api_key: &str,
+    groq_model: &str,
+) -> bool {
+    profile != ProcessingProfile::Polished
+        || (!groq_api_key.is_empty()
+            && matches!(groq_model, "openai/gpt-oss-20b" | "openai/gpt-oss-120b"))
+}
+
+fn open_secure_parent() -> io::Result<(File, PathBuf)> {
+    let root =
+        if let Some(value) = std::env::var_os("XDG_CONFIG_HOME") {
+            PathBuf::from(value)
+        } else {
+            PathBuf::from(std::env::var_os("HOME").ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, "config home unavailable")
+            })?)
+            .join(".config")
+        };
+    if !root.is_absolute() {
+        return Err(invalid("config home must be absolute"));
+    }
+    let parent_path = root.join("sayall");
+    let parent = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&parent_path)
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                invalid("configuration missing")
+            } else {
+                error
+            }
+        })?;
+    let meta = parent.metadata()?;
+    if !meta.file_type().is_dir()
+        || meta.uid() != unsafe { libc::geteuid() }
+        || meta.mode() & 0o077 != 0
+    {
+        return Err(invalid(
+            "config parent must be a private user-owned directory",
+        ));
+    }
+    Ok((parent, parent_path))
+}
+
+fn read_secure_config() -> io::Result<(PathBuf, Vec<u8>)> {
+    let (parent, parent_path) = open_secure_parent()?;
+    Ok((parent_path, read_config_at(&parent)?.bytes))
+}
+
+struct ConfigSource {
+    device: u64,
+    inode: u64,
+    bytes: Vec<u8>,
+}
+
+fn read_config_at(parent: &File) -> io::Result<ConfigSource> {
+    let mut file = match openat_file(
+        parent,
+        CONFIG_NAME,
+        libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK,
+        0,
+    ) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Err(invalid("configuration missing"));
+        }
+        Err(e) => return Err(e),
+    };
+    let meta = file.metadata()?;
+    if !meta.file_type().is_file()
+        || meta.uid() != unsafe { libc::geteuid() }
+        || meta.mode() & 0o077 != 0
+    {
+        return Err(invalid(
+            "config must be a private regular file owned by this user",
+        ));
+    }
+    if meta.len() > CONFIG_MAX as u64 {
+        return Err(invalid("config exceeds 1 MiB"));
+    }
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(CONFIG_MAX as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > CONFIG_MAX {
+        return Err(invalid("config exceeds 1 MiB"));
+    }
+    Ok(ConfigSource {
+        device: meta.dev(),
+        inode: meta.ino(),
+        bytes,
+    })
+}
+
+fn ensure_source_unchanged(parent: &File, expected: &ConfigSource) -> io::Result<()> {
+    let current = read_config_at(parent)?;
+    if current.device != expected.device
+        || current.inode != expected.inode
+        || current.bytes != expected.bytes
+    {
+        return Err(invalid("configuration changed concurrently"));
+    }
+    Ok(())
+}
+
+fn lock_config(parent: &File) -> io::Result<File> {
+    let lock = openat_file(
+        parent,
+        LOCK_NAME,
+        libc::O_RDWR | libc::O_CREAT | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        0o600,
+    )?;
+    let meta = lock.metadata()?;
+    if !meta.file_type().is_file()
+        || meta.uid() != unsafe { libc::geteuid() }
+        || meta.mode() & 0o077 != 0
+        || meta.nlink() != 1
+    {
+        return Err(invalid("invalid configuration lock"));
+    }
+    loop {
+        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } == 0 {
+            return Ok(lock);
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+fn openat_file(parent: &File, name: &str, flags: i32, mode: u32) -> io::Result<File> {
+    let name = CString::new(name).map_err(|_| invalid("invalid configuration filename"))?;
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            flags,
+            mode as libc::c_uint,
+        )
+    };
+    if fd < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(unsafe { File::from_raw_fd(fd) })
+    }
+}
+
+fn renameat(parent: &File, from: &str, to: &str) -> io::Result<()> {
+    let from = CString::new(from).map_err(|_| invalid("invalid configuration filename"))?;
+    let to = CString::new(to).map_err(|_| invalid("invalid configuration filename"))?;
+    if unsafe {
+        libc::renameat(
+            parent.as_raw_fd(),
+            from.as_ptr(),
+            parent.as_raw_fd(),
+            to.as_ptr(),
+        )
+    } == 0
+    {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+fn unlinkat(parent: &File, name: &str) -> io::Result<()> {
+    let name = CString::new(name).map_err(|_| invalid("invalid configuration filename"))?;
+    if unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 fn resolve_secret(value: String, override_name: &str) -> String {
@@ -402,6 +684,40 @@ fn invalid(message: &str) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::mpsc;
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    struct ConfigDir(PathBuf);
+    impl ConfigDir {
+        fn new(contents: &[u8]) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "sayall-config-test-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
+            fs::write(path.join(CONFIG_NAME), contents).unwrap();
+            fs::set_permissions(path.join(CONFIG_NAME), fs::Permissions::from_mode(0o600)).unwrap();
+            Self(path)
+        }
+
+        fn open(&self) -> File {
+            OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(&self.0)
+                .unwrap()
+        }
+    }
+    impl Drop for ConfigDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[test]
     fn recording_boundaries_match_canonical_config() {
@@ -433,6 +749,165 @@ mod tests {
         assert_eq!(cfg.output.method, "type");
         assert!(cfg.output.trailing_space);
         assert!(!cfg.hud.show_timer);
+    }
+
+    #[test]
+    fn processing_profile_migration_and_explicit_precedence_match_contract() {
+        assert_eq!(
+            effective_processing_profile(None, false),
+            ProcessingProfile::Verbatim
+        );
+        assert_eq!(
+            effective_processing_profile(None, true),
+            ProcessingProfile::LegacyV1
+        );
+        assert_eq!(
+            effective_processing_profile(Some(ProcessingMode::Verbatim), true),
+            ProcessingProfile::Verbatim
+        );
+        assert_eq!(
+            effective_processing_profile(Some(ProcessingMode::Clean), true),
+            ProcessingProfile::Clean
+        );
+        assert_eq!(
+            effective_processing_profile(Some(ProcessingMode::Polished), false),
+            ProcessingProfile::Polished
+        );
+    }
+
+    #[test]
+    fn processing_mode_rejects_private_legacy_profile() {
+        let explicit: Config =
+            serde_json::from_str(r#"{"processing":{"mode":"polished"},"llm":{"enabled":true}}"#)
+                .unwrap();
+        assert_eq!(explicit.processing.mode, Some(ProcessingMode::Polished));
+        assert!(serde_json::from_str::<Config>(r#"{"processing":{"mode":"legacy_v1"}}"#).is_err());
+    }
+
+    #[test]
+    fn explicit_polished_requires_supported_planner_credentials_but_legacy_is_exempt() {
+        for model in ["openai/gpt-oss-20b", "openai/gpt-oss-120b"] {
+            assert!(valid_processing_credentials(
+                ProcessingProfile::Polished,
+                "secret",
+                model
+            ));
+        }
+        assert!(!valid_processing_credentials(
+            ProcessingProfile::Polished,
+            "",
+            "openai/gpt-oss-20b"
+        ));
+        assert!(!valid_processing_credentials(
+            ProcessingProfile::Polished,
+            "secret",
+            "other/model"
+        ));
+        assert!(valid_processing_credentials(
+            ProcessingProfile::LegacyV1,
+            "",
+            "other/model"
+        ));
+    }
+
+    #[test]
+    fn mode_mutation_rejects_present_non_object_processing() {
+        assert!(encode_processing_mode(br#"{"processing":false}"#, ProcessingMode::Clean).is_err());
+    }
+
+    #[test]
+    fn mode_mutation_validates_polished_before_publication_and_allows_recovery() {
+        let fixture = ConfigDir::new(
+            br#"{"stt":{"api_key":"deepgram"},"processing":{"mode":"clean"},"llm":{"model":"other/model"}}"#,
+        );
+        assert!(
+            set_processing_mode_at(
+                &fixture.open(),
+                &fixture.0,
+                ProcessingMode::Polished,
+                || {},
+                || {}
+            )
+            .is_err()
+        );
+        let unchanged: serde_json::Value =
+            serde_json::from_slice(&fs::read(fixture.0.join(CONFIG_NAME)).unwrap()).unwrap();
+        assert_eq!(unchanged["processing"]["mode"], "clean");
+
+        fs::write(
+            fixture.0.join(CONFIG_NAME),
+            br#"{"stt":{"api_key":"deepgram"},"processing":{"mode":"polished"},"llm":{"model":"other/model"}}"#,
+        )
+        .unwrap();
+        set_processing_mode_at(
+            &fixture.open(),
+            &fixture.0,
+            ProcessingMode::Verbatim,
+            || {},
+            || {},
+        )
+        .unwrap();
+        let recovered: serde_json::Value =
+            serde_json::from_slice(&fs::read(fixture.0.join(CONFIG_NAME)).unwrap()).unwrap();
+        assert_eq!(recovered["processing"]["mode"], "verbatim");
+    }
+
+    #[test]
+    fn mode_mutation_rejects_same_inode_byte_changes() {
+        let fixture = ConfigDir::new(br#"{"stt":{"api_key":"deepgram"}}"#);
+        let path = fixture.0.join(CONFIG_NAME);
+        let result = set_processing_mode_at(
+            &fixture.open(),
+            &fixture.0,
+            ProcessingMode::Clean,
+            || {},
+            || fs::write(&path, b"{\"notifications\":false}").unwrap(),
+        );
+        assert!(result.is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"{\"notifications\":false}");
+    }
+
+    #[test]
+    fn concurrent_sayall_writer_is_not_overwritten() {
+        let fixture = ConfigDir::new(br#"{"stt":{"api_key":"deepgram"}}"#);
+        let first_parent = fixture.open();
+        let second_parent = fixture.open();
+        let first_path = fixture.0.clone();
+        let second_path = fixture.0.clone();
+        let (locked_tx, locked_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let first = std::thread::spawn(move || {
+            set_processing_mode_at(
+                &first_parent,
+                &first_path,
+                ProcessingMode::Clean,
+                || {},
+                || {
+                    locked_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                },
+            )
+        });
+        locked_rx.recv().unwrap();
+
+        let (read_tx, read_rx) = mpsc::channel();
+        let second = std::thread::spawn(move || {
+            set_processing_mode_at(
+                &second_parent,
+                &second_path,
+                ProcessingMode::Polished,
+                || read_tx.send(()).unwrap(),
+                || {},
+            )
+        });
+        read_rx.recv().unwrap();
+        release_tx.send(()).unwrap();
+
+        first.join().unwrap().unwrap();
+        assert!(second.join().unwrap().is_err());
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(fixture.0.join(CONFIG_NAME)).unwrap()).unwrap();
+        assert_eq!(value["processing"]["mode"], "clean");
     }
 
     #[test]

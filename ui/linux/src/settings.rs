@@ -1,4 +1,4 @@
-use crate::{autostart, global_shortcut, worker};
+use crate::{autostart, config, global_shortcut, worker};
 use gtk::prelude::*;
 use gtk::{Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, Label, Orientation};
 use serde::Deserialize;
@@ -65,7 +65,7 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
         .application(app)
         .title("SayAll Settings")
         .default_width(460)
-        .default_height(220)
+        .default_height(340)
         .build();
     let column = GtkBox::new(Orientation::Vertical, 12);
     column.set_margin_top(20);
@@ -84,12 +84,26 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
     let enable_shortcut = Button::with_label("Enable/configure global shortcut");
     let reload = Button::with_label("Reload Configuration");
     let login = CheckButton::with_label("Start SayAll at login");
+    let processing_heading = Label::new(Some("Processing mode"));
+    processing_heading.set_xalign(0.0);
+    let verbatim = CheckButton::with_label("Verbatim — preserve finalized transcription");
+    let clean = CheckButton::with_label("Clean — apply deterministic cleanup");
+    let polished = CheckButton::with_label("Polished — refine wording and structure");
+    clean.set_group(Some(&verbatim));
+    polished.set_group(Some(&verbatim));
+    for button in [&verbatim, &clean, &polished] {
+        button.set_sensitive(false);
+    }
     column.append(&heading);
     column.append(&status);
     column.append(&shortcut);
     column.append(&enable_shortcut);
     column.append(&init);
     column.append(&reload);
+    column.append(&processing_heading);
+    column.append(&verbatim);
+    column.append(&clean);
+    column.append(&polished);
     column.append(&login);
     window.set_child(Some(&column));
     let enable_for_click = enable_shortcut.clone();
@@ -113,26 +127,37 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
         gtk::glib::ControlFlow::Continue
     });
     let changing = std::rc::Rc::new(Cell::new(false));
+    let confirmed_mode = std::rc::Rc::new(Cell::new(config::ProcessingMode::Verbatim));
     let refresh = {
         let status = status.clone();
         let init = init.clone();
         let login = login.clone();
+        let verbatim = verbatim.clone();
+        let clean = clean.clone();
+        let polished = polished.clone();
         let changing = changing.clone();
+        let confirmed_mode = confirmed_mode.clone();
         move || {
             let (tx, rx) = mpsc::channel();
             std::thread::spawn(move || {
                 let config = config_operation("--config-validate");
+                let mode = config::selected_processing_mode();
                 let autostart = autostart::state();
-                let _ = tx.send((config, autostart));
+                let _ = tx.send((config, mode, autostart));
             });
             let status = status.clone();
             let init = init.clone();
             let login = login.clone();
+            let verbatim = verbatim.clone();
+            let clean = clean.clone();
+            let polished = polished.clone();
             let changing = changing.clone();
+            let confirmed_mode = confirmed_mode.clone();
             gtk::glib::timeout_add_local(Duration::from_millis(20), move || {
-                let Ok((result, autostart_state)) = rx.try_recv() else {
+                let Ok((result, mode, autostart_state)) = rx.try_recv() else {
                     return gtk::glib::ControlFlow::Continue;
                 };
+                let config_valid = matches!(&result, Ok(ConfigResult::Valid));
                 match result {
                     Ok(ConfigResult::Valid) => {
                         status.set_text("Configuration is valid.");
@@ -150,6 +175,19 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
                         status.set_text(&e);
                         init.set_sensitive(false)
                     }
+                }
+                for button in [&verbatim, &clean, &polished] {
+                    button.set_sensitive(config_valid);
+                }
+                if let Ok(mode) = mode {
+                    confirmed_mode.set(mode);
+                    changing.set(true);
+                    match mode {
+                        config::ProcessingMode::Verbatim => verbatim.set_active(true),
+                        config::ProcessingMode::Clean => clean.set_active(true),
+                        config::ProcessingMode::Polished => polished.set_active(true),
+                    }
+                    changing.set(false);
                 }
                 if let Ok(autostart_state) = autostart_state {
                     changing.set(true);
@@ -194,6 +232,39 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
         }
         Err(e) => reload_status.set_text(&format!("Could not reload configuration: {e}")),
     });
+    for (button, mode) in [
+        (verbatim.clone(), config::ProcessingMode::Verbatim),
+        (clean.clone(), config::ProcessingMode::Clean),
+        (polished.clone(), config::ProcessingMode::Polished),
+    ] {
+        let changing = changing.clone();
+        let confirmed_mode = confirmed_mode.clone();
+        let mode_status = status.clone();
+        let verbatim = verbatim.clone();
+        let clean = clean.clone();
+        let polished = polished.clone();
+        button.connect_toggled(move |button| {
+            if changing.get() || !button.is_active() {
+                return;
+            }
+            match crate::set_processing_mode(mode) {
+                Ok(()) => {
+                    confirmed_mode.set(mode);
+                    mode_status.set_text("Processing mode saved. It applies to the next dictation.")
+                }
+                Err(error) => {
+                    changing.set(true);
+                    match confirmed_mode.get() {
+                        config::ProcessingMode::Verbatim => verbatim.set_active(true),
+                        config::ProcessingMode::Clean => clean.set_active(true),
+                        config::ProcessingMode::Polished => polished.set_active(true),
+                    }
+                    changing.set(false);
+                    mode_status.set_text(&format!("Could not change mode: {error}"));
+                }
+            }
+        });
+    }
     let status3 = status.clone();
     let changing2 = changing.clone();
     login.connect_toggled(move |toggle| {

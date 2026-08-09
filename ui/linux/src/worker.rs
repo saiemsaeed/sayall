@@ -1,4 +1,4 @@
-use crate::config::ProviderConfig;
+use crate::config::{ProcessingProfile, ProviderConfig};
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
 use std::os::fd::AsRawFd;
@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 const CONTROL_MAX: usize = 64 * 1024;
 const RESULT_MAX: usize = 1024 * 1024;
 const SUPERVISED_MAX: usize = 4097;
-const PROTOCOL_VERSION: u32 = 2;
+const PROTOCOL_VERSION: u32 = 3;
 
 pub struct SupervisedOutput {
     pub status: ExitStatus,
@@ -114,8 +114,68 @@ pub fn supervised(
 
 #[derive(Debug, PartialEq)]
 pub enum Outcome {
-    Transcript(String),
+    Transcript {
+        text: String,
+        processing_profile: ProcessingProfile,
+        transport: Transport,
+        warning: Option<Warning>,
+    },
+    NoSpeech {
+        processing_profile: ProcessingProfile,
+        transport: Transport,
+    },
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum Transport {
+    Rest,
+    Stream,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum Warning {
+    TransformationFailed,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum Status {
+    Success,
     NoSpeech,
+    Error,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum ErrorCode {
+    InvalidRequest,
+    IncompatibleVersion,
+    InvalidAudio,
+    AudioTooShort,
+    AudioTooLong,
+    MissingDeepgramKey,
+    DeepgramUnauthorized,
+    DeepgramRateLimited,
+    DeepgramServer,
+    DeepgramNetwork,
+    ResponseTooLarge,
+    Internal,
+}
+impl ErrorCode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidRequest => "invalid_request",
+            Self::IncompatibleVersion => "incompatible_version",
+            Self::InvalidAudio => "invalid_audio",
+            Self::AudioTooShort => "audio_too_short",
+            Self::AudioTooLong => "audio_too_long",
+            Self::MissingDeepgramKey => "missing_deepgram_key",
+            Self::DeepgramUnauthorized => "deepgram_unauthorized",
+            Self::DeepgramRateLimited => "deepgram_rate_limited",
+            Self::DeepgramServer => "deepgram_server",
+            Self::DeepgramNetwork => "deepgram_network",
+            Self::ResponseTooLarge => "response_too_large",
+            Self::Internal => "internal",
+        }
+    }
 }
 #[derive(Deserialize)]
 struct Info {
@@ -131,11 +191,12 @@ struct Ready {
 #[derive(Deserialize)]
 struct ResultFrame {
     version: u32,
-    status: String,
+    status: Status,
     text: Option<String>,
-    #[allow(dead_code)]
-    warning: Option<String>,
-    error: Option<String>,
+    warning: Option<Warning>,
+    error: Option<ErrorCode>,
+    processing_profile: ProcessingProfile,
+    transport: Transport,
 }
 #[derive(Serialize)]
 struct Request<'a> {
@@ -158,7 +219,7 @@ struct Request<'a> {
     groq_api_key: &'a str,
     groq_model: &'a str,
     groq_base_url: &'a str,
-    cleanup_enabled: bool,
+    processing_profile: ProcessingProfile,
 }
 
 struct Running {
@@ -369,7 +430,7 @@ fn encode(wav: &Path, pcm: Option<&Path>, c: &ProviderConfig) -> Result<Vec<u8>,
         groq_api_key: &c.groq_api_key,
         groq_model: &c.groq_model,
         groq_base_url: &c.groq_base_url,
-        cleanup_enabled: c.cleanup,
+        processing_profile: c.processing_profile,
     };
     let b = serde_json::to_vec(&r).map_err(|_| "invalid processing request")?;
     if b.len() > CONTROL_MAX {
@@ -636,18 +697,35 @@ fn decode_result(b: Vec<u8>) -> Result<Outcome, String> {
     if r.version != PROTOCOL_VERSION {
         return Err("processing worker protocol is incompatible".into());
     }
-    match r.status.as_str() {
-        "success" => r
+    let valid = match r.status {
+        Status::Success => {
+            r.text.as_ref().is_some_and(|text| !text.is_empty()) && r.error.is_none()
+        }
+        Status::NoSpeech => r.text.is_none() && r.warning.is_none() && r.error.is_none(),
+        Status::Error => r.text.is_none() && r.warning.is_none() && r.error.is_some(),
+    };
+    if !valid {
+        return Err("processing worker returned malformed output".into());
+    }
+    match r.status {
+        Status::Success => r
             .text
             .filter(|x| !x.is_empty())
-            .map(Outcome::Transcript)
+            .map(|text| Outcome::Transcript {
+                text,
+                processing_profile: r.processing_profile,
+                transport: r.transport,
+                warning: r.warning,
+            })
             .ok_or_else(|| "processing worker returned empty text".into()),
-        "no_speech" => Ok(Outcome::NoSpeech),
-        "error" => Err(format!(
+        Status::NoSpeech => Ok(Outcome::NoSpeech {
+            processing_profile: r.processing_profile,
+            transport: r.transport,
+        }),
+        Status::Error => Err(format!(
             "processing failed ({})",
-            r.error.unwrap_or_else(|| "unknown".into())
+            r.error.expect("error code validated").as_str()
         )),
-        _ => Err("processing worker returned unknown status".into()),
     }
 }
 fn batch(
@@ -839,7 +917,7 @@ mod tests {
             groq_api_key: String::new(),
             groq_model: "openai/gpt-oss-20b".into(),
             groq_base_url: "https://api.groq.com/openai/v1/chat/completions".into(),
-            cleanup: false,
+            processing_profile: ProcessingProfile::Clean,
         }
     }
 
@@ -866,7 +944,7 @@ mod tests {
     fn probe() -> String {
         format!(
             r#"if [ "${{1-}}" = "--worker-info" ]; then
-  printf '%s\n' '{{"protocol_version":2,"build_version":"{}"}}'
+  printf '%s\n' '{{"protocol_version":3,"build_version":"{}"}}'
   IFS= read -r ignored || true
   exit 0
 fi"#,
@@ -882,10 +960,10 @@ fi"#,
 [ "${{1-}}" = "--stream" ]
 IFS= read -r request
 case "$request" in *secret-deepgram*) ;; *) exit 31;; esac
-printf '%s\n' '{{"version":2,"event":"ready","streaming":true}}'
+printf '%s\n' '{{"version":3,"event":"ready","streaming":true}}'
 IFS= read -r finish
-[ "$finish" = '{{"command":"finish","force_rest":false,"version":2}}' ]
-printf '%s\n' '{{"version":2,"status":"success","text":"hello"}}'"#,
+[ "$finish" = '{{"command":"finish","force_rest":false,"version":3}}' ]
+printf '%s\n' '{{"version":3,"status":"success","text":"hello","processing_profile":"clean","transport":"stream"}}'"#,
             probe()
         );
         let fixture = Fixture::new(&body);
@@ -901,7 +979,12 @@ printf '%s\n' '{{"version":2,"status":"success","text":"hello"}}'"#,
         unsafe { std::env::remove_var("SAYALL_MUST_NOT_LEAK") };
         assert_eq!(
             worker.finish(Duration::from_secs(2)).unwrap(),
-            Outcome::Transcript("hello".into())
+            Outcome::Transcript {
+                text: "hello".into(),
+                processing_profile: ProcessingProfile::Clean,
+                transport: Transport::Stream,
+                warning: None,
+            }
         );
     }
 
@@ -912,7 +995,7 @@ printf '%s\n' '{{"version":2,"status":"success","text":"hello"}}'"#,
 if [ "${{1-}}" = "--stream" ]; then exit 32; fi
 IFS= read -r request
 case "$request" in *pcm_path*) exit 33;; esac
-printf '%s' '{{"version":2,"status":"no_speech"}}'"#,
+printf '%s' '{{"version":3,"status":"no_speech","processing_profile":"clean","transport":"rest"}}'"#,
             probe()
         );
         let fixture = Fixture::new(&body);
@@ -926,7 +1009,10 @@ printf '%s' '{{"version":2,"status":"no_speech"}}'"#,
         .unwrap();
         assert_eq!(
             worker.finish(Duration::from_secs(2)).unwrap(),
-            Outcome::NoSpeech
+            Outcome::NoSpeech {
+                processing_profile: ProcessingProfile::Clean,
+                transport: Transport::Rest,
+            }
         );
     }
 
@@ -942,12 +1028,14 @@ printf '%s' '{{"version":2,"status":"no_speech"}}'"#,
 if [ "${{1-}}" = "--stream" ]; then
   printf S >> '{}'
   IFS= read -r request
-  printf '%s\n' '{{"version":2,"event":"ready","streaming":true}}'
+  case "$request" in *'"processing_profile":"clean"'*) ;; *) exit 37;; esac
+  printf '%s\n' '{{"version":3,"event":"ready","streaming":true}}'
   exit 0
 fi
 printf B >> '{}'
 IFS= read -r request
-printf '%s' '{{"version":2,"status":"success","text":"fallback"}}'"#,
+case "$request" in *'"processing_profile":"clean"'*) ;; *) exit 38;; esac
+printf '%s' '{{"version":3,"status":"success","text":"fallback","processing_profile":"clean","transport":"rest"}}'"#,
             probe(),
             log.display(),
             log.display()
@@ -963,7 +1051,12 @@ printf '%s' '{{"version":2,"status":"success","text":"fallback"}}'"#,
         .unwrap();
         assert_eq!(
             worker.finish(Duration::from_secs(2)).unwrap(),
-            Outcome::Transcript("fallback".into())
+            Outcome::Transcript {
+                text: "fallback".into(),
+                processing_profile: ProcessingProfile::Clean,
+                transport: Transport::Rest,
+                warning: None,
+            }
         );
         assert_eq!(fs::read_to_string(&log).unwrap(), "SB");
         let _ = fs::remove_file(log);
@@ -981,7 +1074,7 @@ printf '%s' '{{"version":2,"status":"success","text":"fallback"}}'"#,
 if [ "${{1-}}" = "--stream" ]; then
   printf S >> '{}'
   IFS= read -r request
-  printf '%s\n' '{{"version":2,"event":"ready","streaming":true}}'
+  printf '%s\n' '{{"version":3,"event":"ready","streaming":true}}'
   IFS= read -r finish
   printf '%s\n' '{{'
   exit 0
@@ -1018,7 +1111,7 @@ exit 34"#,
 if [ "${{1-}}" = "--stream" ]; then
   printf S >> '{}'
   IFS= read -r request
-  printf '%s\n' '{{"version":2,"event":"ready","streaming":true}}'
+  printf '%s\n' '{{"version":3,"event":"ready","streaming":true}}'
   IFS= read -r finish
   printf '{{'
   /bin/sleep 2
@@ -1056,8 +1149,8 @@ exit 35"#,
 if [ "${{1-}}" = "--stream" ]; then
   printf S >> '{}'
   IFS= read -r request
-  printf '%s\n' '{{"version":2,"event":"ready","streaming":true}}'
-  printf '%s\n' '{{"version":2,"status":"success","text":"unsolicited"}}'
+  printf '%s\n' '{{"version":3,"event":"ready","streaming":true}}'
+  printf '%s\n' '{{"version":3,"status":"success","text":"unsolicited","processing_profile":"clean","transport":"stream"}}'
   IFS= read -r finish || true
   exit 0
 fi
@@ -1086,7 +1179,7 @@ exit 36"#,
     fn incompatible_worker_build_is_rejected() {
         let fixture = Fixture::new(
             r#"if [ "${1-}" = "--worker-info" ]; then
-  printf '%s\n' '{"protocol_version":2,"build_version":"different"}'
+  printf '%s\n' '{"protocol_version":3,"build_version":"different"}'
   IFS= read -r ignored || true
 fi"#,
         );
@@ -1100,5 +1193,41 @@ fi"#,
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn v3_codec_requires_metadata_and_projects_transformation_warning() {
+        let request: serde_json::Value =
+            serde_json::from_slice(&encode(Path::new("/tmp/a.wav"), None, &config(false)).unwrap())
+                .unwrap();
+        assert_eq!(request["version"], 3);
+        assert_eq!(request["processing_profile"], "clean");
+        assert!(request.get("cleanup_enabled").is_none());
+
+        assert_eq!(
+            decode_result(
+                br#"{"version":3,"status":"success","text":"raw","warning":"transformation_failed","processing_profile":"polished","transport":"stream"}"#.to_vec()
+            )
+            .unwrap(),
+            Outcome::Transcript {
+                text: "raw".into(),
+                processing_profile: ProcessingProfile::Polished,
+                transport: Transport::Stream,
+                warning: Some(Warning::TransformationFailed),
+            }
+        );
+        for invalid in [
+            br#"{"version":2,"status":"no_speech","processing_profile":"clean","transport":"rest"}"#.as_slice(),
+            br#"{"version":3,"status":"no_speech","transport":"rest"}"#.as_slice(),
+            br#"{"version":3,"status":"no_speech","processing_profile":"clean"}"#.as_slice(),
+            br#"{"version":3,"status":"success","text":"raw","warning":"provider_failed","processing_profile":"polished","transport":"stream"}"#.as_slice(),
+            br#"{"version":3,"status":"success","text":"raw","error":"internal","processing_profile":"polished","transport":"stream"}"#.as_slice(),
+            br#"{"version":3,"status":"no_speech","text":"raw","processing_profile":"clean","transport":"rest"}"#.as_slice(),
+            br#"{"version":3,"status":"error","processing_profile":"clean","transport":"rest"}"#.as_slice(),
+            br#"{"version":3,"status":"error","error":"future_error","processing_profile":"clean","transport":"rest"}"#.as_slice(),
+            br#"{"version":3,"status":"future_status","processing_profile":"clean","transport":"rest"}"#.as_slice(),
+        ] {
+            assert!(decode_result(invalid.to_vec()).is_err());
+        }
     }
 }
