@@ -503,6 +503,9 @@ final class Coordinator {
         case .missingDeepgramKey: return "Set stt.api_key or DEEPGRAM_API_KEY in \(path)"
         case .invalidProvider: return "Use a valid stt.model, stt.language, and global/eu/au region"
         case .invalidProcessingMode: return "Set processing.mode to verbatim, clean, or polished"
+        case .missingGroqKey: return "Polished mode requires llm.api_key or GROQ_API_KEY"
+        case .unsupportedPlannerModel:
+            return "Polished mode requires llm.model openai/gpt-oss-20b or openai/gpt-oss-120b"
         case .invalidOutputMethod: return "Set output.method to type, paste, or clipboard"
         case .invalidMetrics: return "Set metrics.history_max_entries between 0 and 100000"
         case .invalidSecret: return "Provider API keys cannot contain whitespace"

@@ -122,6 +122,21 @@ struct StreamingHelperFinish: Codable, Equatable {
     enum CodingKeys: String, CodingKey { case version, command, forceRest = "force_rest" }
 }
 
+enum WorkerErrorCode: String, Codable, Equatable {
+    case invalidRequest = "invalid_request"
+    case incompatibleVersion = "incompatible_version"
+    case invalidAudio = "invalid_audio"
+    case audioTooShort = "audio_too_short"
+    case audioTooLong = "audio_too_long"
+    case missingDeepgramKey = "missing_deepgram_key"
+    case deepgramUnauthorized = "deepgram_unauthorized"
+    case deepgramRateLimited = "deepgram_rate_limited"
+    case deepgramServer = "deepgram_server"
+    case deepgramNetwork = "deepgram_network"
+    case responseTooLarge = "response_too_large"
+    case internalError = "internal"
+}
+
 struct HelperResult: Codable, Equatable {
     enum Status: String, Codable { case success, noSpeech = "no_speech", error }
     enum Transport: String, Codable { case rest, stream }
@@ -129,7 +144,7 @@ struct HelperResult: Codable, Equatable {
     let status: Status
     let text: String?
     let warning: String?
-    let error: String?
+    let error: WorkerErrorCode?
     let processingProfile: ProcessingProfile
     let transport: Transport
     enum CodingKeys: String, CodingKey {
@@ -170,8 +185,8 @@ enum HelperDecoder {
             return result
         case .error:
             guard result.text == nil, result.warning == nil,
-                  let error = result.error, !error.isEmpty else { throw HelperFailure.malformedOutput }
-            throw HelperFailure.unsuccessful(error)
+                  let error = result.error else { throw HelperFailure.malformedOutput }
+            throw HelperFailure.unsuccessful(error.rawValue)
         }
     }
 }

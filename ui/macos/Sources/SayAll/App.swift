@@ -214,6 +214,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert(); alert.messageText = "Install Command Line Tool"; alert.informativeText = message
         alert.addButton(withTitle: "OK"); alert.runModal()
     }
+    private func showWarningAlert(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "SayAll warning"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.runModal()
+    }
     @objc private func openMicSettings() { openSystemSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") }
     @objc private func openAXSettings() { openSystemSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") }
     @objc private func requestAccessibility() {
@@ -349,8 +356,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             rebuildMenu()
         }
         if let warning = coordinator.takePendingWarning() {
-            Task { [errorNotifier] in
-                _ = await errorNotifier.notify(title: "SayAll warning", message: warning)
+            Task { [weak self, errorNotifier] in
+                await WarningPresenter.present(message: warning, notify: {
+                    await errorNotifier.notify(title: "SayAll warning", message: warning)
+                }, showAlert: { [weak self] message in
+                    self?.showWarningAlert(message)
+                })
             }
         }
         guard coordinator.state == .error else { return }
@@ -373,6 +384,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return noErr
         }, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), nil)
         rebuildMenu()
+    }
+}
+
+@MainActor
+enum WarningPresenter {
+    static func present(message: String, notify: () async -> Bool,
+                        showAlert: (String) -> Void) async {
+        if !(await notify()) { showAlert(message) }
     }
 }
 

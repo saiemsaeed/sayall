@@ -159,6 +159,26 @@ final class CoordinatorControlTests: XCTestCase {
         XCTAssertEqual(availabilityChanges, 2)
         XCTAssertTrue(coordinator.canChangeConfiguration)
     }
+
+    @MainActor
+    func testPolishedValidationReturnsActionableSelectionAndReloadErrors() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let loader = ConfigurationLoader(environment: [:], homeDirectory: home)
+        try FileManager.default.createDirectory(at: loader.url.deletingLastPathComponent(),
+            withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try FileManager.default.setAttributes([.posixPermissions: 0o700],
+            ofItemAtPath: loader.url.deletingLastPathComponent().path)
+        try Data(#"{"stt":{"api_key":"key"},"processing":{"mode":"verbatim"}}"#.utf8).write(to: loader.url)
+        let coordinator = Coordinator(configuration: loader) {}
+
+        XCTAssertEqual(coordinator.selectProcessingMode(.polished),
+            "Polished mode requires llm.api_key or GROQ_API_KEY")
+        try Data(#"{"stt":{"api_key":"key"},"processing":{"mode":"polished"}}"#.utf8).write(to: loader.url)
+        let reload = coordinator.handleControl(.reload)
+        XCTAssertFalse(reload.ok)
+        XCTAssertTrue(reload.error?.contains("Polished mode requires llm.api_key or GROQ_API_KEY") == true)
+    }
 }
 
 final class StateMachineTests: XCTestCase {
@@ -765,7 +785,8 @@ final class HelperDecoderTests: XCTestCase {
         XCTAssertEqual(try HelperDecoder.decode(Data(#"{"version":3,"status":"no_speech","processing_profile":"verbatim","transport":"stream"}"#.utf8)).status, .noSpeech)
     }
     func testStableErrorMapping() {
-        XCTAssertThrowsError(try HelperDecoder.decode(Data(#"{"version":3,"status":"error","error":"network","processing_profile":"polished","transport":"rest"}"#.utf8))) { XCTAssertEqual($0 as? HelperFailure, .unsuccessful("network")) }
+        XCTAssertThrowsError(try HelperDecoder.decode(Data(#"{"version":3,"status":"error","error":"deepgram_network","processing_profile":"polished","transport":"rest"}"#.utf8))) { XCTAssertEqual($0 as? HelperFailure, .unsuccessful("deepgram_network")) }
+        XCTAssertThrowsError(try HelperDecoder.decode(Data(#"{"version":3,"status":"error","error":"future_error","processing_profile":"polished","transport":"rest"}"#.utf8))) { XCTAssertEqual($0 as? HelperFailure, .malformedOutput) }
         XCTAssertThrowsError(try HelperDecoder.decode(Data(#"{"version":2,"status":"success","text":"old","processing_profile":"clean","transport":"rest"}"#.utf8))) { XCTAssertEqual($0 as? HelperFailure, .unsupportedVersion) }
         XCTAssertThrowsError(try HelperDecoder.decode(Data(#"{"version":3,"status":"success","text":"missing fields"}"#.utf8))) { XCTAssertEqual($0 as? HelperFailure, .malformedOutput) }
         XCTAssertThrowsError(try HelperDecoder.decode(Data(#"{"version":3,"status":"success","text":"hello","warning":"future","processing_profile":"clean","transport":"rest"}"#.utf8))) { XCTAssertEqual($0 as? HelperFailure, .malformedOutput) }
@@ -1094,7 +1115,7 @@ final class ProcessingOwnershipTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: home) }
         let loader = ConfigurationLoader(environment: [:], homeDirectory: home)
         try FileManager.default.createDirectory(at: loader.url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Data(#"{"stt":{"api_key":"key"},"processing":{"mode":"polished"}}"#.utf8).write(to: loader.url)
+        try Data(#"{"stt":{"api_key":"key"},"llm":{"api_key":"groq"},"processing":{"mode":"polished"}}"#.utf8).write(to: loader.url)
         let snapshot = try loader.load()
 
         let stream = Coordinator.streamingRequest(config: snapshot, wavPath: "/tmp/audio.wav", pcmPath: "/tmp/audio.pcm")
@@ -1108,6 +1129,18 @@ final class ProcessingOwnershipTests: XCTestCase {
             "Transformation failed; used the raw transcript.")
         XCTAssertNil(Coordinator.warningMessage(for: "future_warning"))
         XCTAssertNil(Coordinator.warningMessage(for: nil))
+    }
+
+    @MainActor
+    func testWarningPresenterFallsBackToAlertOnlyWhenNotificationFails() async {
+        var alerts: [String] = []
+        await WarningPresenter.present(message: "Transformation failed; used the raw transcript.",
+            notify: { false }, showAlert: { alerts.append($0) })
+        XCTAssertEqual(alerts, ["Transformation failed; used the raw transcript."])
+
+        await WarningPresenter.present(message: "delivered", notify: { true },
+            showAlert: { alerts.append($0) })
+        XCTAssertEqual(alerts.count, 1)
     }
 
     func testCaptureFailureCannotValidateAsSuccessfulRecording() {
@@ -1181,6 +1214,12 @@ final class SharedBackendContractTests: XCTestCase {
 }
 
 final class ConfigurationLoaderTests: XCTestCase {
+    private func preparePrivateParent(for loader: ConfigurationLoader) throws {
+        let parent = loader.url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: parent.path)
+    }
+
     func testLoadsLinuxConfigSchema() throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let directory = home.appendingPathComponent(".config/sayall")
@@ -1254,12 +1293,14 @@ final class ConfigurationLoaderTests: XCTestCase {
             (#"{"stt":{"api_key":"key"},"llm":{"enabled":true}}"#, .legacyV1),
             (#"{"stt":{"api_key":"key"},"llm":{"enabled":true},"processing":{"mode":"verbatim"}}"#, .verbatim),
             (#"{"stt":{"api_key":"key"},"llm":{"enabled":true},"processing":{"mode":"clean"}}"#, .clean),
-            (#"{"stt":{"api_key":"key"},"llm":{"enabled":false},"processing":{"mode":"polished"}}"#, .polished),
+            (#"{"stt":{"api_key":"key"},"llm":{"api_key":"groq","enabled":false},"processing":{"mode":"polished"}}"#, .polished),
         ] {
             try Data(json.utf8).write(to: loader.url)
             XCTAssertEqual(try loader.load().processingProfile, expected)
         }
 
+        try FileManager.default.setAttributes([.posixPermissions: 0o700],
+            ofItemAtPath: loader.url.deletingLastPathComponent().path)
         try Data(#"{"stt":{"api_key":"key"},"future":{"preserved":true}}"#.utf8).write(to: loader.url)
         try loader.setProcessingMode(.clean)
         XCTAssertEqual(try loader.load().processingProfile, .clean)
@@ -1279,7 +1320,7 @@ final class ConfigurationLoaderTests: XCTestCase {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: home) }
         let loader = ConfigurationLoader(environment: [:], homeDirectory: home)
-        try FileManager.default.createDirectory(at: loader.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try preparePrivateParent(for: loader)
         let target = home.appendingPathComponent("target.json")
         let original = Data(#"{"stt":{"api_key":"key"}}"#.utf8)
         try original.write(to: target)
@@ -1290,6 +1331,125 @@ final class ConfigurationLoaderTests: XCTestCase {
         }
         XCTAssertEqual(try Data(contentsOf: target), original)
         XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: loader.url.path), target.path)
+    }
+
+    func testModeMutationRejectsNonObjectProcessingWithoutChangingConfig() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let loader = ConfigurationLoader(environment: [:], homeDirectory: home)
+        try preparePrivateParent(for: loader)
+        let original = Data(#"{"stt":{"api_key":"key"},"processing":true}"#.utf8)
+        try original.write(to: loader.url)
+
+        XCTAssertThrowsError(try loader.setProcessingMode(.clean)) {
+            XCTAssertEqual($0 as? ConfigurationError, .invalidProcessingMode)
+        }
+        XCTAssertEqual(try Data(contentsOf: loader.url), original)
+    }
+
+    func testModeMutationRejectsSymlinkedConfigParent() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let root = home.appendingPathComponent("root")
+        let target = home.appendingPathComponent("target")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("sayall"),
+            withDestinationURL: target)
+        let config = target.appendingPathComponent("config.json")
+        let original = Data(#"{"stt":{"api_key":"key"}}"#.utf8)
+        try original.write(to: config)
+        let loader = ConfigurationLoader(environment: ["XDG_CONFIG_HOME": root.path], homeDirectory: home)
+
+        XCTAssertThrowsError(try loader.setProcessingMode(.clean)) {
+            XCTAssertEqual($0 as? ConfigurationError, .writeFailed)
+        }
+        XCTAssertEqual(try Data(contentsOf: config), original)
+    }
+
+    func testModeMutationRejectsSameBytesReplacementIdentityRace() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let config = home.appendingPathComponent(".config/sayall/config.json")
+        let original = Data(#"{"stt":{"api_key":"original"}}"#.utf8)
+        let loader = ConfigurationLoader(environment: [:], homeDirectory: home,
+            prePublication: { try original.write(to: config, options: .atomic) })
+        try preparePrivateParent(for: loader)
+        try original.write(to: config)
+        let originalInode = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: config.path)[.systemFileNumber] as? NSNumber)
+
+        XCTAssertThrowsError(try loader.setProcessingMode(.clean)) {
+            XCTAssertEqual($0 as? ConfigurationError, .writeFailed)
+        }
+        let replacementInode = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: config.path)[.systemFileNumber] as? NSNumber)
+        XCTAssertNotEqual(replacementInode, originalInode)
+        XCTAssertEqual(try Data(contentsOf: config), original)
+    }
+
+    func testModeMutationRejectsSameIdentityContentRace() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let config = home.appendingPathComponent(".config/sayall/config.json")
+        let replacement = Data(#"{"stt":{"api_key":"replacement"},"future":true}"#.utf8)
+        let loader = ConfigurationLoader(environment: [:], homeDirectory: home, prePublication: {
+            let handle = try FileHandle(forWritingTo: config)
+            try handle.truncate(atOffset: 0)
+            try handle.write(contentsOf: replacement)
+            try handle.close()
+        })
+        try preparePrivateParent(for: loader)
+        try Data(#"{"stt":{"api_key":"original"}}"#.utf8).write(to: config)
+        let originalInode = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: config.path)[.systemFileNumber] as? NSNumber)
+
+        XCTAssertThrowsError(try loader.setProcessingMode(.clean)) {
+            XCTAssertEqual($0 as? ConfigurationError, .writeFailed)
+        }
+        let replacementInode = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: config.path)[.systemFileNumber] as? NSNumber)
+        XCTAssertEqual(replacementInode, originalInode)
+        XCTAssertEqual(try Data(contentsOf: config), replacement)
+    }
+
+    func testExplicitPolishedRequiresSupportedPlannerCredentialsBeforeWriteOrReload() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let loader = ConfigurationLoader(environment: [:], homeDirectory: home)
+        try preparePrivateParent(for: loader)
+
+        let missingKey = Data(#"{"stt":{"api_key":"key"},"processing":{"mode":"polished"}}"#.utf8)
+        try missingKey.write(to: loader.url)
+        XCTAssertThrowsError(try loader.load()) { XCTAssertEqual($0 as? ConfigurationError, .missingGroqKey) }
+
+        let verbatim = Data(#"{"stt":{"api_key":"key"},"processing":{"mode":"verbatim"}}"#.utf8)
+        try verbatim.write(to: loader.url)
+        XCTAssertThrowsError(try loader.setProcessingMode(.polished)) {
+            XCTAssertEqual($0 as? ConfigurationError, .missingGroqKey)
+        }
+        XCTAssertEqual(try Data(contentsOf: loader.url), verbatim)
+
+        for model in ["other/model", "a/b/c"] {
+            let json = #"{"stt":{"api_key":"key"},"llm":{"api_key":"groq","model":"\#(model)"},"processing":{"mode":"polished"}}"#
+            try Data(json.utf8).write(to: loader.url)
+            XCTAssertThrowsError(try loader.load()) {
+                XCTAssertEqual($0 as? ConfigurationError, .unsupportedPlannerModel)
+            }
+        }
+        let unsupportedSelection = Data(#"{"stt":{"api_key":"key"},"llm":{"api_key":"groq","model":"other/model"},"processing":{"mode":"verbatim"}}"#.utf8)
+        try unsupportedSelection.write(to: loader.url)
+        XCTAssertThrowsError(try loader.setProcessingMode(.polished)) {
+            XCTAssertEqual($0 as? ConfigurationError, .unsupportedPlannerModel)
+        }
+        XCTAssertEqual(try Data(contentsOf: loader.url), unsupportedSelection)
+
+        for model in ["openai/gpt-oss-20b", "openai/gpt-oss-120b"] {
+            let json = #"{"stt":{"api_key":"key"},"llm":{"api_key":"groq","model":"\#(model)"},"processing":{"mode":"polished"}}"#
+            try Data(json.utf8).write(to: loader.url)
+            XCTAssertEqual(try loader.load().processingProfile, .polished)
+        }
+
+        try Data(#"{"stt":{"api_key":"key"},"llm":{"enabled":true,"model":"other/model"}}"#.utf8)
+            .write(to: loader.url)
+        XCTAssertEqual(try loader.load().processingProfile, .legacyV1)
     }
 
     func testLLMModelAcceptsOneOptionalNamespace() throws {
