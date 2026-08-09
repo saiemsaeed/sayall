@@ -531,10 +531,17 @@ fn validCue(t: []const Token, s: usize, e: usize, cue: []const u8) bool {
 }
 fn backtrackNegated(tokens: []const Token, scalar: usize) bool {
     const start = scalar -| 4;
-    for (tokens[start..scalar]) |token| {
-        if (asciiEq(token.text, "no") or asciiEq(token.text, "not") or asciiEq(token.text, "never") or std.mem.endsWith(u8, token.text, "n't")) return true;
-    }
+    for (tokens[start..scalar]) |token| if (isNegator(token.text)) return true;
     return false;
+}
+fn isNegator(text: []const u8) bool {
+    for ([_][]const u8{ "no", "not", "never", "none", "without", "neither", "nor" }) |word| if (asciiEq(text, word)) return true;
+    if (text.len >= 3 and std.ascii.toLower(text[text.len - 3]) == 'n' and text[text.len - 2] == '\'' and std.ascii.toLower(text[text.len - 1]) == 't') return true;
+    const curly_apostrophe = "’";
+    return text.len >= curly_apostrophe.len + 2 and
+        std.ascii.toLower(text[text.len - curly_apostrophe.len - 2]) == 'n' and
+        std.mem.eql(u8, text[text.len - curly_apostrophe.len - 1 .. text.len - 1], curly_apostrophe) and
+        std.ascii.toLower(text[text.len - 1]) == 't';
 }
 fn protectionMap(gpa: Allocator, source: []const u8, tokens: []const Token, glossary: []const []const u8) ![]bool {
     var p = try gpa.alloc(bool, tokens.len);
@@ -687,6 +694,8 @@ test "clean accepts only locally provable scalar backtracks" {
     try expectClean("do not set 10 actually 12", "do not set 10 actually 12", &.{});
     try expectClean("never Tuesday actually Wednesday", "never Tuesday actually Wednesday", &.{});
     try expectClean("It is not 10, actually 12", "It is not 10, actually 12", &.{});
+    try expectClean("It ISN’T 10 actually 12", "It ISN’T 10 actually 12", &.{});
+    try expectClean("without 10 actually 12", "without 10 actually 12", &.{});
 }
 
 test "polished compiles corrections punctuation paragraphs and numbered lists" {
@@ -814,6 +823,10 @@ test "polished rejects overlaps changed proofs injection and all deletion" {
     try expectInvalidPlan("do not 10 actually 12", &.{}, .{ .version = 2, .deletions = &negated_backtrack, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
     const exact_negated_backtrack = [_]Deletion{.{ .start_token = 3, .end_token = 5, .source = "10 actually", .kind = .backtrack, .proof_start_token = 5, .proof_end_token = 6, .cue = "actually", .category = .number }};
     try expectInvalidPlan("It is not 10, actually 12", &.{}, .{ .version = 2, .deletions = &exact_negated_backtrack, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
+    const uppercase_contraction_backtrack = [_]Deletion{.{ .start_token = 2, .end_token = 4, .source = "10 actually", .kind = .backtrack, .proof_start_token = 4, .proof_end_token = 5, .cue = "actually", .category = .number }};
+    try expectInvalidPlan("It ISN’T 10 actually 12", &.{}, .{ .version = 2, .deletions = &uppercase_contraction_backtrack, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
+    const without_backtrack = [_]Deletion{.{ .start_token = 1, .end_token = 3, .source = "10 actually", .kind = .backtrack, .proof_start_token = 3, .proof_end_token = 4, .cue = "actually", .category = .number }};
+    try expectInvalidPlan("without 10 actually 12", &.{}, .{ .version = 2, .deletions = &without_backtrack, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
     const exact_orthographic_change = [_]Correction{.{ .start_token = 0, .end_token = 1, .source = "never", .replacement = "newer", .kind = .orthographic }};
     try expectInvalidPlan("never change this", &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &exact_orthographic_change, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
 }

@@ -6,6 +6,7 @@ pub const Warning = enum { transformation_failed };
 pub const Success = struct {
     text: []u8,
     warning: ?Warning = null,
+    transformation_outcome: processing.TransformationOutcome,
 };
 
 pub const Outcome = union(enum) {
@@ -46,19 +47,20 @@ pub fn process(
     }
 
     const transformed_result = switch (profile) {
-        .verbatim => return .{ .success = .{ .text = raw } },
+        .verbatim => return .{ .success = .{ .text = raw, .transformation_outcome = .not_requested } },
         .clean => seam.clean(seam.context, allocator, raw),
         .polished, .legacy_v1 => seam.planner(seam.context, allocator, profile, raw),
     };
     if (transformed_result) |transformed| {
         validate(transformed, output_policy) catch {
             allocator.free(transformed);
-            return .{ .success = .{ .text = raw, .warning = .transformation_failed } };
+            return .{ .success = .{ .text = raw, .warning = .transformation_failed, .transformation_outcome = .failed } };
         };
+        const transformation_outcome: processing.TransformationOutcome = if (std.mem.eql(u8, raw, transformed)) .no_change else .changed;
         allocator.free(raw);
-        return .{ .success = .{ .text = transformed } };
+        return .{ .success = .{ .text = transformed, .transformation_outcome = transformation_outcome } };
     } else |_| {
-        return .{ .success = .{ .text = raw, .warning = .transformation_failed } };
+        return .{ .success = .{ .text = raw, .warning = .transformation_failed, .transformation_outcome = .failed } };
     }
 }
 
@@ -130,6 +132,7 @@ test "REST success is attempted exactly once" {
     defer freeOutcome(outcome);
     try std.testing.expectEqual(@as(usize, 1), fake.rest_calls);
     try std.testing.expectEqualStrings("raw", outcome.success.text);
+    try std.testing.expectEqual(processing.TransformationOutcome.not_requested, outcome.success.transformation_outcome);
 }
 
 test "stream success including empty never falls back to REST" {
@@ -161,6 +164,7 @@ test "all profiles route once and verbatim clean never invoke planner" {
     defer freeOutcome(cleaned);
     try std.testing.expectEqualStrings("clean", cleaned.success.text);
     try std.testing.expectEqual(@as(?Warning, null), cleaned.success.warning);
+    try std.testing.expectEqual(processing.TransformationOutcome.changed, cleaned.success.transformation_outcome);
     try std.testing.expectEqual(@as(usize, 1), fake.clean_calls);
     try std.testing.expectEqual(@as(usize, 0), fake.planner_calls);
 
@@ -181,12 +185,14 @@ test "all profiles route once and verbatim clean never invoke planner" {
     defer freeOutcome(clean_fallback);
     try std.testing.expectEqualStrings("raw", clean_fallback.success.text);
     try std.testing.expectEqual(Warning.transformation_failed, clean_fallback.success.warning.?);
+    try std.testing.expectEqual(processing.TransformationOutcome.failed, clean_fallback.success.transformation_outcome);
     try std.testing.expectEqual(@as(usize, 2), fake.planner_calls);
 
     const fallback = try process(std.testing.allocator, try owned("raw"), .polished, worker_policy, fake.seam());
     defer freeOutcome(fallback);
     try std.testing.expectEqualStrings("raw", fallback.success.text);
     try std.testing.expectEqual(Warning.transformation_failed, fallback.success.warning.?);
+    try std.testing.expectEqual(processing.TransformationOutcome.failed, fallback.success.transformation_outcome);
 
     fake.cleanup_error = null;
     fake.clean_text = "too long";
@@ -200,6 +206,14 @@ test "all profiles route once and verbatim clean never invoke planner" {
     defer freeOutcome(invalid_output);
     try std.testing.expectEqualStrings("raw", invalid_output.success.text);
     try std.testing.expectEqual(Warning.transformation_failed, invalid_output.success.warning.?);
+    try std.testing.expectEqual(processing.TransformationOutcome.failed, invalid_output.success.transformation_outcome);
+
+    fake.clean_text = "raw";
+    const no_change = try process(std.testing.allocator, try owned("raw"), .polished, worker_policy, fake.seam());
+    defer freeOutcome(no_change);
+    try std.testing.expectEqualStrings("raw", no_change.success.text);
+    try std.testing.expectEqual(@as(?Warning, null), no_change.success.warning);
+    try std.testing.expectEqual(processing.TransformationOutcome.no_change, no_change.success.transformation_outcome);
 }
 
 test "no speech and output bounds and UTF-8 are canonical" {

@@ -78,6 +78,7 @@ const ProviderContext = struct {
     stopped_at_awake_ms: i64,
     rest_latency_ms: u64 = 0,
     planner_latency_ms: ?u64 = null,
+    metrics_attempt_id: ?[]u8 = null,
 };
 
 fn providerRest(context_ptr: ?*anyopaque, gpa: Allocator) ![]u8 {
@@ -95,6 +96,7 @@ fn providerRest(context_ptr: ?*anyopaque, gpa: Allocator) ![]u8 {
         context.stopped_at_awake_ms,
     );
     context.rest_latency_ms = tracked.latency_ms;
+    context.metrics_attempt_id = tracked.metrics_attempt_id;
     d.log("REST STT in {d}ms ({d} bytes)", .{ tracked.latency_ms, tracked.transcript.len });
     return tracked.transcript;
 }
@@ -122,6 +124,16 @@ fn providerClean(context_ptr: ?*anyopaque, gpa: Allocator, raw: []const u8) ![]u
     const context: *ProviderContext = @ptrCast(@alignCast(context_ptr.?));
     context.daemon.setStage(.cleaning);
     return groq.clean(gpa, raw, context.daemon.cfg.stt.keyterms);
+}
+
+fn annotateProcessingMetrics(context: *ProviderContext, profile: config.processing.Profile, outcome: config.processing.TransformationOutcome) void {
+    const attempt_id = context.metrics_attempt_id orelse return;
+    const store = context.daemon.metrics_store orelse return;
+    store.annotateProcessing(context.daemon.gpa, context.daemon.io, attempt_id, .{
+        .processing_profile = profile,
+        .transformation_outcome = outcome,
+        .planner_latency_ms = context.planner_latency_ms,
+    }) catch {};
 }
 
 pub fn run(gpa: Allocator, io: Io, cfg: *config.Config, runtime: paths.Runtime, metrics_path: []const u8) !void {
@@ -676,7 +688,7 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
     var stt_attempted = false;
     var stt_latency_ms: u64 = 0;
     const processing_profile = if (job.raw) config.processing.Profile.verbatim else config.effectiveProcessingProfile(d.cfg);
-    var transformation_outcome: protocol.TransformationOutcome = .not_requested;
+    var transformation_outcome: config.processing.TransformationOutcome = .not_requested;
     var planner_latency_ms: ?u64 = null;
     var stream_session = job.stream;
     defer if (stream_session) |stream| stream.cancel();
@@ -750,6 +762,7 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
     completion_phase = .stt;
     stt_attempted = true;
     var maybe_transcript: ?[]u8 = null;
+    var stream_metrics_attempt_id: ?[]u8 = null;
     if (stream_session) |stream| {
         const stream_result = stream.finish();
         stream_session = null;
@@ -757,7 +770,7 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
             .success => |success| {
                 maybe_transcript = success.transcript;
                 stt_latency_ms = success.stop_to_final_ms;
-                metrics.recordCompletedTranscript(
+                stream_metrics_attempt_id = metrics.recordCompletedTranscript(
                     gpa,
                     io,
                     d.metrics_store,
@@ -798,7 +811,9 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
         .wav = wav,
         .audio_ms = @intFromFloat(seconds * 1000.0),
         .stopped_at_awake_ms = job.stopped_at_awake_ms,
+        .metrics_attempt_id = stream_metrics_attempt_id,
     };
+    defer if (provider_context.metrics_attempt_id) |attempt_id| gpa.free(attempt_id);
     const needs_rest = maybe_transcript == null;
     const transcript_owned = maybe_transcript;
     maybe_transcript = null;
@@ -822,20 +837,17 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
     const final = switch (outcome) {
         .no_speech => {
             completion_reason = "no_speech";
+            annotateProcessingMetrics(&provider_context, processing_profile, .not_requested);
             d.publishError("no_speech", "No speech detected");
             d.inform("SayAll", "No speech detected");
             return;
         },
         .success => |success| blk: {
-            transformation_outcome = if (processing_profile == .verbatim)
-                .not_requested
-            else if (success.warning != null)
-                .failed
-            else
-                .succeeded;
+            transformation_outcome = success.transformation_outcome;
             break :blk success.text;
         },
     };
+    annotateProcessingMetrics(&provider_context, processing_profile, transformation_outcome);
     defer gpa.free(final);
     completion_phase = .post_stt;
 

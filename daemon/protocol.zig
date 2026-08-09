@@ -89,7 +89,7 @@ pub const OutputCompleted = struct {
     method: []const u8,
 };
 pub const SessionPhase = enum { pre_stt, stt, post_stt };
-pub const TransformationOutcome = enum { not_requested, succeeded, failed };
+pub const TransformationOutcome = processing.TransformationOutcome;
 pub const SessionCompleted = struct {
     ok: bool,
     phase: SessionPhase,
@@ -304,4 +304,24 @@ test "shared golden request and envelopes remain v1 compatible" {
         } else return error.MissingKnownEventSchema;
     }
     try std.testing.expectEqual(@as(u64, 26), expected_seq);
+}
+
+test "session completion serializes explicit no-change processing outcome" {
+    const completed: SessionCompleted = .{
+        .ok = true,
+        .phase = .post_stt,
+        .reason = null,
+        .stt_attempted = true,
+        .latency_ms = 125,
+        .processing_profile = .polished,
+        .transformation_outcome = .no_change,
+        .planner_latency_ms = 40,
+    };
+    const json = try std.json.Stringify.valueAlloc(std.testing.allocator, completed, .{});
+    defer std.testing.allocator.free(json);
+    const parsed = try std.json.parseFromSlice(SessionCompleted, std.testing.allocator, json, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(processing.Profile.polished, parsed.value.processing_profile);
+    try std.testing.expectEqual(TransformationOutcome.no_change, parsed.value.transformation_outcome);
+    try std.testing.expectEqual(@as(?u64, 40), parsed.value.planner_latency_ms);
 }

@@ -25,6 +25,14 @@ pub const Profile = enum {
     }
 };
 
+/// Content-free result of applying a processing profile to a transcript.
+pub const TransformationOutcome = enum {
+    not_requested,
+    changed,
+    no_change,
+    failed,
+};
+
 pub const Config = struct {
     // Optional only so an omitted field can be distinguished from an explicit
     // verbatim choice while legacy llm.enabled is accepted for one cycle.
