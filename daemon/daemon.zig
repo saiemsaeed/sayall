@@ -789,7 +789,7 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
     const needs_rest = maybe_transcript == null;
     const transcript_owned = maybe_transcript;
     maybe_transcript = null;
-    const profile = if (job.raw) config.processing.Profile.verbatim else config.effectiveProcessingProfile(&d.cfg);
+    const profile = if (job.raw) config.processing.Profile.verbatim else config.effectiveProcessingProfile(d.cfg);
     const outcome = provider_processing.process(gpa, transcript_owned, profile, .{
         .max_bytes = null,
         .require_utf8 = false,
