@@ -51,6 +51,9 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(report["summary"]["safety_pass_rate"], 1.0)
         self.assertEqual(report["summary"]["cases"], len(cases))
         self.assertEqual(report["summary"]["results"], len(results))
+        self.assertTrue(report["qualification"]["adapter_integrity"])
+        self.assertTrue(report["qualification"]["passed"])
+        self.assertFalse(report["qualification"]["quality_thresholds_ratified"])
 
     def test_negative_preservation_is_exact(self):
         cases, digest = load_cases()
@@ -92,6 +95,7 @@ class ScoringTests(unittest.TestCase):
         for case_id in (values["id"], punctuation["id"]):
             scored = next(item for item in report["cases"] if item["case_id"] == case_id)
             self.assertIn("unsafe_output", scored["hard_violations"])
+            self.assertIsNone(scored["actual_output"])
 
     def test_safe_fallback_is_safety_pass_and_positive_miss(self):
         cases, digest = load_cases()
@@ -231,10 +235,43 @@ class ScoringTests(unittest.TestCase):
         invalid_case = dict(cases[0], mode=[])
         with self.assertRaises(ContractError):
             score([invalid_case], [], digest)
+        unknown_case = dict(cases[0], raw_provider_body="secret")
+        with self.assertRaises(ContractError):
+            score([unknown_case], [], digest)
+        unknown_safety = dict(cases[0], safety={**cases[0]["safety"], "api_key": "secret"})
+        with self.assertRaises(ContractError):
+            score([unknown_safety], [], digest)
+        gated = next(case for case in cases if case["id"] == "clean-filler-um")
+        wrong_gate = dict(gated, mode="polished")
+        with self.assertRaises(ContractError):
+            score([wrong_gate], [], digest)
         invalid_result = result(cases[0])
         invalid_result["schema_version"] = True
         with self.assertRaises(ContractError):
             score(cases, [invalid_result], digest)
+        unknown_result = result(cases[0])
+        unknown_result["raw_provider_body"] = "secret"
+        with self.assertRaises(ContractError):
+            score(cases, [unknown_result], digest)
+        stray_reason = result(cases[0])
+        stray_reason["fallback_reason"] = "provider_error"
+        with self.assertRaises(ContractError):
+            score(cases, [stray_reason], digest)
+
+    def test_enforced_cli_fails_a_deterministic_transformation_miss(self):
+        cases, results, _ = perfect_report()
+        target = next(case for case in cases if case["id"] == "clean-filler-um")
+        results[cases.index(target)] = result(target, output=target["input"])
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            result_path = root / "results.jsonl"
+            result_path.write_text("".join(json.dumps(item) + "\n" for item in results))
+            self.assertEqual(main(["--enforce-hard", "--results", str(result_path),
+                                   "--json", str(root / "report.json"),
+                                   "--markdown", str(root / "report.md")]), 1)
+            report = json.loads((root / "report.json").read_text())
+        self.assertFalse(report["qualification"]["deterministic_transformations"])
+        self.assertFalse(report["qualification"]["passed"])
 
     def test_malformed_compatible_baseline_is_not_compared(self):
         cases, results, baseline = perfect_report()

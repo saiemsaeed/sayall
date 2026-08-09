@@ -11,9 +11,10 @@ import pathlib
 import sys
 from collections import Counter, defaultdict
 
-SCORER_VERSION = "1.0.0"
+SCORER_VERSION = "1.1.0"
 MODES = {"verbatim", "clean", "polished"}
 OUTCOMES = {"applied", "safe_fallback", "unsafe_plan", "adapter_error"}
+DETERMINISTIC_TRANSFORMATION_GATES = {"clean-filler-um", "clean-url-path"}
 
 
 class ContractError(ValueError):
@@ -43,7 +44,7 @@ def validate_corpus(cases: list[dict]) -> None:
     for case in cases:
         required = {"schema_version", "corpus_id", "id", "mode", "category", "input",
                     "expected_output", "expectation", "safety"}
-        if not required <= case.keys():
+        if not required <= case.keys() or not set(case) <= required | {"scenario"}:
             raise ContractError(f"corpus case missing fields: {case.get('id', '<unknown>')}")
         if type(case["schema_version"]) is not int or case["schema_version"] != 1:
             raise ContractError("unsupported corpus schema version")
@@ -62,7 +63,8 @@ def validate_corpus(cases: list[dict]) -> None:
         safety = case["safety"]
         if (not isinstance(safety, dict) or type(safety.get("exact_preservation")) is not bool
                 or not isinstance(safety.get("protected_literals"), list)
-                or not all(isinstance(item, str) and item for item in safety["protected_literals"])):
+                or not all(isinstance(item, str) and item for item in safety["protected_literals"])
+                or not set(safety) <= {"exact_preservation", "protected_literals", "accepted_outputs"}):
             raise ContractError(f"invalid safety contract: {case['id']}")
         alternatives = safety.get("accepted_outputs", [])
         if not isinstance(alternatives, list) or not all(isinstance(item, str) for item in alternatives):
@@ -79,6 +81,9 @@ def validate_corpus(cases: list[dict]) -> None:
             {"type": "inject_plan_failure", "fault": "unsafe_plan", "expected_outcome": "safe_fallback"},
         ):
             raise ContractError(f"invalid fault-injection scenario: {case['id']}")
+        if case["id"] in DETERMINISTIC_TRANSFORMATION_GATES and (
+                case["mode"] != "clean" or case["expectation"] != "transform" or scenario is not None):
+            raise ContractError(f"deterministic transformation gate is not Clean: {case['id']}")
     if len(identities) != 1:
         raise ContractError("all corpus records must share one schema version and corpus id")
 
@@ -89,6 +94,9 @@ def validate_results(results: list[dict], case_ids: set[str]) -> dict[str, dict]
         required = {"schema_version", "case_id", "outcome", "output", "latency_ms", "adapter"}
         if not required <= result.keys():
             raise ContractError(f"result missing fields: {result.get('case_id', '<unknown>')}")
+        allowed = required | {"provider", "plan", "fallback_reason"}
+        if not set(result) <= allowed:
+            raise ContractError(f"result contains unknown fields: {result.get('case_id', '<unknown>')}")
         case_id = result["case_id"]
         if not isinstance(case_id, str) or case_id not in case_ids or case_id in indexed:
             raise ContractError(f"unknown or duplicate result case_id: {case_id!r}")
@@ -120,6 +128,8 @@ def validate_results(results: list[dict], case_ids: set[str]) -> dict[str, dict]
         if result["outcome"] == "safe_fallback" and result.get("fallback_reason") not in {
                 "malformed_plan", "unsafe_plan", "provider_error", "adapter_rejection"}:
             raise ContractError(f"safe fallback requires a closed fallback_reason: {case_id}")
+        if result["outcome"] != "safe_fallback" and "fallback_reason" in result:
+            raise ContractError(f"fallback_reason is only valid for safe fallback: {case_id}")
         indexed[case_id] = result
     return indexed
 
@@ -218,7 +228,7 @@ def score(cases: list[dict], results: list[dict], corpus_sha256: str,
                        "category": case["category"], "expectation": case["expectation"],
                        "scenario": case.get("scenario"),
                        "source": case["input"], "expected_output": case["expected_output"],
-                       "actual_output": output,
+                       "actual_output": output if output in safe_outputs else None,
                        "outcome": outcome, "safety_pass": safety_pass,
                        "hard_violations": violations, "expected_match": expected_match,
                        "latency_ms": None if result is None else result["latency_ms"],
@@ -255,6 +265,21 @@ def score(cases: list[dict], results: list[dict], corpus_sha256: str,
               "corpus": {"schema_version": identity[0], "id": identity[1],
                          "sha256": corpus_sha256},
               "summary": summary, "categories": categories, "cases": scored}
+    deterministic = [item for item in scored if item["case_id"] in DETERMINISTIC_TRANSFORMATION_GATES]
+    report["qualification"] = {
+        "policy": "initial-hard-gates-v1",
+        "quality_thresholds_ratified": False,
+        "adapter_integrity": summary["results"] == summary["cases"],
+        "hard_safety": summary["hard_safety_violations"] == 0,
+        "negative_preservation": summary["negative_preservation"]["rate"] == 1,
+        "deterministic_transformations": all(item["expected_match"] for item in deterministic)
+            and len(deterministic) == len(DETERMINISTIC_TRANSFORMATION_GATES),
+    }
+    report["qualification"]["passed"] = all(
+        report["qualification"][key]
+        for key in ("adapter_integrity", "hard_safety", "negative_preservation",
+                    "deterministic_transformations")
+    )
     report["baseline"] = compare_baseline(report, baseline)
     return report
 
@@ -343,6 +368,8 @@ def markdown_report(report: dict) -> str:
              f"| Negative preservation | {summary['negative_preservation']['passed']}/{summary['negative_preservation']['total']} ({percent(summary['negative_preservation']['rate'])}) |",
              f"| Positive transformations | {summary['positive_transformations']['passed']}/{summary['positive_transformations']['total']} ({percent(summary['positive_transformations']['rate'])}) |",
              f"| Latency p50 / p95 / p99 | {summary['latency_ms']['p50']} / {summary['latency_ms']['p95']} / {summary['latency_ms']['p99']} ms |",
+             f"| Initial hard-gate qualification | {'PASS' if report['qualification']['passed'] else 'FAIL'} |",
+             "", "> Positive Polished quality and latency thresholds are not yet ratified and are reported as evidence only. Releases currently block on adapter integrity, hard safety, exact negative preservation, and deterministic Clean transformations.",
              "", "## Categories", "", "| Category | Cases | Safety | Expected match |",
              "| --- | ---: | ---: | ---: |"]
     for name, values in report["categories"].items():
@@ -377,6 +404,7 @@ def main(argv=None) -> int:
     parser.add_argument("--baseline", type=pathlib.Path)
     parser.add_argument("--json", type=pathlib.Path, required=True)
     parser.add_argument("--markdown", type=pathlib.Path, required=True)
+    parser.add_argument("--enforce-hard", action="store_true")
     args = parser.parse_args(argv)
     cases, corpus_sha = read_jsonl(args.corpus)
     results, _ = read_jsonl(args.results)
@@ -384,7 +412,7 @@ def main(argv=None) -> int:
     report = score(cases, results, corpus_sha, baseline)
     args.json.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     args.markdown.write_text(markdown_report(report))
-    return 0
+    return 1 if args.enforce_hard and not report["qualification"]["passed"] else 0
 
 
 if __name__ == "__main__":

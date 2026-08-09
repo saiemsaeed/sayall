@@ -1,9 +1,10 @@
-# Transformation benchmark foundation
+# Production transformation benchmark
 
 This directory contains a privacy-safe, synthetic benchmark for Feature Set A
-text modes. It is intentionally independent of production Zig APIs, provider
-prompts, provider schemas, and live Groq. Version 1 is a deterministic corpus
-and scorer contract, not a release gate.
+text modes. The versioned corpus and scorer remain independent contracts;
+`adapter.py` and the test-only Zig case runner connect them to the production
+`groq.clean` and `groq.polished` APIs without introducing a second
+transformation implementation.
 
 ## Corpus contract (`corpus-v1.jsonl`)
 
@@ -33,10 +34,10 @@ credential is present.
 
 ## Adapter result contract (JSONL)
 
-A later production adapter writes one object per attempted corpus case:
+The production adapter writes one object per attempted corpus case:
 
 ```json
-{"schema_version":1,"case_id":"clean-filler-um","outcome":"applied","output":"Please send the synthetic report.","latency_ms":18.4,"adapter":{"name":"reference-adapter","version":"dev"},"provider":{"name":"groq","model":"configured-model"},"plan":{"schema_version":1,"operations":[]}}
+{"schema_version":1,"case_id":"clean-filler-um","outcome":"applied","output":"please send the synthetic report.","latency_ms":18.4,"adapter":{"name":"sayall-production-transformation","version":"dev"},"provider":{"name":"none","model":"production-deterministic"},"plan":null}
 ```
 
 Required fields are `schema_version`, `case_id`, `outcome`, `output`,
@@ -52,6 +53,8 @@ evidence fields are rejected so credentials, raw provider bodies, and headers
 cannot flow into reports. `unsafe_plan` and `adapter_error` outcomes require a
 null output.
 
+The top-level result object is closed to the documented required fields plus
+`fallback_reason`, `provider`, and `plan`; unknown fields are rejected.
 `outcome` is one of:
 
 - `applied`: `output` is the accepted transformed text.
@@ -67,10 +70,38 @@ malformed contract fields are rejected rather than silently scored.
 
 Plan-safety cases declare `scenario.type: inject_plan_failure`, a fault of
 `malformed_plan` or `unsafe_plan`, and `expected_outcome: safe_fallback`. The
-future adapter must inject the named synthetic plan-validation outcome after
-model transport, without relying on a provider to emit a particular malformed
-response. Returning anything except a source-exact fallback is a hard scenario
-failure.
+adapter invokes the real mode API first, then injects the named failure at its
+boundary without relying on a provider to emit a particular malformed
+response. This remains deterministic when no live key is available. Returning
+anything except a source-exact fallback is a hard scenario failure.
+
+## Production adapter
+
+Build and run locally:
+
+```sh
+zig build transformation-benchmark-case -Doptimize=ReleaseSafe
+python3 tests/transformation_benchmark/adapter.py \
+  --adapter-version "$(git rev-parse HEAD)" \
+  --output transformation-results.jsonl
+python3 tests/transformation_benchmark/scorer.py --enforce-hard \
+  --results transformation-results.jsonl \
+  --json transformation-report.json \
+  --markdown transformation-report.md
+```
+
+Set `GROQ_API_KEY` to exercise Polished live. Every Polished corpus case invokes
+exactly one `groq.polished` call. Verbatim and Clean always use their production
+deterministic paths and never receive the key. The adapter defaults to four
+case processes and a 45-second per-case deadline; `--concurrency` and
+`--timeout` may lower or raise those explicit bounds.
+
+The process supervisor discards stderr and accepts only a closed response from
+the case runner. It emits provider name/model, adapter name/version, synthetic
+source-derived output, latency, and optional benchmark-owned evidence. The
+production API does not expose its validated plan, so `plan` is null rather
+than copying or reparsing a raw provider body. Credentials, headers, provider
+bodies, and error text are never written to results or reports.
 
 ## Scoring and reports
 
@@ -90,19 +121,35 @@ JSON includes category rates and per-case synthetic source, reference, actual
 output, provider/model, adapter, and edit-plan evidence. Markdown summarizes the
 same report and lists all safety failures and expected-output misses.
 
-## Later production and live-job integration
+## Workflow and release qualification
 
-The production adapter should live with the future transformation API. It will
-map each corpus record to that API's mode/input, time only the transformation
-operation, and project the returned output and validated plan into the result
-contract above. It must redact credentials and provider bodies and must never
-persist real dictation. A manually dispatched, non-release-blocking workflow
-can then follow the Deepgram pattern: pin the exact benchmark SHA, run unit
-tests, execute the adapter with repository secrets, download a prior compatible
-report, render JSON/Markdown, and retain privacy-safe artifacts. Do not add that
-job until the production API and plan validator have merged.
+`transformation-benchmark.yml` is manually dispatchable against any selected
+ref and reusable by the release workflow. A release passes its exact
+`github.sha`, so checkout, adapter identity, tests, and evidence all bind to the
+release source. The workflow runs unit tests, downloads the newest retained
+compatible report when available, runs the adapter, renders JSON and Markdown,
+and uploads result JSONL plus both reports for 30 days. A missing live Groq
+secret produces source-exact Polished fallbacks while deterministic coverage
+still runs; add the `GROQ_API_KEY` repository secret for live Polished evidence.
 
-Proposed initial release thresholds, to ratify with repeated live evidence:
+The initially enforced release policy is deliberately narrower than the
+proposed quality policy:
+
+- valid, complete closed adapter results;
+- zero hard-safety violations across all cases;
+- exactly 100% negative preservation; and
+- exact accepted output for the deterministic Clean transformation gates
+  (`clean-filler-um` and `clean-url-path`).
+
+Polished uses exactly the live production source-anchored API when a secret is
+available, but provider quality and latency vary and have not been ratified.
+Positive quality, category rates, latency, and compatible-baseline deltas are
+therefore artifact evidence only and do not block a release. The JSON report
+records `quality_thresholds_ratified: false`, and Markdown states the same
+policy. This is intentional and must not be replaced by an artificial green
+threshold.
+
+Candidate future thresholds, to ratify with repeated live evidence:
 
 - hard-safety violations: exactly `0`;
 - negative preservation rate: exactly `100%`;
@@ -114,6 +161,5 @@ Proposed initial release thresholds, to ratify with repeated live evidence:
 - latency: p95 no more than `2,000 ms` and no more than `25%` plus `100 ms`
   above a compatible baseline.
 
-Until live variance is measured over repeated runs and platform end-to-end
-evidence is connected, these are proposals only and this benchmark must not be
-wired into the release workflow.
+Until repeated live runs establish variance, the candidate positive quality,
+regression, and latency thresholds remain non-blocking.

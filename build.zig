@@ -53,6 +53,26 @@ pub fn build(b: *std.Build) void {
     const install_process = b.addInstallArtifact(process_exe, .{});
     const process_step = b.step("process", "Build the per-recording streaming and batch helper");
     process_step.dependOn(&install_process.step);
+    const transformation_benchmark_module = b.createModule(.{
+        .root_source_file = b.path("daemon/transformation_benchmark_case.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const transformation_benchmark_exe = b.addExecutable(.{
+        .name = "sayall-transformation-benchmark-case",
+        .root_module = transformation_benchmark_module,
+    });
+    const install_transformation_benchmark = b.addInstallArtifact(transformation_benchmark_exe, .{});
+    const transformation_benchmark_step = b.step(
+        "transformation-benchmark-case",
+        "Build the synthetic production transformation benchmark case runner",
+    );
+    transformation_benchmark_step.dependOn(&install_transformation_benchmark.step);
+    const transformation_benchmark_tests = b.addTest(.{ .root_module = transformation_benchmark_module });
+    if (target.query.isNative())
+        transformation_benchmark_step.dependOn(&b.addRunArtifact(transformation_benchmark_tests).step)
+    else
+        transformation_benchmark_step.dependOn(&transformation_benchmark_tests.step);
     const batch_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("daemon/batch.zig"),
         .target = target,
