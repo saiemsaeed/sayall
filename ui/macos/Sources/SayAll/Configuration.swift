@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 enum OutputMethod: String, Equatable {
     case type, clipboard, paste
@@ -20,7 +21,7 @@ struct ProviderSettings: Equatable {
     let groqAPIKey: String
     let groqModel: String
     let groqBaseURL: String
-    let cleanupEnabled: Bool
+    let processingProfile: ProcessingProfile
     let showTimer: Bool
     let outputMethod: OutputMethod
     let trailingSpace: Bool
@@ -29,7 +30,8 @@ struct ProviderSettings: Equatable {
 }
 
 enum ConfigurationError: Error, Equatable {
-    case missing, oversized, malformed, missingDeepgramKey, invalidProvider, invalidOutputMethod, invalidMetrics, invalidSecret
+    case missing, oversized, malformed, missingDeepgramKey, invalidProvider, invalidProcessingMode
+    case invalidOutputMethod, invalidMetrics, invalidSecret, writeFailed
 }
 
 struct ConfigurationLoader {
@@ -65,8 +67,65 @@ struct ConfigurationLoader {
             }
             document = decoded
         } else {
-            document = Document(stt: nil, llm: nil, output: nil, metrics: nil, hud: nil)
+            document = Document(stt: nil, llm: nil, processing: nil, output: nil, metrics: nil, hud: nil)
         }
+        return try settings(from: document)
+    }
+
+    func setProcessingMode(_ mode: ProcessingMode) throws {
+        let original = try mutationSourceBytes()
+        let object: [String: Any]
+        if let original {
+            guard let decoded = try? JSONSerialization.jsonObject(with: original) as? [String: Any] else {
+                throw ConfigurationError.malformed
+            }
+            object = decoded
+        } else {
+            object = [:]
+        }
+        var updated = object
+        var processing = updated["processing"] as? [String: Any] ?? [:]
+        processing["mode"] = mode.rawValue
+        updated["processing"] = processing
+        guard JSONSerialization.isValidJSONObject(updated),
+              let data = try? JSONSerialization.data(withJSONObject: updated, options: [.prettyPrinted, .sortedKeys]),
+              data.count <= Self.maximumBytes,
+              let stagedDocument = try? JSONDecoder().decode(Document.self, from: data) else {
+            throw ConfigurationError.malformed
+        }
+        _ = try settings(from: stagedDocument)
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let temporary = url.deletingLastPathComponent()
+                .appendingPathComponent(".config.json.\(UUID().uuidString).tmp")
+            let descriptor = Darwin.open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+            guard descriptor >= 0 else { throw ConfigurationError.writeFailed }
+            var published = false
+            defer {
+                Darwin.close(descriptor)
+                if !published { try? FileManager.default.removeItem(at: temporary) }
+            }
+            try data.withUnsafeBytes { rawBuffer in
+                guard let base = rawBuffer.baseAddress else { return }
+                var written = 0
+                while written < rawBuffer.count {
+                    let result = Darwin.write(descriptor, base.advanced(by: written), rawBuffer.count - written)
+                    guard result > 0 else { throw ConfigurationError.writeFailed }
+                    written += result
+                }
+            }
+            guard Darwin.fsync(descriptor) == 0,
+                  try mutationSourceBytes() == original,
+                  Darwin.rename(temporary.path, url.path) == 0 else { throw ConfigurationError.writeFailed }
+            published = true
+        } catch {
+            if let configurationError = error as? ConfigurationError { throw configurationError }
+            throw ConfigurationError.writeFailed
+        }
+    }
+
+    private func settings(from document: Document) throws -> ProviderSettings {
         let deepgram = resolve(document.stt?.apiKey, override: "DEEPGRAM_API_KEY")
         let groq = resolve(document.llm?.apiKey, override: "GROQ_API_KEY")
         let model = document.stt?.model ?? "nova-3"
@@ -77,6 +136,19 @@ struct ConfigurationLoader {
         let finalizeTimeout = document.stt?.streamFinalizeTimeoutMs ?? 2_000
         let groqModel = document.llm?.model ?? "openai/gpt-oss-20b"
         let groqBaseURL = document.llm?.baseURL ?? "https://api.groq.com/openai/v1/chat/completions"
+        let configuredMode: ProcessingMode?
+        if let rawMode = document.processing?.mode {
+            guard let mode = ProcessingMode(rawValue: rawMode) else { throw ConfigurationError.invalidProcessingMode }
+            configuredMode = mode
+        } else {
+            configuredMode = nil
+        }
+        let processingProfile: ProcessingProfile
+        if let mode = configuredMode {
+            processingProfile = ProcessingProfile(rawValue: mode.rawValue)!
+        } else {
+            processingProfile = document.llm?.enabled == true ? .legacyV1 : .verbatim
+        }
         guard let outputMethod = OutputMethod(rawValue: document.output?.method ?? "type") else {
             throw ConfigurationError.invalidOutputMethod
         }
@@ -111,13 +183,31 @@ struct ConfigurationLoader {
             groqAPIKey: groq,
             groqModel: groqModel,
             groqBaseURL: groqBaseURL,
-            cleanupEnabled: (document.llm?.enabled ?? false) && !groq.isEmpty,
+            processingProfile: processingProfile,
             showTimer: document.hud?.showTimer ?? true,
             outputMethod: outputMethod,
             trailingSpace: document.output?.trailingSpace ?? true,
             metricsEnabled: document.metrics?.enabled ?? true,
             metricsHistoryMaxEntries: document.metrics?.historyMaxEntries ?? 1_000
         )
+    }
+
+    private func mutationSourceBytes() throws -> Data? {
+        let descriptor = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW)
+        if descriptor < 0 {
+            if errno == ENOENT { return nil }
+            throw ConfigurationError.writeFailed
+        }
+        var status = stat()
+        guard Darwin.fstat(descriptor, &status) == 0, (status.st_mode & S_IFMT) == S_IFREG else {
+            Darwin.close(descriptor)
+            throw ConfigurationError.writeFailed
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        guard let data = try? handle.readToEnd(), data.count <= Self.maximumBytes else {
+            throw ConfigurationError.malformed
+        }
+        return data
     }
 
     private func loadKeyterms(fallback: [String]) throws -> [String] {
@@ -174,9 +264,14 @@ struct ConfigurationLoader {
     private struct Document: Decodable {
         let stt: STT?
         let llm: LLM?
+        let processing: Processing?
         let output: Output?
         let metrics: Metrics?
         let hud: HUD?
+    }
+
+    private struct Processing: Decodable {
+        let mode: String?
     }
 
     private struct STT: Decodable {

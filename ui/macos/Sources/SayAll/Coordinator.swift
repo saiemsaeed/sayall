@@ -28,6 +28,7 @@ final class Coordinator {
     private(set) var message = "Ready — Control+/ to start"
     private(set) var audioLevel = 0.0
     private(set) var showTimer = true
+    private(set) var configurationRevision = 0
     private var machine = StateMachine()
     private let capture = AudioCapture()
     private var beginTask: Task<Void, Never>?, task: Task<Void, Never>?
@@ -40,10 +41,13 @@ final class Coordinator {
     private let startupMetrics = StartupMetricsStore()
     private let configuration: ConfigurationLoader
     private let changed: () -> Void
+    private let configurationAvailabilityChanged: () -> Void
 
-    init(configuration: ConfigurationLoader, changed: @escaping () -> Void) {
+    init(configuration: ConfigurationLoader, changed: @escaping () -> Void,
+         configurationAvailabilityChanged: @escaping () -> Void = {}) {
         self.configuration = configuration
         self.changed = changed
+        self.configurationAvailabilityChanged = configurationAvailabilityChanged
         capture.levelHandler = { [weak self] level in
             DispatchQueue.main.async {
                 guard let self, self.state == .recording else { return }
@@ -71,6 +75,7 @@ final class Coordinator {
             let started = DispatchTime.now().uptimeNanoseconds
             let id = UUID()
             operationID = id
+            configurationAvailabilityChanged()
             deliveryTarget = nil
             startupTiming = StartupTiming(source: source, started: started)
             let phaseStarted = DispatchTime.now().uptimeNanoseconds
@@ -108,6 +113,11 @@ final class Coordinator {
         }
     }
     var controlState: String { hostControlState.rawValue }
+    var canChangeConfiguration: Bool { state == .idle && operationID == nil }
+    var configuredProcessingMode: ProcessingMode? {
+        try? configuration.load().processingProfile.userMode
+    }
+    var operationProcessingProfile: ProcessingProfile? { operationConfig?.processingProfile }
 
     func takePendingWarning() -> String? {
         defer { pendingWarning = nil }
@@ -126,6 +136,7 @@ final class Coordinator {
             do {
                 _ = try configuration.load()
                 message = "Configuration reloaded"
+                configurationRevision += 1
                 changed()
                 return ControlResponse(ok: true, state: controlState)
             } catch {
@@ -142,6 +153,18 @@ final class Coordinator {
             }
             trigger(source: .control)
             return ControlResponse(ok: true, state: controlState)
+        }
+    }
+    func selectProcessingMode(_ mode: ProcessingMode) -> String? {
+        guard canChangeConfiguration else { return "Finish the current dictation before changing modes." }
+        do {
+            try configuration.setProcessingMode(mode)
+            message = "\(mode.title) mode selected for the next dictation"
+            configurationRevision += 1
+            changed()
+            return nil
+        } catch {
+            return Self.message(for: error, path: configuration.url.path)
         }
     }
     private func set(_ next: DictationState, _ message: String) {
@@ -228,15 +251,8 @@ final class Coordinator {
             if config.streamingEnabled {
                 phaseStarted = DispatchTime.now().uptimeNanoseconds
                 session = try await helper.launchStreaming(
-                    StreamingHelperRequest(version: ProcessingProtocol.version, wavPath: recording.wavURL.path, pcmPath: recording.pcmURL.path,
-                        deepgramAPIKey: config.deepgramAPIKey, deepgramModel: config.deepgramModel,
-                        deepgramLanguage: config.deepgramLanguage, deepgramRegion: config.deepgramRegion,
-                        deepgramKeyterms: config.deepgramKeyterms,
-                        smartFormat: config.smartFormat, punctuate: config.punctuate,
-                        dictation: config.dictation, numerals: config.numerals, measurements: config.measurements,
-                        streamFinalizeTimeoutMs: config.streamFinalizeTimeoutMs,
-                        groqAPIKey: config.groqAPIKey, groqModel: config.groqModel,
-                        groqBaseURL: config.groqBaseURL, cleanupEnabled: config.cleanupEnabled),
+                    Self.streamingRequest(config: config, wavPath: recording.wavURL.path,
+                        pcmPath: recording.pcmURL.path),
                     compatibility: compatibility)
                 startupTiming?.streamReadyMs = Self.elapsedMilliseconds(since: phaseStarted)
             }
@@ -299,13 +315,7 @@ final class Coordinator {
                 finish(id, as: .error, message: "SayAll configuration is unavailable")
                 return
             }
-            let request = HelperRequest(version: ProcessingProtocol.version, wavPath: recording.wavURL.path, deepgramAPIKey: config.deepgramAPIKey,
-                deepgramModel: config.deepgramModel, deepgramLanguage: config.deepgramLanguage,
-                deepgramRegion: config.deepgramRegion, deepgramKeyterms: config.deepgramKeyterms,
-                smartFormat: config.smartFormat, punctuate: config.punctuate,
-                dictation: config.dictation, numerals: config.numerals, measurements: config.measurements,
-                groqAPIKey: config.groqAPIKey, groqModel: config.groqModel,
-                groqBaseURL: config.groqBaseURL, cleanupEnabled: config.cleanupEnabled)
+            let request = Self.batchRequest(config: config, wavPath: recording.wavURL.path)
             do {
                 let helperURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/sayall-process")
                 let result: HelperResult
@@ -331,9 +341,7 @@ final class Coordinator {
                 set(.delivering, "Delivering transcript…")
                 let deliveredText = config.trailingSpace ? text + " " : text
                 let delivery = TextDelivery.deliver(deliveredText, method: config.outputMethod, to: deliveryTarget)
-                if result.warning == "cleanup_failed" {
-                    pendingWarning = "Groq cleanup failed; used the raw transcript."
-                }
+                pendingWarning = Self.warningMessage(for: result.warning)
                 switch delivery {
                 case .typeCommandPosted, .pasteCommandPosted:
                     completeAndHide(id)
@@ -362,6 +370,7 @@ final class Coordinator {
         let session = streamSession
         if hadOperation && (state == .idle || state == .starting) { persistStartup(outcome: "cancelled") }
         operationID = nil
+        if hadOperation { configurationAvailabilityChanged() }
         operationConfig = nil
         deliveryTarget = nil
         maximumTimer?.invalidate()
@@ -459,6 +468,33 @@ final class Coordinator {
         return remaining
     }
 
+    nonisolated static func warningMessage(for warning: String?) -> String? {
+        warning == "transformation_failed" ? "Transformation failed; used the raw transcript." : nil
+    }
+
+    nonisolated static func batchRequest(config: ProviderSettings, wavPath: String) -> HelperRequest {
+        HelperRequest(version: ProcessingProtocol.version, wavPath: wavPath, deepgramAPIKey: config.deepgramAPIKey,
+            deepgramModel: config.deepgramModel, deepgramLanguage: config.deepgramLanguage,
+            deepgramRegion: config.deepgramRegion, deepgramKeyterms: config.deepgramKeyterms,
+            smartFormat: config.smartFormat, punctuate: config.punctuate,
+            dictation: config.dictation, numerals: config.numerals, measurements: config.measurements,
+            groqAPIKey: config.groqAPIKey, groqModel: config.groqModel,
+            groqBaseURL: config.groqBaseURL, processingProfile: config.processingProfile)
+    }
+
+    nonisolated static func streamingRequest(config: ProviderSettings, wavPath: String,
+                                              pcmPath: String) -> StreamingHelperRequest {
+        StreamingHelperRequest(version: ProcessingProtocol.version, wavPath: wavPath, pcmPath: pcmPath,
+            deepgramAPIKey: config.deepgramAPIKey, deepgramModel: config.deepgramModel,
+            deepgramLanguage: config.deepgramLanguage, deepgramRegion: config.deepgramRegion,
+            deepgramKeyterms: config.deepgramKeyterms,
+            smartFormat: config.smartFormat, punctuate: config.punctuate,
+            dictation: config.dictation, numerals: config.numerals, measurements: config.measurements,
+            streamFinalizeTimeoutMs: config.streamFinalizeTimeoutMs,
+            groqAPIKey: config.groqAPIKey, groqModel: config.groqModel,
+            groqBaseURL: config.groqBaseURL, processingProfile: config.processingProfile)
+    }
+
     private static func message(for error: Error, path: String) -> String {
         switch error as? ConfigurationError {
         case .missing: return "Create \(path) with stt.api_key"
@@ -466,9 +502,11 @@ final class Coordinator {
         case .malformed: return "SayAll config.json is not valid JSON"
         case .missingDeepgramKey: return "Set stt.api_key or DEEPGRAM_API_KEY in \(path)"
         case .invalidProvider: return "Use a valid stt.model, stt.language, and global/eu/au region"
+        case .invalidProcessingMode: return "Set processing.mode to verbatim, clean, or polished"
         case .invalidOutputMethod: return "Set output.method to type, paste, or clipboard"
         case .invalidMetrics: return "Set metrics.history_max_entries between 0 and 100000"
         case .invalidSecret: return "Provider API keys cannot contain whitespace"
+        case .writeFailed: return "Could not safely update \(path)"
         case nil: return "Could not load SayAll config.json"
         }
     }

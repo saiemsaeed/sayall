@@ -135,6 +135,30 @@ final class CoordinatorControlTests: XCTestCase {
         XCTAssertTrue(busy.error?.hasPrefix("busy: ") == true)
         coordinator.cancel()
     }
+
+    @MainActor
+    func testActiveSessionKeepsItsSnapshottedModeAndRejectsModeChanges() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let loader = ConfigurationLoader(environment: [:], homeDirectory: home)
+        try FileManager.default.createDirectory(at: loader.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"stt":{"api_key":"key"},"processing":{"mode":"clean"},"output":{"method":"clipboard"},"metrics":{"enabled":false}}"#.utf8)
+            .write(to: loader.url)
+        var availabilityChanges = 0
+        let coordinator = Coordinator(configuration: loader, changed: {},
+            configurationAvailabilityChanged: { availabilityChanges += 1 })
+
+        coordinator.trigger(source: .menu)
+        XCTAssertEqual(availabilityChanges, 1)
+        XCTAssertEqual(coordinator.operationProcessingProfile, .clean)
+        XCTAssertNotNil(coordinator.selectProcessingMode(.polished))
+        XCTAssertEqual(coordinator.operationProcessingProfile, .clean)
+        XCTAssertEqual(try loader.load().processingProfile, .clean)
+        XCTAssertFalse(coordinator.handleControl(.reload).ok)
+        coordinator.cancel()
+        XCTAssertEqual(availabilityChanges, 2)
+        XCTAssertTrue(coordinator.canChangeConfiguration)
+    }
 }
 
 final class StateMachineTests: XCTestCase {
@@ -734,24 +758,43 @@ final class AudioCaptureConversionTests: XCTestCase {
 
 final class HelperDecoderTests: XCTestCase {
     func testSuccessAndNoSpeechDecode() throws {
-        XCTAssertEqual(try HelperDecoder.decode(Data(#"{"version":2,"status":"success","text":"hello"}"#.utf8)).text, "hello")
-        XCTAssertEqual(try HelperDecoder.decode(Data(#"{"version":2,"status":"no_speech"}"#.utf8)).status, .noSpeech)
+        let success = try HelperDecoder.decode(Data(#"{"version":3,"status":"success","text":"hello","processing_profile":"clean","transport":"rest"}"#.utf8))
+        XCTAssertEqual(success.text, "hello")
+        XCTAssertEqual(success.processingProfile, .clean)
+        XCTAssertEqual(success.transport, .rest)
+        XCTAssertEqual(try HelperDecoder.decode(Data(#"{"version":3,"status":"no_speech","processing_profile":"verbatim","transport":"stream"}"#.utf8)).status, .noSpeech)
     }
     func testStableErrorMapping() {
-        XCTAssertThrowsError(try HelperDecoder.decode(Data(#"{"version":2,"status":"error","error":"network"}"#.utf8))) { XCTAssertEqual($0 as? HelperFailure, .unsuccessful("network")) }
+        XCTAssertThrowsError(try HelperDecoder.decode(Data(#"{"version":3,"status":"error","error":"network","processing_profile":"polished","transport":"rest"}"#.utf8))) { XCTAssertEqual($0 as? HelperFailure, .unsuccessful("network")) }
+        XCTAssertThrowsError(try HelperDecoder.decode(Data(#"{"version":2,"status":"success","text":"old","processing_profile":"clean","transport":"rest"}"#.utf8))) { XCTAssertEqual($0 as? HelperFailure, .unsupportedVersion) }
+        XCTAssertThrowsError(try HelperDecoder.decode(Data(#"{"version":3,"status":"success","text":"missing fields"}"#.utf8))) { XCTAssertEqual($0 as? HelperFailure, .malformedOutput) }
+        XCTAssertThrowsError(try HelperDecoder.decode(Data(#"{"version":3,"status":"success","text":"hello","warning":"future","processing_profile":"clean","transport":"rest"}"#.utf8))) { XCTAssertEqual($0 as? HelperFailure, .malformedOutput) }
+        XCTAssertThrowsError(try HelperDecoder.decode(Data(#"{"version":3,"status":"no_speech","text":"unexpected","processing_profile":"clean","transport":"rest"}"#.utf8))) { XCTAssertEqual($0 as? HelperFailure, .malformedOutput) }
         XCTAssertThrowsError(try HelperDecoder.decode(Data("nope".utf8))) { XCTAssertEqual($0 as? HelperFailure, .malformedOutput) }
         XCTAssertThrowsError(try HelperDecoder.decode(Data(repeating: 0, count: HelperDecoder.maximumOutputBytes + 1))) { XCTAssertEqual($0 as? HelperFailure, .oversizedOutput) }
     }
 
     func testStreamingDecoderRequiresReadyAndTerminalFrames() throws {
-        let ready = try StreamingHelperDecoder.decodeReady(Data(#"{"version":2,"event":"ready","streaming":true}"#.utf8))
+        let ready = try StreamingHelperDecoder.decodeReady(Data(#"{"version":3,"event":"ready","streaming":true}"#.utf8))
         XCTAssertTrue(ready.streaming)
-        let rest = try StreamingHelperDecoder.decodeReady(Data(#"{"version":2,"event":"ready","streaming":false}"#.utf8))
+        let rest = try StreamingHelperDecoder.decodeReady(Data(#"{"version":3,"event":"ready","streaming":false}"#.utf8))
         XCTAssertFalse(rest.streaming)
-        XCTAssertEqual(try StreamingHelperDecoder.decode(Data(#"{"version":2,"status":"success","text":"hello"}"#.utf8)).text, "hello")
+        XCTAssertEqual(try StreamingHelperDecoder.decode(Data(#"{"version":3,"status":"success","text":"hello","processing_profile":"polished","transport":"stream"}"#.utf8)).text, "hello")
         XCTAssertThrowsError(try StreamingHelperDecoder.decodeReady(Data("{}".utf8)))
-        XCTAssertThrowsError(try StreamingHelperDecoder.decodeReady(Data(#"{"version":1,"event":"ready","streaming":true}"#.utf8)))
+        XCTAssertThrowsError(try StreamingHelperDecoder.decodeReady(Data(#"{"version":2,"event":"ready","streaming":true}"#.utf8)))
         XCTAssertThrowsError(try StreamingHelperDecoder.decodeReady(Data(repeating: 0, count: StreamingHelperDecoder.maximumReadyBytes + 1)))
+    }
+
+    func testRequestsEncodeRequiredProcessingProfileWithoutLegacyCleanupFlag() throws {
+        let request = HelperRequest(version: ProcessingProtocol.version, wavPath: "/tmp/audio.wav", deepgramAPIKey: "key",
+            deepgramModel: "nova-3", deepgramLanguage: "en", deepgramRegion: "global", deepgramKeyterms: [],
+            smartFormat: false, punctuate: false, dictation: false, numerals: false, measurements: false,
+            groqAPIKey: "", groqModel: "openai/gpt-oss-20b",
+            groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", processingProfile: .clean)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any])
+        XCTAssertEqual(object["version"] as? Int, 3)
+        XCTAssertEqual(object["processing_profile"] as? String, "clean")
+        XCTAssertNil(object["cleanup_enabled"])
     }
 }
 
@@ -799,7 +842,7 @@ final class HelperRunnerTests: XCTestCase {
 int main(void) {
     signal(SIGTERM, SIG_IGN);
     usleep(700000);
-    fputs("{\"protocol_version\":2,\"build_version\":\"test-build\"}\n", stdout);
+    fputs("{\"protocol_version\":3,\"build_version\":\"test-build\"}\n", stdout);
     fflush(stdout);
     sleep(3);
     return 0;
@@ -840,7 +883,7 @@ extern char **environ;
 int main(void) {
     if (environ[0] != NULL) return 4;
     while (getchar() != EOF) {}
-    fputs("{\"version\":2,\"status\":\"success\",\"text\":\"ok\"}", stdout);
+    fputs("{\"version\":3,\"status\":\"success\",\"text\":\"ok\",\"processing_profile\":\"clean\",\"transport\":\"rest\"}", stdout);
     return 0;
 }
 """#.utf8).write(to: source)
@@ -867,10 +910,10 @@ int main(int argc, char **argv) {
     char line[65536];
     if (environ[0] != NULL) return 4;
     if (argc != 2 || strcmp(argv[1], "--stream") != 0 || !fgets(line, sizeof(line), stdin)) return 2;
-    fputs("{\"version\":2,\"event\":\"ready\",\"streaming\":true}\n", stdout);
+    fputs("{\"version\":3,\"event\":\"ready\",\"streaming\":true}\n", stdout);
     fflush(stdout);
     if (!fgets(line, sizeof(line), stdin) || !strstr(line, "\"command\":\"finish\"")) return 3;
-    fputs("{\"version\":2,\"status\":\"success\",\"text\":\"streamed\"}\n", stdout);
+    fputs("{\"version\":3,\"status\":\"success\",\"text\":\"streamed\",\"processing_profile\":\"clean\",\"transport\":\"stream\"}\n", stdout);
     return 0;
 }
 """#.utf8).write(to: source)
@@ -892,9 +935,9 @@ int main(int argc, char **argv) {
 int main(void) {
     char line[65536];
     if (!fgets(line, sizeof(line), stdin)) return 2;
-    fputs("{\"version\":2,\"event\":\"ready\",\"streaming\":true}\n", stdout); fflush(stdout);
+    fputs("{\"version\":3,\"event\":\"ready\",\"streaming\":true}\n", stdout); fflush(stdout);
     if (!fgets(line, sizeof(line), stdin)) return 3;
-    fputs("{\"version\":2,\"status\":\"error\",\"error\":\"deepgram_network\"}\n", stdout);
+    fputs("{\"version\":3,\"status\":\"error\",\"error\":\"deepgram_network\",\"processing_profile\":\"clean\",\"transport\":\"stream\"}\n", stdout);
     return 0;
 }
 """#.utf8).write(to: source)
@@ -924,7 +967,7 @@ int main(void) {
     char line[65536];
     for (int number = 1; number < 32; number++) signal(number, SIG_IGN);
     if (!fgets(line, sizeof(line), stdin)) return 2;
-    fputs("{\"version\":2,\"event\":\"ready\",\"streaming\":true}\n", stdout); fflush(stdout);
+    fputs("{\"version\":3,\"event\":\"ready\",\"streaming\":true}\n", stdout); fflush(stdout);
     for (;;) pause();
 }
 """#.utf8).write(to: source)
@@ -982,7 +1025,7 @@ int main(void) {
     char line[65536];
     for (int number = 1; number < 32; number++) signal(number, SIG_IGN);
     if (!fgets(line, sizeof(line), stdin)) return 2;
-    fputs("{\"version\":2,\"event\":\"ready\",\"streaming\":true}\n", stdout); fflush(stdout);
+    fputs("{\"version\":3,\"event\":\"ready\",\"streaming\":true}\n", stdout); fflush(stdout);
     if (!fgets(line, sizeof(line), stdin)) return 3;
     for (;;) pause();
 }
@@ -1016,7 +1059,7 @@ int main(void) {
             deepgramKeyterms: ["SayAll"], smartFormat: false, punctuate: false,
             dictation: false, numerals: false, measurements: false,
             groqAPIKey: "", groqModel: "llama-3.1-8b-instant",
-            groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", cleanupEnabled: false)
+            groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", processingProfile: .clean)
     }
 
     private func streamRequest() -> StreamingHelperRequest {
@@ -1026,7 +1069,7 @@ int main(void) {
             smartFormat: false, punctuate: false, dictation: false, numerals: false, measurements: false,
             streamFinalizeTimeoutMs: 2_000,
             groqAPIKey: "", groqModel: "llama-3.1-8b-instant",
-            groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", cleanupEnabled: false)
+            groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", processingProfile: .clean)
     }
 }
 
@@ -1044,6 +1087,27 @@ final class ProcessingOwnershipTests: XCTestCase {
             now: started.addingTimeInterval(17)), 28, accuracy: 0.001)
         XCTAssertThrowsError(try Coordinator.remainingProcessingTime(since: started,
             now: started.addingTimeInterval(45))) { XCTAssertEqual($0 as? HelperFailure, .timeout) }
+    }
+
+    func testStreamingAndRestFallbackRequestsPreserveSnapshottedProfile() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let loader = ConfigurationLoader(environment: [:], homeDirectory: home)
+        try FileManager.default.createDirectory(at: loader.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"stt":{"api_key":"key"},"processing":{"mode":"polished"}}"#.utf8).write(to: loader.url)
+        let snapshot = try loader.load()
+
+        let stream = Coordinator.streamingRequest(config: snapshot, wavPath: "/tmp/audio.wav", pcmPath: "/tmp/audio.pcm")
+        let fallback = Coordinator.batchRequest(config: snapshot, wavPath: "/tmp/audio.wav")
+        XCTAssertEqual(stream.processingProfile, .polished)
+        XCTAssertEqual(fallback.processingProfile, stream.processingProfile)
+    }
+
+    func testTransformationWarningIsProductNeutralAndUnknownWarningsAreIgnored() {
+        XCTAssertEqual(Coordinator.warningMessage(for: "transformation_failed"),
+            "Transformation failed; used the raw transcript.")
+        XCTAssertNil(Coordinator.warningMessage(for: "future_warning"))
+        XCTAssertNil(Coordinator.warningMessage(for: nil))
     }
 
     func testCaptureFailureCannotValidateAsSuccessfulRecording() {
@@ -1080,10 +1144,14 @@ final class SharedBackendContractTests: XCTestCase {
         let success = try HelperDecoder.decode(fixture("worker-result-success"))
         XCTAssertEqual(success.status, .success)
         XCTAssertEqual(success.text, "Hello, world.")
+        XCTAssertEqual(success.processingProfile, .legacyV1)
+        XCTAssertEqual(success.transport, .rest)
 
-        let warning = try HelperDecoder.decode(fixture("worker-result-cleanup-warning"))
-        XCTAssertEqual(warning.warning, "cleanup_failed")
+        let warning = try HelperDecoder.decode(fixture("worker-result-transformation-warning"))
+        XCTAssertEqual(warning.warning, "transformation_failed")
         XCTAssertEqual(warning.text, "raw transcript")
+        XCTAssertEqual(warning.processingProfile, .polished)
+        XCTAssertEqual(warning.transport, .stream)
 
         XCTAssertEqual(try HelperDecoder.decode(fixture("worker-result-no-speech")).status, .noSpeech)
         XCTAssertThrowsError(try HelperDecoder.decode(fixture("worker-result-error"))) {
@@ -1128,7 +1196,7 @@ final class ConfigurationLoaderTests: XCTestCase {
                 smartFormat: true, punctuate: true, dictation: true, numerals: true, measurements: true,
                 streamingEnabled: false,
                 streamFinalizeTimeoutMs: 3_500, groqAPIKey: "groq", groqModel: "llama-3.1-8b-instant",
-                groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", cleanupEnabled: true,
+                groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", processingProfile: .legacyV1,
                 showTimer: false, outputMethod: .paste, trailingSpace: false,
                 metricsEnabled: false, metricsHistoryMaxEntries: 12))
     }
@@ -1148,7 +1216,7 @@ final class ConfigurationLoaderTests: XCTestCase {
                 smartFormat: false, punctuate: false, dictation: false, numerals: false, measurements: false,
                 streamingEnabled: true,
                 streamFinalizeTimeoutMs: 2_000, groqAPIKey: "override", groqModel: "openai/gpt-oss-20b",
-                groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", cleanupEnabled: false,
+                groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", processingProfile: .verbatim,
                 showTimer: true, outputMethod: .type, trailingSpace: true,
                 metricsEnabled: true, metricsHistoryMaxEntries: 1_000))
     }
@@ -1170,6 +1238,58 @@ final class ConfigurationLoaderTests: XCTestCase {
 
         try Data(#"{"stt":{"api_key":"key"},"metrics":{"history_max_entries":100001}}"#.utf8).write(to: loader.url)
         XCTAssertThrowsError(try loader.load()) { XCTAssertEqual($0 as? ConfigurationError, .invalidMetrics) }
+
+        try Data(#"{"stt":{"api_key":"key"},"processing":{"mode":"legacy_v1"}}"#.utf8).write(to: loader.url)
+        XCTAssertThrowsError(try loader.load()) { XCTAssertEqual($0 as? ConfigurationError, .invalidProcessingMode) }
+    }
+
+    func testProcessingMigrationExplicitPrecedenceAndModeMutation() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let loader = ConfigurationLoader(environment: [:], homeDirectory: home)
+        try FileManager.default.createDirectory(at: loader.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        for (json, expected) in [
+            (#"{"stt":{"api_key":"key"}}"#, ProcessingProfile.verbatim),
+            (#"{"stt":{"api_key":"key"},"llm":{"enabled":true}}"#, .legacyV1),
+            (#"{"stt":{"api_key":"key"},"llm":{"enabled":true},"processing":{"mode":"verbatim"}}"#, .verbatim),
+            (#"{"stt":{"api_key":"key"},"llm":{"enabled":true},"processing":{"mode":"clean"}}"#, .clean),
+            (#"{"stt":{"api_key":"key"},"llm":{"enabled":false},"processing":{"mode":"polished"}}"#, .polished),
+        ] {
+            try Data(json.utf8).write(to: loader.url)
+            XCTAssertEqual(try loader.load().processingProfile, expected)
+        }
+
+        try Data(#"{"stt":{"api_key":"key"},"future":{"preserved":true}}"#.utf8).write(to: loader.url)
+        try loader.setProcessingMode(.clean)
+        XCTAssertEqual(try loader.load().processingProfile, .clean)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: loader.url)) as? [String: Any])
+        XCTAssertEqual((object["processing"] as? [String: Any])?["mode"] as? String, "clean")
+        XCTAssertEqual((object["future"] as? [String: Any])?["preserved"] as? Bool, true)
+        let permissions = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: loader.url.path)[.posixPermissions] as? NSNumber)
+        XCTAssertEqual(permissions.intValue & 0o777, 0o600)
+    }
+
+    func testPrivateLegacyProfileProjectsToAUserFacingMode() {
+        XCTAssertEqual(ProcessingMode.allCases, [.verbatim, .clean, .polished])
+        XCTAssertEqual(ProcessingProfile.legacyV1.userMode, .polished)
+    }
+
+    func testModeMutationRejectsSymlinkWithoutReplacingItsTarget() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let loader = ConfigurationLoader(environment: [:], homeDirectory: home)
+        try FileManager.default.createDirectory(at: loader.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let target = home.appendingPathComponent("target.json")
+        let original = Data(#"{"stt":{"api_key":"key"}}"#.utf8)
+        try original.write(to: target)
+        try FileManager.default.createSymbolicLink(at: loader.url, withDestinationURL: target)
+
+        XCTAssertThrowsError(try loader.setProcessingMode(.polished)) {
+            XCTAssertEqual($0 as? ConfigurationError, .writeFailed)
+        }
+        XCTAssertEqual(try Data(contentsOf: target), original)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: loader.url.path), target.path)
     }
 
     func testLLMModelAcceptsOneOptionalNamespace() throws {
@@ -1197,6 +1317,7 @@ final class ConfigurationLoaderTests: XCTestCase {
         XCTAssertTrue(settings.trailingSpace)
         XCTAssertTrue(settings.metricsEnabled)
         XCTAssertEqual(settings.metricsHistoryMaxEntries, 1_000)
+        XCTAssertEqual(settings.processingProfile, .verbatim)
     }
 }
 
