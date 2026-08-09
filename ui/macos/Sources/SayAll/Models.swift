@@ -1,7 +1,32 @@
 import Foundation
 
 enum ProcessingProtocol {
-    static let version = 2
+    static let version = 3
+}
+
+enum ProcessingMode: String, Codable, CaseIterable, Equatable {
+    case verbatim, clean, polished
+
+    var title: String { rawValue.capitalized }
+    var description: String {
+        switch self {
+        case .verbatim: return "Keep the transcript as spoken"
+        case .clean: return "Apply faithful, deterministic cleanup"
+        case .polished: return "Restructure for clarity with Groq"
+        }
+    }
+}
+
+enum ProcessingProfile: String, Codable, Equatable {
+    case verbatim, clean, polished, legacyV1 = "legacy_v1"
+
+    var userMode: ProcessingMode {
+        switch self {
+        case .verbatim: return .verbatim
+        case .clean: return .clean
+        case .polished, .legacyV1: return .polished
+        }
+    }
 }
 
 enum DictationState: String, CaseIterable {
@@ -47,7 +72,7 @@ struct HelperRequest: Codable, Equatable {
     let groqAPIKey: String
     let groqModel: String
     let groqBaseURL: String
-    let cleanupEnabled: Bool
+    let processingProfile: ProcessingProfile
     enum CodingKeys: String, CodingKey {
         case version, wavPath = "wav_path", deepgramAPIKey = "deepgram_api_key"
         case deepgramModel = "deepgram_model", deepgramLanguage = "deepgram_language"
@@ -55,7 +80,7 @@ struct HelperRequest: Codable, Equatable {
         case smartFormat = "deepgram_smart_format", punctuate = "deepgram_punctuate"
         case dictation = "deepgram_dictation", numerals = "deepgram_numerals", measurements = "deepgram_measurements"
         case groqAPIKey = "groq_api_key", groqModel = "groq_model", groqBaseURL = "groq_base_url"
-        case cleanupEnabled = "cleanup_enabled"
+        case processingProfile = "processing_profile"
     }
 }
 
@@ -77,7 +102,7 @@ struct StreamingHelperRequest: Codable, Equatable {
     let groqAPIKey: String
     let groqModel: String
     let groqBaseURL: String
-    let cleanupEnabled: Bool
+    let processingProfile: ProcessingProfile
     enum CodingKeys: String, CodingKey {
         case version, wavPath = "wav_path", pcmPath = "pcm_path", deepgramAPIKey = "deepgram_api_key"
         case deepgramModel = "deepgram_model", deepgramLanguage = "deepgram_language"
@@ -86,7 +111,7 @@ struct StreamingHelperRequest: Codable, Equatable {
         case dictation = "deepgram_dictation", numerals = "deepgram_numerals", measurements = "deepgram_measurements"
         case streamFinalizeTimeoutMs = "stream_finalize_timeout_ms"
         case groqAPIKey = "groq_api_key", groqModel = "groq_model", groqBaseURL = "groq_base_url"
-        case cleanupEnabled = "cleanup_enabled"
+        case processingProfile = "processing_profile"
     }
 }
 
@@ -97,13 +122,35 @@ struct StreamingHelperFinish: Codable, Equatable {
     enum CodingKeys: String, CodingKey { case version, command, forceRest = "force_rest" }
 }
 
+enum WorkerErrorCode: String, Codable, Equatable {
+    case invalidRequest = "invalid_request"
+    case incompatibleVersion = "incompatible_version"
+    case invalidAudio = "invalid_audio"
+    case audioTooShort = "audio_too_short"
+    case audioTooLong = "audio_too_long"
+    case missingDeepgramKey = "missing_deepgram_key"
+    case deepgramUnauthorized = "deepgram_unauthorized"
+    case deepgramRateLimited = "deepgram_rate_limited"
+    case deepgramServer = "deepgram_server"
+    case deepgramNetwork = "deepgram_network"
+    case responseTooLarge = "response_too_large"
+    case internalError = "internal"
+}
+
 struct HelperResult: Codable, Equatable {
     enum Status: String, Codable { case success, noSpeech = "no_speech", error }
+    enum Transport: String, Codable { case rest, stream }
     let version: Int
     let status: Status
     let text: String?
     let warning: String?
-    let error: String?
+    let error: WorkerErrorCode?
+    let processingProfile: ProcessingProfile
+    let transport: Transport
+    enum CodingKeys: String, CodingKey {
+        case version, status, text, warning, error, transport
+        case processingProfile = "processing_profile"
+    }
 }
 
 enum HelperFailure: Error, Equatable {
@@ -124,8 +171,23 @@ enum HelperDecoder {
         guard data.count <= maximumOutputBytes else { throw HelperFailure.oversizedOutput }
         guard let result = try? JSONDecoder().decode(HelperResult.self, from: data) else { throw HelperFailure.malformedOutput }
         guard result.version == ProcessingProtocol.version else { throw HelperFailure.unsupportedVersion }
-        if result.status == .error { throw HelperFailure.unsuccessful(result.error ?? "helper_error") }
-        return result
+        switch result.status {
+        case .success:
+            guard let text = result.text, !text.isEmpty, result.error == nil,
+                  result.warning == nil || result.warning == "transformation_failed" else {
+                throw HelperFailure.malformedOutput
+            }
+            return result
+        case .noSpeech:
+            guard result.text == nil, result.warning == nil, result.error == nil else {
+                throw HelperFailure.malformedOutput
+            }
+            return result
+        case .error:
+            guard result.text == nil, result.warning == nil,
+                  let error = result.error else { throw HelperFailure.malformedOutput }
+            throw HelperFailure.unsuccessful(error.rawValue)
+        }
     }
 }
 
