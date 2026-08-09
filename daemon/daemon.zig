@@ -77,6 +77,7 @@ const ProviderContext = struct {
     audio_ms: u64,
     stopped_at_awake_ms: i64,
     rest_latency_ms: u64 = 0,
+    planner_latency_ms: ?u64 = null,
 };
 
 fn providerRest(context_ptr: ?*anyopaque, gpa: Allocator) ![]u8 {
@@ -108,9 +109,11 @@ fn providerPlanner(context_ptr: ?*anyopaque, gpa: Allocator, profile: config.pro
         .legacy_v1 => groq.cleanup(gpa, d.io, &d.cfg.llm, d.cfg.stt.keyterms, raw, d.cfg.verbose),
         else => error.InvalidProfile,
     } catch |err| {
+        context.planner_latency_ms = @intCast(@max(0, d.nowMs() - started));
         d.log("llm cleanup failed: {s} — using raw transcript", .{@errorName(err)});
         return err;
     };
+    context.planner_latency_ms = @intCast(@max(0, d.nowMs() - started));
     d.log("llm cleanup in {d}ms ({d} bytes)", .{ d.nowMs() - started, cleaned.len });
     return cleaned;
 }
@@ -672,6 +675,9 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
     var completion_reason: ?[]const u8 = null;
     var stt_attempted = false;
     var stt_latency_ms: u64 = 0;
+    const processing_profile = if (job.raw) config.processing.Profile.verbatim else config.effectiveProcessingProfile(d.cfg);
+    var transformation_outcome: protocol.TransformationOutcome = .not_requested;
+    var planner_latency_ms: ?u64 = null;
     var stream_session = job.stream;
     defer if (stream_session) |stream| stream.cancel();
     defer {
@@ -687,6 +693,9 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
             .reason = completion_reason,
             .stt_attempted = stt_attempted,
             .latency_ms = stt_latency_ms,
+            .processing_profile = processing_profile,
+            .transformation_outcome = transformation_outcome,
+            .planner_latency_ms = planner_latency_ms,
         } }) catch {};
         d.unlock();
     }
@@ -793,8 +802,7 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
     const needs_rest = maybe_transcript == null;
     const transcript_owned = maybe_transcript;
     maybe_transcript = null;
-    const profile = if (job.raw) config.processing.Profile.verbatim else config.effectiveProcessingProfile(d.cfg);
-    const outcome = provider_processing.process(gpa, transcript_owned, profile, .{
+    const outcome = provider_processing.process(gpa, transcript_owned, processing_profile, .{
         .max_bytes = null,
         .require_utf8 = false,
     }, .{
@@ -809,6 +817,7 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
         d.log("stt failed: {s}", .{@errorName(err)});
         return;
     };
+    planner_latency_ms = provider_context.planner_latency_ms;
     if (needs_rest) stt_latency_ms = provider_context.rest_latency_ms;
     const final = switch (outcome) {
         .no_speech => {
@@ -817,7 +826,15 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
             d.inform("SayAll", "No speech detected");
             return;
         },
-        .success => |success| success.text,
+        .success => |success| blk: {
+            transformation_outcome = if (processing_profile == .verbatim)
+                .not_requested
+            else if (success.warning != null)
+                .failed
+            else
+                .succeeded;
+            break :blk success.text;
+        },
     };
     defer gpa.free(final);
     completion_phase = .post_stt;

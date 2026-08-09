@@ -281,6 +281,7 @@ const FakeProvider = struct {
     polished_calls: usize = 0,
     legacy_calls: usize = 0,
     invalid_polished_plan: bool = false,
+    valid_no_change_plan: bool = false,
 
     fn transcribe(context: ?*anyopaque, gpa: std.mem.Allocator, _: std.Io, cfg: *const provider.SttConfig, _: []const u8) ![]u8 {
         const self: *FakeProvider = @ptrCast(@alignCast(context.?));
@@ -309,6 +310,7 @@ const FakeProvider = struct {
         }
         if (self.cleanup_fails) return error.RequestFailed;
         if (self.invalid_polished_plan and profile == .polished) return groq.cleanup_engine.polishedFromJson(gpa, raw, keyterms, "{}");
+        if (self.valid_no_change_plan and profile == .polished) return groq.cleanup_engine.polished(gpa, raw, keyterms, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
         return std.fmt.allocPrint(gpa, "{s}: {s}", .{ @tagName(profile), raw });
     }
 
@@ -457,9 +459,16 @@ test "protocol v3 routes clean polished and legacy engines by profile" {
     const invalid_plan = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "do not change");
     defer if (invalid_plan.text) |text| std.testing.allocator.free(text);
     try std.testing.expectEqualStrings("do not change", invalid_plan.text.?);
-    try std.testing.expectEqual(@as(?Warning, null), invalid_plan.warning);
+    try std.testing.expectEqual(Warning.transformation_failed, invalid_plan.warning.?);
     try std.testing.expectEqual(@as(usize, 2), fake.polished_calls);
     try std.testing.expectEqual(@as(usize, 0), fake.transcribe_calls);
+
+    fake.invalid_polished_plan = false;
+    fake.valid_no_change_plan = true;
+    const no_change = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "keep  exactly\nthis");
+    defer if (no_change.text) |text| std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("keep  exactly\nthis", no_change.text.?);
+    try std.testing.expectEqual(@as(?Warning, null), no_change.warning);
 }
 
 test "live clean uses deterministic engine without planner or IO" {
