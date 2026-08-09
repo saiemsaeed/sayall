@@ -149,7 +149,7 @@ pub fn polished(gpa: Allocator, transcript: []const u8, glossary: []const []cons
         if (c.start_token >= c.end_token or c.end_token > tokens.len or c.start_token < previous_end or !sourceEq(tokens[c.start_token..c.end_token], c.source) or !validReplacement(c.replacement)) return error.InvalidPlan;
         for (c.start_token..c.end_token) |i| if (deleted[i] or tokens[i].protected or technical(tokens[i].text) or hasUnsafeDecoration(transcript, tokens, i) or (protected[i] and c.kind != .glossary) or (i + 1 < c.end_token and hasInternalDecoration(transcript, tokens[i], tokens[i + 1]))) return error.InvalidPlan;
         const ok = switch (c.kind) {
-            .case => c.end_token == c.start_token + 1 and oneWord(c.replacement) and asciiEq(c.source, c.replacement),
+            .case => c.end_token == c.start_token + 1 and !allUppercaseAscii(tokens[c.start_token].text) and oneWord(c.replacement) and asciiEq(c.source, c.replacement),
             .glossary => c.end_token - c.start_token <= 4 and glossaryCorrection(c.source, c.replacement, glossary),
             .orthographic => c.end_token == c.start_token + 1 and oneWord(c.replacement) and orthographic(c.source, c.replacement),
         };
@@ -535,7 +535,7 @@ fn backtrackNegated(tokens: []const Token, scalar: usize) bool {
     return false;
 }
 fn isNegator(text: []const u8) bool {
-    for ([_][]const u8{ "no", "not", "never", "none", "without", "neither", "nor" }) |word| if (asciiEq(text, word)) return true;
+    for ([_][]const u8{ "no", "not", "never", "none", "without", "neither", "nor", "cannot" }) |word| if (asciiEq(text, word)) return true;
     if (text.len >= 3 and std.ascii.toLower(text[text.len - 3]) == 'n' and text[text.len - 2] == '\'' and std.ascii.toLower(text[text.len - 1]) == 't') return true;
     const curly_apostrophe = "’";
     return text.len >= curly_apostrophe.len + 2 and
@@ -696,6 +696,7 @@ test "clean accepts only locally provable scalar backtracks" {
     try expectClean("It is not 10, actually 12", "It is not 10, actually 12", &.{});
     try expectClean("It ISN’T 10 actually 12", "It ISN’T 10 actually 12", &.{});
     try expectClean("without 10 actually 12", "without 10 actually 12", &.{});
+    try expectClean("You cannot pay 10 actually 12", "You cannot pay 10 actually 12", &.{});
 }
 
 test "polished compiles corrections punctuation paragraphs and numbered lists" {
@@ -827,8 +828,21 @@ test "polished rejects overlaps changed proofs injection and all deletion" {
     try expectInvalidPlan("It ISN’T 10 actually 12", &.{}, .{ .version = 2, .deletions = &uppercase_contraction_backtrack, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
     const without_backtrack = [_]Deletion{.{ .start_token = 1, .end_token = 3, .source = "10 actually", .kind = .backtrack, .proof_start_token = 3, .proof_end_token = 4, .cue = "actually", .category = .number }};
     try expectInvalidPlan("without 10 actually 12", &.{}, .{ .version = 2, .deletions = &without_backtrack, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
+    const cannot_backtrack = [_]Deletion{.{ .start_token = 3, .end_token = 5, .source = "10 actually", .kind = .backtrack, .proof_start_token = 5, .proof_end_token = 6, .cue = "actually", .category = .number }};
+    try expectInvalidPlan("You cannot pay 10 actually 12", &.{}, .{ .version = 2, .deletions = &cannot_backtrack, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
     const exact_orthographic_change = [_]Correction{.{ .start_token = 0, .end_token = 1, .source = "never", .replacement = "newer", .kind = .orthographic }};
     try expectInvalidPlan("never change this", &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &exact_orthographic_change, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
+
+    for ([_]struct { source: []const u8, replacement: []const u8 }{
+        .{ .source = "US", .replacement = "us" },
+        .{ .source = "HTTP", .replacement = "http" },
+        .{ .source = "ER", .replacement = "er" },
+    }) |case| {
+        const uppercase_case = [_]Correction{.{ .start_token = 2, .end_token = 3, .source = case.source, .replacement = case.replacement, .kind = .case }};
+        const source = try std.fmt.allocPrint(std.testing.allocator, "Ship to {s}", .{case.source});
+        defer std.testing.allocator.free(source);
+        try expectInvalidPlan(source, &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &uppercase_case, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
+    }
 }
 
 test "clean and polished bounds fail back raw" {
