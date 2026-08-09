@@ -81,6 +81,10 @@ impl fmt::Display for ToggleError {
 enum Command {
     Toggle(State, mpsc::Sender<Result<Snapshot, ToggleError>>),
     Reload(mpsc::Sender<Result<Snapshot, ToggleError>>),
+    SetProcessingMode(
+        config::ProcessingMode,
+        mpsc::Sender<Result<Snapshot, ToggleError>>,
+    ),
     Shutdown,
 }
 struct Inner {
@@ -170,6 +174,35 @@ impl Controller {
         self.0.admitted.store(false, Ordering::Release);
         result
     }
+    pub fn set_processing_mode(
+        &self,
+        mode: config::ProcessingMode,
+    ) -> Result<Snapshot, ToggleError> {
+        if self.status().state != State::Idle {
+            return Err(ToggleError::Busy);
+        }
+        if self
+            .0
+            .admitted
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(ToggleError::Busy);
+        }
+        let (tx, rx) = mpsc::channel();
+        if self
+            .0
+            .tx
+            .send(Command::SetProcessingMode(mode, tx))
+            .is_err()
+        {
+            self.0.admitted.store(false, Ordering::Release);
+            return Err(ToggleError::Unavailable);
+        }
+        let result = rx.recv().unwrap_or(Err(ToggleError::Unavailable));
+        self.0.admitted.store(false, Ordering::Release);
+        result
+    }
     pub fn shutdown_and_join(&self) {
         self.0.shutdown.store(true, Ordering::Release);
         let _ = self.0.tx.send(Command::Shutdown);
@@ -226,6 +259,17 @@ fn run(
                     Err(ToggleError::Busy)
                 } else {
                     validate_reload(config::load).map(|()| shared.lock().unwrap().clone())
+                };
+                let _ = reply.send(result);
+            }
+            Ok(Command::SetProcessingMode(mode, reply)) => {
+                let result = if shared.lock().unwrap().state != State::Idle || active.is_some() {
+                    Err(ToggleError::Busy)
+                } else {
+                    config::set_processing_mode(mode)
+                        .map_err(|error| ToggleError::Failed(error.to_string()))
+                        .and_then(|_| validate_reload(config::load))
+                        .map(|()| shared.lock().unwrap().clone())
                 };
                 let _ = reply.send(result);
             }
@@ -347,6 +391,8 @@ fn run(
     }
 }
 
+type DeliveredOutcome = (Option<desktop::DeliveryOutcome>, Option<worker::Warning>);
+
 fn finish_active<F>(
     active: &mut Option<(
         capture::Capture,
@@ -367,7 +413,7 @@ where
     let (capture, worker, started, cfg, output, show_timer, notifications) =
         active.take().expect("active capture");
     publish(State::Stopping, generation, Some(started), None, show_timer);
-    let outcome = (|| -> Result<Option<desktop::DeliveryOutcome>, String> {
+    let outcome = (|| -> Result<DeliveredOutcome, String> {
         let wav = capture
             .stop()
             .map_err(|e| format!("capture stop failed: {e}"))?;
@@ -407,13 +453,22 @@ where
         )
     })();
     match outcome {
-        Ok(delivery_outcome) => Ok(publish(
-            State::Success,
-            generation,
-            None,
-            Some(terminal_message(delivery_outcome).into()),
-            show_timer,
-        )),
+        Ok((delivery_outcome, warning)) => {
+            if warning == Some(worker::Warning::TransformationFailed) {
+                desktop::notify(
+                    notifications,
+                    "SayAll processing warning",
+                    "Transformation failed; the raw transcript was delivered",
+                );
+            }
+            Ok(publish(
+                State::Success,
+                generation,
+                None,
+                Some(terminal_message(delivery_outcome, warning).into()),
+                show_timer,
+            ))
+        }
         Err(message) => {
             desktop::notify(
                 notifications,
@@ -432,7 +487,13 @@ where
         }
     }
 }
-fn terminal_message(outcome: Option<desktop::DeliveryOutcome>) -> &'static str {
+fn terminal_message(
+    outcome: Option<desktop::DeliveryOutcome>,
+    warning: Option<worker::Warning>,
+) -> &'static str {
+    if warning == Some(worker::Warning::TransformationFailed) {
+        return "transformation failed; raw transcript delivered";
+    }
     match outcome {
         Some(desktop::DeliveryOutcome::ClipboardFallback) => {
             "typing failed; transcript copied to clipboard"
@@ -454,15 +515,17 @@ fn deliver_outcome<F>(
     delivery: &mut dyn Delivery,
     output: &config::OutputConfig,
     delivering: F,
-) -> Result<Option<desktop::DeliveryOutcome>, String>
+) -> Result<DeliveredOutcome, String>
 where
     F: FnOnce() -> Snapshot,
 {
     match outcome {
-        worker::Outcome::NoSpeech => Ok(None),
-        worker::Outcome::Transcript(text) => {
+        worker::Outcome::NoSpeech { .. } => Ok((None, None)),
+        worker::Outcome::Transcript { text, warning, .. } => {
             delivering();
-            delivery.deliver(&text, output).map(Some)
+            delivery
+                .deliver(&text, output)
+                .map(|delivered| (Some(delivered), warning))
         }
     }
 }
@@ -500,16 +563,24 @@ mod tests {
             trailing_space: false,
         };
         deliver_outcome(
-            worker::Outcome::NoSpeech,
+            worker::Outcome::NoSpeech {
+                processing_profile: config::ProcessingProfile::Verbatim,
+                transport: worker::Transport::Stream,
+            },
             &mut delivery,
             &output,
             Snapshot::default,
         )
         .unwrap();
         assert_eq!(delivery.0, 0);
-        assert_eq!(terminal_message(None), "No speech detected");
+        assert_eq!(terminal_message(None, None), "No speech detected");
         deliver_outcome(
-            worker::Outcome::Transcript("hello".into()),
+            worker::Outcome::Transcript {
+                text: "hello".into(),
+                processing_profile: config::ProcessingProfile::Clean,
+                transport: worker::Transport::Rest,
+                warning: None,
+            },
             &mut delivery,
             &output,
             Snapshot::default,
@@ -581,7 +652,9 @@ mod tests {
         let (release_tx, release_rx) = mpsc::channel();
         let worker = std::thread::spawn(move || {
             let reply = match rx.recv().unwrap() {
-                Command::Toggle(_, reply) | Command::Reload(reply) => reply,
+                Command::Toggle(_, reply)
+                | Command::Reload(reply)
+                | Command::SetProcessingMode(_, reply) => reply,
                 Command::Shutdown => panic!(),
             };
             count.fetch_add(1, Ordering::SeqCst);
@@ -635,6 +708,37 @@ mod tests {
 
         assert!(matches!(controller.reload(), Err(ToggleError::Busy)));
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn processing_mode_change_rejects_active_session_without_dispatching() {
+        let (tx, rx) = mpsc::channel();
+        let mut snapshot = Snapshot::default();
+        snapshot.state = State::Recording;
+        let controller = Controller(Arc::new(Inner {
+            tx,
+            snapshot: Arc::new(Mutex::new(snapshot)),
+            admitted: Arc::new(AtomicBool::new(false)),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            join: Mutex::new(None),
+        }));
+
+        assert!(matches!(
+            controller.set_processing_mode(config::ProcessingMode::Polished),
+            Err(ToggleError::Busy)
+        ));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn transformation_warning_is_product_neutral() {
+        assert_eq!(
+            terminal_message(
+                Some(desktop::DeliveryOutcome::Typed),
+                Some(worker::Warning::TransformationFailed)
+            ),
+            "transformation failed; raw transcript delivered"
+        );
     }
 
     #[test]
