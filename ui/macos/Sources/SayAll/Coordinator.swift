@@ -15,6 +15,12 @@ final class Coordinator {
         var microphonePermissionMs = 0
         var compatibilityMs = 0
         var audioStartMs = 0
+        var audioFilePreparationMs: Int?
+        var audioDeviceResolutionMs: Int?
+        var audioInputInitializationMs: Int?
+        var audioInputStartMs: Int?
+        var captureGeneration: UUID?
+        var firstPCMWrite: UInt64?
         var streamReadyMs = 0
     }
 
@@ -48,6 +54,15 @@ final class Coordinator {
         capture.failureHandler = { [weak self] in
             DispatchQueue.main.async { self?.audioCaptureFailed() }
         }
+        capture.firstPCMWriteHandler = { [weak self] generation, timestamp in
+            DispatchQueue.main.async {
+                guard let self, self.startupTiming?.captureGeneration == generation else { return }
+                self.startupTiming?.firstPCMWrite = timestamp
+                if self.state == .recording {
+                    self.persistStartup(outcome: "recording_ready", recordingReady: true)
+                }
+            }
+        }
     }
     func trigger(source: TriggerSource = .menu) {
         switch state {
@@ -58,8 +73,7 @@ final class Coordinator {
             operationID = id
             deliveryTarget = nil
             startupTiming = StartupTiming(source: source, started: started)
-            set(.starting, "Starting recording…")
-            var phaseStarted = DispatchTime.now().uptimeNanoseconds
+            let phaseStarted = DispatchTime.now().uptimeNanoseconds
             do {
                 operationConfig = try configuration.load()
                 showTimer = operationConfig?.showTimer ?? true
@@ -68,11 +82,6 @@ final class Coordinator {
                 finish(id, as: .error, message: Self.message(for: error, path: configuration.url.path), resetAfter: 8)
                 return
             }
-            phaseStarted = DispatchTime.now().uptimeNanoseconds
-            if operationConfig?.outputMethod != .clipboard {
-                deliveryTarget = TextDelivery.captureTarget()
-            }
-            startupTiming?.targetCaptureMs = Self.elapsedMilliseconds(since: phaseStarted)
             beginTask = Task { await begin(id) }
         case .recording: stop()
         default: break
@@ -85,6 +94,7 @@ final class Coordinator {
     }
 
     var hostControlState: HostControlState {
+        if operationID != nil && state == .idle { return .starting }
         switch state {
         case .idle: return .idle
         case .starting: return .starting
@@ -194,12 +204,26 @@ final class Coordinator {
             let helperURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/sayall-process")
             let helper = HelperRunner(executableURL: helperURL)
             phaseStarted = DispatchTime.now().uptimeNanoseconds
-            let compatibility = try await helper.compatibilityPreflight()
-            startupTiming?.compatibilityMs = Self.elapsedMilliseconds(since: phaseStarted)
-            guard operationID == id, !Task.isCancelled else { return }
-            phaseStarted = DispatchTime.now().uptimeNanoseconds
             let recording = try capture.start()
             startupTiming?.audioStartMs = Self.elapsedMilliseconds(since: phaseStarted)
+            startupTiming?.audioFilePreparationMs = recording.startTiming?.filePreparationMs
+            startupTiming?.audioDeviceResolutionMs = recording.startTiming?.deviceResolutionMs
+            startupTiming?.audioInputInitializationMs = recording.startTiming?.inputInitializationMs
+            startupTiming?.audioInputStartMs = recording.startTiming?.inputStartMs
+            startupTiming?.captureGeneration = recording.captureGeneration
+            phaseStarted = DispatchTime.now().uptimeNanoseconds
+            if config.outputMethod != .clipboard {
+                deliveryTarget = TextDelivery.captureTarget()
+            }
+            startupTiming?.targetCaptureMs = Self.elapsedMilliseconds(since: phaseStarted)
+            set(.starting, "Starting recording…")
+            phaseStarted = DispatchTime.now().uptimeNanoseconds
+            let compatibility = try await helper.compatibilityPreflight()
+            startupTiming?.compatibilityMs = Self.elapsedMilliseconds(since: phaseStarted)
+            guard operationID == id, !Task.isCancelled else {
+                capture.cancel()
+                return
+            }
             var session: StreamingHelperSession?
             if config.streamingEnabled {
                 phaseStarted = DispatchTime.now().uptimeNanoseconds
@@ -336,7 +360,7 @@ final class Coordinator {
         let starting = beginTask
         let work = task
         let session = streamSession
-        if hadOperation && state == .starting { persistStartup(outcome: "cancelled") }
+        if hadOperation && (state == .idle || state == .starting) { persistStartup(outcome: "cancelled") }
         operationID = nil
         operationConfig = nil
         deliveryTarget = nil
@@ -360,10 +384,14 @@ final class Coordinator {
             startupTiming = nil
             return
         }
+        if recordingReady && timing.firstPCMWrite == nil { return }
         let finished = DispatchTime.now().uptimeNanoseconds
         let shortcut = timing.source == .shortcut
         let sample = StartupMetricSample(
             shortcutToHUDMs: shortcut ? timing.hudPresented.map {
+                Self.elapsedMilliseconds(from: timing.started, to: $0)
+            } : nil,
+            shortcutToFirstPCMWriteMs: shortcut ? timing.firstPCMWrite.map {
                 Self.elapsedMilliseconds(from: timing.started, to: $0)
             } : nil,
             shortcutToRecordingReadyMs: shortcut && recordingReady
@@ -373,6 +401,10 @@ final class Coordinator {
             microphonePermissionMs: timing.microphonePermissionMs,
             compatibilityMs: timing.compatibilityMs,
             audioStartMs: timing.audioStartMs,
+            audioFilePreparationMs: timing.audioFilePreparationMs,
+            audioDeviceResolutionMs: timing.audioDeviceResolutionMs,
+            audioInputInitializationMs: timing.audioInputInitializationMs,
+            audioInputStartMs: timing.audioInputStartMs,
             streamReadyMs: timing.streamReadyMs,
             outcome: outcome
         )

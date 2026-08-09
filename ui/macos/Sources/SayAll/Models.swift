@@ -9,7 +9,7 @@ enum DictationState: String, CaseIterable {
 
     func canTransition(to next: DictationState) -> Bool {
         switch (self, next) {
-        case (.idle, .starting),
+        case (.idle, .starting), (.idle, .error),
              (.starting, .recording), (.starting, .error), (.starting, .cancelled),
              (.recording, .stopping), (.recording, .error), (.recording, .cancelled),
              (.stopping, .processing), (.stopping, .error), (.stopping, .cancelled),

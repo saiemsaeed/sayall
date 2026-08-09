@@ -187,6 +187,14 @@ final class AudioCapture {
         let wavURL: URL
         let pcmURL: URL
         let streamSourceFailed: Bool
+        let startTiming: StartTiming?
+        let captureGeneration: UUID?
+    }
+    struct StartTiming {
+        let filePreparationMs: Int
+        let deviceResolutionMs: Int
+        let inputInitializationMs: Int
+        let inputStartMs: Int
     }
     private static let sampleRate = 16_000.0
     private static let minimumFrames: AVAudioFramePosition = 4_800
@@ -206,10 +214,12 @@ final class AudioCapture {
     private var wavURL: URL?
     private var pcmURL: URL?
     private var framesWritten: AVAudioFramePosition = 0
+    private var firstPCMWriteUptimeNanoseconds: UInt64?
     private var captureFailed = false
     private var streamSourceFailed = false
     var levelHandler: ((Double) -> Void)?
     var failureHandler: (() -> Void)?
+    var firstPCMWriteHandler: ((UUID, UInt64) -> Void)?
     private static let root: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return base.appendingPathComponent("SayAll/Recordings", isDirectory: true)
@@ -220,6 +230,7 @@ final class AudioCapture {
     }
 
     func start() throws -> Recording {
+        var phaseStarted = DispatchTime.now().uptimeNanoseconds
         Self.removeStaleFiles()
         try FileManager.default.createDirectory(at: Self.root, withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700])
@@ -241,6 +252,7 @@ final class AudioCapture {
         self.pcmURL = pcmURL
         pcmFile = FileHandle(fileDescriptor: pcmDescriptor, closeOnDealloc: true)
         framesWritten = 0
+        firstPCMWriteUptimeNanoseconds = nil
         captureFailed = false
         streamSourceFailed = false
         failureReported = false
@@ -250,11 +262,16 @@ final class AudioCapture {
                 throw CaptureError.format
             }
             file = try AVAudioFile(forWriting: wavURL, settings: canonical.settings, commonFormat: .pcmFormatInt16, interleaved: true)
+            let filePreparationMs = Self.elapsedMilliseconds(since: phaseStarted)
+            phaseStarted = DispatchTime.now().uptimeNanoseconds
             let deviceID = try AudioInputDevices.selectedDeviceID(uniqueID: MicrophoneSelection.uniqueID)
+            let deviceResolutionMs = Self.elapsedMilliseconds(since: phaseStarted)
+            phaseStarted = DispatchTime.now().uptimeNanoseconds
             let inputUnit: AUHALInput
             do { inputUnit = try AUHALInput(deviceID: deviceID) }
             catch AUHALInput.Failure.unavailable { throw CaptureError.deviceUnavailable }
             catch { throw CaptureError.format }
+            let inputInitializationMs = Self.elapsedMilliseconds(since: phaseStarted)
             self.inputUnit = inputUnit
             let generation = UUID()
             captureGeneration = generation
@@ -270,8 +287,16 @@ final class AudioCapture {
                 self.write(converted)
             }
             inputUnit.failureHandler = { [weak self] in self?.markUnexpectedFailure(generation: generation) }
+            phaseStarted = DispatchTime.now().uptimeNanoseconds
             try inputUnit.start()
-            return Recording(directoryURL: directory, wavURL: wavURL, pcmURL: pcmURL, streamSourceFailed: false)
+            let timing = StartTiming(
+                filePreparationMs: filePreparationMs,
+                deviceResolutionMs: deviceResolutionMs,
+                inputInitializationMs: inputInitializationMs,
+                inputStartMs: Self.elapsedMilliseconds(since: phaseStarted)
+            )
+            return Recording(directoryURL: directory, wavURL: wavURL, pcmURL: pcmURL,
+                streamSourceFailed: false, startTiming: timing, captureGeneration: generation)
         } catch {
             cleanup(deleteFile: true)
             throw error
@@ -289,7 +314,8 @@ final class AudioCapture {
         lock.unlock()
         do { try Self.validateCapture(frames: frames, failed: failed) }
         catch { try? FileManager.default.removeItem(at: directoryURL); throw error }
-        return Recording(directoryURL: directoryURL, wavURL: wavURL, pcmURL: pcmURL, streamSourceFailed: streamFailed)
+        return Recording(directoryURL: directoryURL, wavURL: wavURL, pcmURL: pcmURL,
+            streamSourceFailed: streamFailed, startTiming: nil, captureGeneration: nil)
     }
 
     static func validateCapture(frames: AVAudioFramePosition, failed: Bool) throws {
@@ -301,7 +327,7 @@ final class AudioCapture {
     func cancel() {
         cleanup(deleteFile: true)
         lock.lock()
-        directoryURL = nil; wavURL = nil; pcmURL = nil; framesWritten = 0
+        directoryURL = nil; wavURL = nil; pcmURL = nil; framesWritten = 0; firstPCMWriteUptimeNanoseconds = nil
         lock.unlock()
     }
 
@@ -334,6 +360,7 @@ final class AudioCapture {
     }
 
     private func write(_ buffer: AVAudioPCMBuffer) {
+        var firstWrite: (UUID, UInt64)?
         lock.lock()
         guard let file, framesWritten < Self.maximumFrames else { lock.unlock(); return }
         let remaining = Self.maximumFrames - framesWritten
@@ -345,17 +372,30 @@ final class AudioCapture {
             captureFailed = true
         }
         if let pcmFile, let samples = buffer.int16ChannelData?[0] {
-            do { try pcmFile.write(contentsOf: Data(bytes: samples, count: Int(buffer.frameLength) * MemoryLayout<Int16>.size)) }
+            do {
+                try pcmFile.write(contentsOf: Data(bytes: samples, count: Int(buffer.frameLength) * MemoryLayout<Int16>.size))
+                if firstPCMWriteUptimeNanoseconds == nil, let generation = captureGeneration {
+                    let timestamp = DispatchTime.now().uptimeNanoseconds
+                    firstPCMWriteUptimeNanoseconds = timestamp
+                    firstWrite = (generation, timestamp)
+                }
+            }
             catch { streamSourceFailed = true }
         } else {
             streamSourceFailed = true
         }
         lock.unlock()
+        if let firstWrite { firstPCMWriteHandler?(firstWrite.0, firstWrite.1) }
         reportLevel(buffer)
     }
 
     private func markCaptureFailed() {
         lock.withLock { captureFailed = true }
+    }
+
+    private static func elapsedMilliseconds(since started: UInt64) -> Int {
+        let finished = DispatchTime.now().uptimeNanoseconds
+        return Int((finished >= started ? finished - started : 0) / 1_000_000)
     }
 
     private func monoBuffer(

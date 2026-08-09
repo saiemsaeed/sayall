@@ -150,6 +150,11 @@ final class StateMachineTests: XCTestCase {
         XCTAssertThrowsError(try sut.transition(to: .processing))
         XCTAssertEqual(sut.state, .idle)
     }
+    func testStartupCanFailBeforeCaptureStarts() throws {
+        var sut = StateMachine()
+        try sut.transition(to: .error)
+        XCTAssertEqual(sut.state, .error)
+    }
     func testSuccessfulDeliveryCanHideImmediately() throws {
         var sut = StateMachine()
         for state in [DictationState.starting, .recording, .stopping, .processing, .delivering, .idle] {
