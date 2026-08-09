@@ -655,6 +655,7 @@ fn expectInvalidPlan(source: []const u8, glossary: []const []const u8, plan: Pol
 test "clean removes only the four unambiguous fillers" {
     try expectClean("Um, hello uh there er now erm done", "hello there now done", &.{});
     try expectClean("UM UH ER ERM are uppercase technical acronyms", "UM UH ER ERM are uppercase technical acronyms", &.{});
+    try expectClean("go to ER now", "go to ER now", &.{});
     try expectClean("well like so you know actually hello", "well like so you know actually hello", &.{});
     try expectClean("keep  these\n\nparagraphs", "keep  these\n\nparagraphs", &.{});
     try expectClean("hello\num\nworld", "hello\n\nworld", &.{});
@@ -685,6 +686,7 @@ test "clean accepts only locally provable scalar backtracks" {
     try expectClean("do not use 10 actually words", "do not use 10 actually words", &.{});
     try expectClean("do not set 10 actually 12", "do not set 10 actually 12", &.{});
     try expectClean("never Tuesday actually Wednesday", "never Tuesday actually Wednesday", &.{});
+    try expectClean("It is not 10, actually 12", "It is not 10, actually 12", &.{});
 }
 
 test "polished compiles corrections punctuation paragraphs and numbered lists" {
@@ -806,8 +808,14 @@ test "polished rejects overlaps changed proofs injection and all deletion" {
 
     const uppercase_filler = [_]Deletion{.{ .start_token = 0, .end_token = 1, .source = "ER", .kind = .filler, .proof_start_token = 0, .proof_end_token = 1, .cue = "ER", .category = null }};
     try expectInvalidPlan("ER diagram", &.{}, .{ .version = 2, .deletions = &uppercase_filler, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
+    const exact_uppercase_filler = [_]Deletion{.{ .start_token = 2, .end_token = 3, .source = "ER", .kind = .filler, .proof_start_token = 2, .proof_end_token = 3, .cue = "ER", .category = null }};
+    try expectInvalidPlan("go to ER now", &.{}, .{ .version = 2, .deletions = &exact_uppercase_filler, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
     const negated_backtrack = [_]Deletion{.{ .start_token = 2, .end_token = 4, .source = "10 actually", .kind = .backtrack, .proof_start_token = 4, .proof_end_token = 5, .cue = "actually", .category = .number }};
     try expectInvalidPlan("do not 10 actually 12", &.{}, .{ .version = 2, .deletions = &negated_backtrack, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
+    const exact_negated_backtrack = [_]Deletion{.{ .start_token = 3, .end_token = 5, .source = "10 actually", .kind = .backtrack, .proof_start_token = 5, .proof_end_token = 6, .cue = "actually", .category = .number }};
+    try expectInvalidPlan("It is not 10, actually 12", &.{}, .{ .version = 2, .deletions = &exact_negated_backtrack, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
+    const exact_orthographic_change = [_]Correction{.{ .start_token = 0, .end_token = 1, .source = "never", .replacement = "newer", .kind = .orthographic }};
+    try expectInvalidPlan("never change this", &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &exact_orthographic_change, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
 }
 
 test "clean and polished bounds fail back raw" {
