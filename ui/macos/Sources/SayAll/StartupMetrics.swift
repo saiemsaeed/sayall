@@ -3,23 +3,55 @@ import Foundation
 
 struct StartupMetricSample: Codable, Equatable {
     let shortcutToHUDMs: Int?
+    let shortcutToFirstPCMWriteMs: Int?
     let shortcutToRecordingReadyMs: Int?
     let targetCaptureMs: Int
     let configLoadMs: Int
     let microphonePermissionMs: Int
     let compatibilityMs: Int
     let audioStartMs: Int
+    let audioFilePreparationMs: Int?
+    let audioDeviceResolutionMs: Int?
+    let audioInputInitializationMs: Int?
+    let audioInputStartMs: Int?
     let streamReadyMs: Int
     let outcome: String
 
+    init(shortcutToHUDMs: Int?, shortcutToFirstPCMWriteMs: Int? = nil,
+         shortcutToRecordingReadyMs: Int?, targetCaptureMs: Int,
+         configLoadMs: Int, microphonePermissionMs: Int, compatibilityMs: Int, audioStartMs: Int,
+         audioFilePreparationMs: Int? = nil, audioDeviceResolutionMs: Int? = nil,
+         audioInputInitializationMs: Int? = nil, audioInputStartMs: Int? = nil,
+         streamReadyMs: Int, outcome: String) {
+        self.shortcutToHUDMs = shortcutToHUDMs
+        self.shortcutToFirstPCMWriteMs = shortcutToFirstPCMWriteMs
+        self.shortcutToRecordingReadyMs = shortcutToRecordingReadyMs
+        self.targetCaptureMs = targetCaptureMs
+        self.configLoadMs = configLoadMs
+        self.microphonePermissionMs = microphonePermissionMs
+        self.compatibilityMs = compatibilityMs
+        self.audioStartMs = audioStartMs
+        self.audioFilePreparationMs = audioFilePreparationMs
+        self.audioDeviceResolutionMs = audioDeviceResolutionMs
+        self.audioInputInitializationMs = audioInputInitializationMs
+        self.audioInputStartMs = audioInputStartMs
+        self.streamReadyMs = streamReadyMs
+        self.outcome = outcome
+    }
+
     enum CodingKeys: String, CodingKey {
         case shortcutToHUDMs = "shortcut_to_hud_ms"
+        case shortcutToFirstPCMWriteMs = "shortcut_to_first_pcm_write_ms"
         case shortcutToRecordingReadyMs = "shortcut_to_recording_ready_ms"
         case targetCaptureMs = "target_capture_ms"
         case configLoadMs = "config_load_ms"
         case microphonePermissionMs = "microphone_permission_ms"
         case compatibilityMs = "compatibility_ms"
         case audioStartMs = "audio_start_ms"
+        case audioFilePreparationMs = "audio_file_preparation_ms"
+        case audioDeviceResolutionMs = "audio_device_resolution_ms"
+        case audioInputInitializationMs = "audio_input_initialization_ms"
+        case audioInputStartMs = "audio_input_start_ms"
         case streamReadyMs = "stream_ready_ms"
         case outcome
     }

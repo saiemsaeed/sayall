@@ -235,12 +235,12 @@ fn run(
                     Err(ToggleError::Busy)
                 } else if expected == State::Idle && active.is_none() {
                     generation += 1;
-                    publish(State::Starting, generation, None, None, true);
                     let mut loaded_notifications = None;
                     let started = config::load().map_err(|e| e.to_string()).and_then(|cfg| {
                         loaded_notifications = Some(cfg.notifications);
                         let c = capture::Capture::start(&root, generation, &cfg.recording.source)
                             .map_err(|e| e.to_string())?;
+                        publish(State::Starting, generation, None, None, cfg.show_timer);
                         let (pcm, wav) = c.paths();
                         let path = worker::resolve().map_err(|e| e.to_string())?;
                         let w = worker::Worker::start(
