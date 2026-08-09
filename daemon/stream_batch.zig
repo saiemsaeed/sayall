@@ -3,6 +3,7 @@ const batch = @import("batch.zig");
 const deepgram_stream = @import("stt/deepgram_stream.zig");
 const provider = @import("provider_config.zig");
 const keywords = @import("keywords.zig");
+const processing = @import("processing.zig");
 const worker_protocol = @import("worker_protocol.zig");
 const secure_audio = @import("secure_audio.zig");
 
@@ -24,7 +25,7 @@ pub const Request = struct {
     groq_api_key: []const u8,
     groq_model: []const u8 = "openai/gpt-oss-20b",
     groq_base_url: []const u8 = "https://api.groq.com/openai/v1/chat/completions",
-    cleanup_enabled: bool,
+    processing_profile: processing.Profile,
 };
 
 pub const Finish = struct {
@@ -37,16 +38,21 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
     var storage: [batch.max_request_bytes + 1]u8 = undefined;
     var reader = std.Io.File.stdin().reader(io, &storage);
     const header = readLine(&reader.interface) catch {
-        return writeResult(gpa, io, .{ .status = .@"error", .@"error" = .invalid_request });
+        return writeInvalidResult(gpa, io);
     } orelse return;
     const parsed = parseRequest(gpa, header) catch {
-        return writeResult(gpa, io, .{ .status = .@"error", .@"error" = .invalid_request });
+        return writeInvalidResult(gpa, io);
     };
     defer parsed.deinit();
     const request = parsed.value;
 
     const pcm = validateAndOpenAudio(io, request) catch {
-        return writeResult(gpa, io, .{ .status = .@"error", .@"error" = .invalid_request });
+        return writeResult(gpa, io, .{
+            .status = .@"error",
+            .@"error" = .invalid_request,
+            .processing_profile = request.processing_profile,
+            .transport = .rest,
+        });
     };
 
     var cfg: provider.SttConfig = .{
@@ -84,13 +90,23 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
         .ignore_unknown_fields = false,
     }) catch {
         if (session) |active| active.cancel();
-        return writeResult(gpa, io, .{ .status = .@"error", .@"error" = .invalid_request });
+        return writeResult(gpa, io, .{
+            .status = .@"error",
+            .@"error" = .invalid_request,
+            .processing_profile = request.processing_profile,
+            .transport = .rest,
+        });
     };
     defer parsed_finish.deinit();
     const finish = parsed_finish.value;
     if (finish.version != worker_protocol.version or !std.mem.eql(u8, finish.command, "finish")) {
         if (session) |active| active.cancel();
-        return writeResult(gpa, io, .{ .status = .@"error", .@"error" = .invalid_request });
+        return writeResult(gpa, io, .{
+            .status = .@"error",
+            .@"error" = .invalid_request,
+            .processing_profile = request.processing_profile,
+            .transport = .rest,
+        });
     }
 
     var streamed: ?[]u8 = null;
@@ -165,7 +181,7 @@ fn batchRequest(request: Request) batch.Request {
         .groq_api_key = request.groq_api_key,
         .groq_model = request.groq_model,
         .groq_base_url = request.groq_base_url,
-        .cleanup_enabled = request.cleanup_enabled,
+        .processing_profile = request.processing_profile,
     };
 }
 
@@ -190,6 +206,15 @@ fn writeResult(gpa: std.mem.Allocator, io: std.Io, result: batch.Result) !void {
     try writeLine(io, json);
 }
 
+fn writeInvalidResult(gpa: std.mem.Allocator, io: std.Io) !void {
+    return writeResult(gpa, io, .{
+        .status = .@"error",
+        .@"error" = .invalid_request,
+        .processing_profile = .verbatim,
+        .transport = .rest,
+    });
+}
+
 fn writeJsonLine(gpa: std.mem.Allocator, io: std.Io, value: anytype) !void {
     const json = try std.json.Stringify.valueAlloc(gpa, value, .{});
     defer gpa.free(json);
@@ -205,10 +230,12 @@ fn writeLine(io: std.Io, bytes: []const u8) !void {
 }
 
 test "stream request is strict and preserves regional provider settings" {
-    const json = "{\"version\":2,\"wav_path\":\"/tmp/a.wav\",\"pcm_path\":\"/tmp/a.pcm\",\"deepgram_api_key\":\"d\",\"deepgram_model\":\"nova-3\",\"deepgram_language\":\"en-GB\",\"deepgram_region\":\"eu\",\"groq_api_key\":\"\",\"cleanup_enabled\":false}";
+    const json = "{\"version\":3,\"wav_path\":\"/tmp/a.wav\",\"pcm_path\":\"/tmp/a.pcm\",\"deepgram_api_key\":\"d\",\"deepgram_model\":\"nova-3\",\"deepgram_language\":\"en-GB\",\"deepgram_region\":\"eu\",\"groq_api_key\":\"\",\"processing_profile\":\"clean\"}";
     const parsed = try parseRequest(std.testing.allocator, json);
     defer parsed.deinit();
     try std.testing.expectEqualStrings("eu", parsed.value.deepgram_region);
     try std.testing.expectEqualStrings("en-GB", batchRequest(parsed.value).deepgram_language);
+    try std.testing.expectEqual(processing.Profile.clean, batchRequest(parsed.value).processing_profile);
     try std.testing.expectError(error.InvalidRequest, parseRequest(std.testing.allocator, json[0 .. json.len - 1]));
+    try std.testing.expectError(error.InvalidRequest, parseRequest(std.testing.allocator, "{\"version\":3,\"wav_path\":\"/tmp/a.wav\",\"pcm_path\":\"/tmp/a.pcm\",\"deepgram_api_key\":\"d\",\"groq_api_key\":\"\"}"));
 }

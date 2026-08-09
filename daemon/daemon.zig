@@ -77,6 +77,8 @@ const ProviderContext = struct {
     audio_ms: u64,
     stopped_at_awake_ms: i64,
     rest_latency_ms: u64 = 0,
+    planner_latency_ms: ?u64 = null,
+    metrics_attempt_id: ?[]u8 = null,
 };
 
 fn providerRest(context_ptr: ?*anyopaque, gpa: Allocator) ![]u8 {
@@ -94,21 +96,44 @@ fn providerRest(context_ptr: ?*anyopaque, gpa: Allocator) ![]u8 {
         context.stopped_at_awake_ms,
     );
     context.rest_latency_ms = tracked.latency_ms;
+    context.metrics_attempt_id = tracked.metrics_attempt_id;
     d.log("REST STT in {d}ms ({d} bytes)", .{ tracked.latency_ms, tracked.transcript.len });
     return tracked.transcript;
 }
 
-fn providerCleanup(context_ptr: ?*anyopaque, gpa: Allocator, raw: []const u8) ![]u8 {
+fn providerPlanner(context_ptr: ?*anyopaque, gpa: Allocator, profile: config.processing.Profile, raw: []const u8) ![]u8 {
     const context: *ProviderContext = @ptrCast(@alignCast(context_ptr.?));
     const d = context.daemon;
     d.setStage(.cleaning);
     const started = d.nowMs();
-    const cleaned = groq.cleanup(gpa, d.io, &d.cfg.llm, d.cfg.stt.keyterms, raw, d.cfg.verbose) catch |err| {
+    const cleaned = switch (profile) {
+        .polished => groq.polished(gpa, d.io, &d.cfg.llm, d.cfg.stt.keyterms, raw, d.cfg.verbose),
+        .legacy_v1 => groq.cleanup(gpa, d.io, &d.cfg.llm, d.cfg.stt.keyterms, raw, d.cfg.verbose),
+        else => error.InvalidProfile,
+    } catch |err| {
+        context.planner_latency_ms = @intCast(@max(0, d.nowMs() - started));
         d.log("llm cleanup failed: {s} — using raw transcript", .{@errorName(err)});
         return err;
     };
+    context.planner_latency_ms = @intCast(@max(0, d.nowMs() - started));
     d.log("llm cleanup in {d}ms ({d} bytes)", .{ d.nowMs() - started, cleaned.len });
     return cleaned;
+}
+
+fn providerClean(context_ptr: ?*anyopaque, gpa: Allocator, raw: []const u8) ![]u8 {
+    const context: *ProviderContext = @ptrCast(@alignCast(context_ptr.?));
+    context.daemon.setStage(.cleaning);
+    return groq.clean(gpa, raw, context.daemon.cfg.stt.keyterms);
+}
+
+fn annotateProcessingMetrics(context: *ProviderContext, profile: config.processing.Profile, outcome: config.processing.TransformationOutcome) void {
+    const attempt_id = context.metrics_attempt_id orelse return;
+    const store = context.daemon.metrics_store orelse return;
+    store.annotateProcessing(context.daemon.gpa, context.daemon.io, attempt_id, .{
+        .processing_profile = profile,
+        .transformation_outcome = outcome,
+        .planner_latency_ms = context.planner_latency_ms,
+    }) catch {};
 }
 
 pub fn run(gpa: Allocator, io: Io, cfg: *config.Config, runtime: paths.Runtime, metrics_path: []const u8) !void {
@@ -662,6 +687,9 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
     var completion_reason: ?[]const u8 = null;
     var stt_attempted = false;
     var stt_latency_ms: u64 = 0;
+    const processing_profile = if (job.raw) config.processing.Profile.verbatim else config.effectiveProcessingProfile(d.cfg);
+    var transformation_outcome: config.processing.TransformationOutcome = .not_requested;
+    var planner_latency_ms: ?u64 = null;
     var stream_session = job.stream;
     defer if (stream_session) |stream| stream.cancel();
     defer {
@@ -677,6 +705,9 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
             .reason = completion_reason,
             .stt_attempted = stt_attempted,
             .latency_ms = stt_latency_ms,
+            .processing_profile = processing_profile,
+            .transformation_outcome = transformation_outcome,
+            .planner_latency_ms = planner_latency_ms,
         } }) catch {};
         d.unlock();
     }
@@ -731,6 +762,7 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
     completion_phase = .stt;
     stt_attempted = true;
     var maybe_transcript: ?[]u8 = null;
+    var stream_metrics_attempt_id: ?[]u8 = null;
     if (stream_session) |stream| {
         const stream_result = stream.finish();
         stream_session = null;
@@ -738,7 +770,7 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
             .success => |success| {
                 maybe_transcript = success.transcript;
                 stt_latency_ms = success.stop_to_final_ms;
-                metrics.recordCompletedTranscript(
+                stream_metrics_attempt_id = metrics.recordCompletedTranscript(
                     gpa,
                     io,
                     d.metrics_store,
@@ -779,17 +811,20 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
         .wav = wav,
         .audio_ms = @intFromFloat(seconds * 1000.0),
         .stopped_at_awake_ms = job.stopped_at_awake_ms,
+        .metrics_attempt_id = stream_metrics_attempt_id,
     };
+    defer if (provider_context.metrics_attempt_id) |attempt_id| gpa.free(attempt_id);
     const needs_rest = maybe_transcript == null;
     const transcript_owned = maybe_transcript;
     maybe_transcript = null;
-    const outcome = provider_processing.process(gpa, transcript_owned, !job.raw and d.cfg.llm.enabled, .{
+    const outcome = provider_processing.process(gpa, transcript_owned, processing_profile, .{
         .max_bytes = null,
         .require_utf8 = false,
     }, .{
         .context = &provider_context,
         .rest = providerRest,
-        .cleanup = providerCleanup,
+        .clean = providerClean,
+        .planner = providerPlanner,
     }) catch |err| {
         completion_reason = "transcription_failed";
         d.publishError("transcription_failed", "Transcription failed");
@@ -797,16 +832,22 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
         d.log("stt failed: {s}", .{@errorName(err)});
         return;
     };
+    planner_latency_ms = provider_context.planner_latency_ms;
     if (needs_rest) stt_latency_ms = provider_context.rest_latency_ms;
     const final = switch (outcome) {
         .no_speech => {
             completion_reason = "no_speech";
+            annotateProcessingMetrics(&provider_context, processing_profile, .not_requested);
             d.publishError("no_speech", "No speech detected");
             d.inform("SayAll", "No speech detected");
             return;
         },
-        .success => |success| success.text,
+        .success => |success| blk: {
+            transformation_outcome = success.transformation_outcome;
+            break :blk success.text;
+        },
     };
+    annotateProcessingMetrics(&provider_context, processing_profile, transformation_outcome);
     defer gpa.free(final);
     completion_phase = .post_stt;
 

@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var shortcutAvailable = false
     private var statusGeneration = 0
     private var menuState: HostControlState?
+    private var menuConfigurationRevision = 0
     private var errorNotificationTask: Task<Void, Never>?
     private let controlServer = ControlServer()
     private var ownsInstance = false
@@ -34,7 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         coordinator = Coordinator(
             configuration: ConfigurationLoader(),
-            changed: { [weak self] in self?.refreshStatus() }
+            changed: { [weak self] in self?.refreshStatus() },
+            configurationAvailabilityChanged: { [weak self] in self?.rebuildMenu() }
         )
         do { try controlServer.start(state: { [weak self] in
             self?.coordinator.hostControlState ?? .error
@@ -90,6 +92,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func selectMicrophone(_ sender: NSMenuItem) {
         guard coordinator.state == .idle else { return }
         MicrophoneSelection.uniqueID = sender.representedObject as? String
+        rebuildMenu()
+    }
+    @objc private func selectProcessingMode(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String,
+              let mode = ProcessingMode(rawValue: rawValue) else { return }
+        if let message = coordinator.selectProcessingMode(mode) {
+            let alert = NSAlert()
+            alert.messageText = "Could not change processing mode"
+            alert.informativeText = message
+            alert.alertStyle = .warning
+            alert.runModal()
+        }
         rebuildMenu()
     }
     @objc private func installCommandLineTool() {
@@ -200,6 +214,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert(); alert.messageText = "Install Command Line Tool"; alert.informativeText = message
         alert.addButton(withTitle: "OK"); alert.runModal()
     }
+    private func showWarningAlert(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "SayAll warning"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.runModal()
+    }
     @objc private func openMicSettings() { openSystemSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") }
     @objc private func openAXSettings() { openSystemSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") }
     @objc private func requestAccessibility() {
@@ -246,6 +267,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         reload.target = self
         reload.isEnabled = coordinator.state == .idle
         menu.addItem(reload)
+        let processingItem = NSMenuItem(title: "Processing Mode", action: nil, keyEquivalent: "")
+        let processingMenu = NSMenu(title: "Processing Mode")
+        let selectedMode = coordinator.configuredProcessingMode
+        for mode in ProcessingMode.allCases {
+            let item = NSMenuItem(title: "\(mode.title) — \(mode.description)",
+                action: #selector(selectProcessingMode(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = mode.rawValue
+            item.state = selectedMode == mode ? .on : .off
+            item.isEnabled = coordinator.canChangeConfiguration
+            item.setAccessibilityLabel("\(mode.title) processing mode. \(mode.description)")
+            processingMenu.addItem(item)
+        }
+        processingItem.submenu = processingMenu
+        menu.addItem(processingItem)
         menu.addItem(.separator())
         let cli = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/sayall").path
         let target = "/usr/local/bin/sayall"
@@ -314,13 +350,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showTimer: coordinator.showTimer
         )
         if startupPresented { coordinator.markHUDPresented() }
-        if menuState != coordinator.hostControlState {
+        if menuState != coordinator.hostControlState || menuConfigurationRevision != coordinator.configurationRevision {
             menuState = coordinator.hostControlState
+            menuConfigurationRevision = coordinator.configurationRevision
             rebuildMenu()
         }
         if let warning = coordinator.takePendingWarning() {
-            Task { [errorNotifier] in
-                _ = await errorNotifier.notify(title: "SayAll warning", message: warning)
+            Task { [weak self, errorNotifier] in
+                await WarningPresenter.present(message: warning, notify: {
+                    await errorNotifier.notify(title: "SayAll warning", message: warning)
+                }, showAlert: { [weak self] message in
+                    self?.showWarningAlert(message)
+                })
             }
         }
         guard coordinator.state == .error else { return }
@@ -343,6 +384,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return noErr
         }, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), nil)
         rebuildMenu()
+    }
+}
+
+@MainActor
+enum WarningPresenter {
+    static func present(message: String, notify: () async -> Bool,
+                        showAlert: (String) -> Void) async {
+        if !(await notify()) { showAlert(message) }
     }
 }
 

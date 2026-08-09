@@ -4,6 +4,7 @@ const provider = @import("provider_config.zig");
 const deepgram = @import("stt/deepgram.zig");
 const groq = @import("llm/groq.zig");
 const keywords = @import("keywords.zig");
+const processing = @import("processing.zig");
 const provider_processing = @import("provider_processing.zig");
 const worker_protocol = @import("worker_protocol.zig");
 const secure_audio = @import("secure_audio.zig");
@@ -27,7 +28,7 @@ pub const Request = struct {
     groq_api_key: []const u8,
     groq_model: []const u8 = "openai/gpt-oss-20b",
     groq_base_url: []const u8 = "https://api.groq.com/openai/v1/chat/completions",
-    cleanup_enabled: bool,
+    processing_profile: processing.Profile,
 };
 pub const ErrorCode = enum {
     invalid_request,
@@ -43,7 +44,7 @@ pub const ErrorCode = enum {
     response_too_large,
     internal,
 };
-pub const Warning = enum { cleanup_failed };
+pub const Warning = enum { transformation_failed };
 pub const Status = enum { success, no_speech, @"error" };
 pub const Transport = enum { rest, stream };
 pub const Result = struct {
@@ -52,7 +53,8 @@ pub const Result = struct {
     text: ?[]const u8 = null,
     warning: ?Warning = null,
     @"error": ?ErrorCode = null,
-    transport: ?Transport = null,
+    processing_profile: processing.Profile,
+    transport: Transport,
 };
 pub const WireResult = struct {
     version: u32,
@@ -60,12 +62,14 @@ pub const WireResult = struct {
     text: ?[]const u8 = null,
     warning: ?Warning = null,
     @"error": ?ErrorCode = null,
-    transport: ?Transport = null,
+    processing_profile: processing.Profile,
+    transport: Transport,
 };
 pub const Seam = struct {
     context: ?*anyopaque = null,
     transcribe: *const fn (?*anyopaque, std.mem.Allocator, std.Io, *const provider.SttConfig, []const u8) anyerror![]u8 = liveTranscribe,
-    cleanup: *const fn (?*anyopaque, std.mem.Allocator, std.Io, *const provider.LlmConfig, []const []const u8, []const u8) anyerror![]u8 = liveCleanup,
+    clean: *const fn (?*anyopaque, std.mem.Allocator, []const []const u8, []const u8) anyerror![]u8 = liveClean,
+    planner: *const fn (?*anyopaque, std.mem.Allocator, std.Io, *const provider.LlmConfig, []const []const u8, processing.Profile, []const u8) anyerror![]u8 = livePlanner,
 };
 
 pub fn parseRequest(gpa: std.mem.Allocator, input: []const u8) !std.json.Parsed(Request) {
@@ -78,28 +82,29 @@ pub fn process(gpa: std.mem.Allocator, io: std.Io, r: Request, seam: Seam) Resul
 }
 
 pub fn processWithTranscript(gpa: std.mem.Allocator, io: std.Io, r: Request, seam: Seam, streamed: ?[]const u8) Result {
-    if (r.version != worker_protocol.version) return fail(.incompatible_version);
-    if (r.deepgram_api_key.len == 0) return fail(.missing_deepgram_key);
-    if (r.deepgram_dictation and !r.deepgram_punctuate) return fail(.invalid_request);
-    if (!safeSecret(r.deepgram_api_key) or !safeSecret(r.groq_api_key)) return fail(.invalid_request);
+    const transport: Transport = if (streamed != null) .stream else .rest;
+    if (r.version != worker_protocol.version) return fail(.incompatible_version, r.processing_profile, transport);
+    if (r.deepgram_api_key.len == 0) return fail(.missing_deepgram_key, r.processing_profile, transport);
+    if (r.deepgram_dictation and !r.deepgram_punctuate) return fail(.invalid_request, r.processing_profile, transport);
+    if (!safeSecret(r.deepgram_api_key) or !safeSecret(r.groq_api_key)) return fail(.invalid_request, r.processing_profile, transport);
     if (!safeProviderValue(r.deepgram_model) or !safeProviderValue(r.deepgram_language) or
         !safeLlmModel(r.groq_model) or !validRegion(r.deepgram_region) or
-        !std.mem.eql(u8, r.groq_base_url, "https://api.groq.com/openai/v1/chat/completions")) return fail(.invalid_request);
-    keywords.validate(r.deepgram_keyterms) catch return fail(.invalid_request);
+        !std.mem.eql(u8, r.groq_base_url, "https://api.groq.com/openai/v1/chat/completions")) return fail(.invalid_request, r.processing_profile, transport);
+    keywords.validate(r.deepgram_keyterms) catch return fail(.invalid_request, r.processing_profile, transport);
     if (r.deepgram_keyterms.len > 0 and !std.mem.eql(u8, r.deepgram_model, "nova-3") and
-        !std.mem.startsWith(u8, r.deepgram_model, "nova-3-")) return fail(.invalid_request);
-    const opened = secure_audio.open(io, r.wav_path, max_audio_bytes, .nonempty) catch return fail(.invalid_audio);
+        !std.mem.startsWith(u8, r.deepgram_model, "nova-3-")) return fail(.invalid_request, r.processing_profile, transport);
+    const opened = secure_audio.open(io, r.wav_path, max_audio_bytes, .nonempty) catch return fail(.invalid_audio, r.processing_profile, transport);
     var file = opened.file;
     defer file.close(io);
-    const stat = file.stat(io) catch return fail(.invalid_audio);
-    if (stat.kind != .file) return fail(.invalid_audio);
+    const stat = file.stat(io) catch return fail(.invalid_audio, r.processing_profile, transport);
+    if (stat.kind != .file) return fail(.invalid_audio, r.processing_profile, transport);
     var file_reader = file.reader(io, &.{});
-    const wav = file_reader.interface.allocRemaining(gpa, .limited(max_audio_bytes)) catch return fail(.invalid_audio);
+    const wav = file_reader.interface.allocRemaining(gpa, .limited(max_audio_bytes)) catch return fail(.invalid_audio, r.processing_profile, transport);
     defer gpa.free(wav);
-    const info = recorder.inspectWav(wav) catch return fail(.invalid_audio);
-    if (info.channels != 1 or info.sample_rate != 16_000) return fail(.invalid_audio);
-    if (info.seconds < 0.3) return fail(.audio_too_short);
-    if (info.seconds > 300) return fail(.audio_too_long);
+    const info = recorder.inspectWav(wav) catch return fail(.invalid_audio, r.processing_profile, transport);
+    if (info.channels != 1 or info.sample_rate != 16_000) return fail(.invalid_audio, r.processing_profile, transport);
+    if (info.seconds < 0.3) return fail(.audio_too_short, r.processing_profile, transport);
+    if (info.seconds > 300) return fail(.audio_too_long, r.processing_profile, transport);
     const stt: provider.SttConfig = .{
         .api_key = r.deepgram_api_key,
         .model = r.deepgram_model,
@@ -114,25 +119,27 @@ pub fn processWithTranscript(gpa: std.mem.Allocator, io: std.Io, r: Request, sea
         .streaming = false,
     };
     var context: CoreContext = .{ .io = io, .request = &r, .seam = seam, .stt = &stt, .wav = wav };
-    const streamed_owned = if (streamed) |text| gpa.dupe(u8, text) catch return fail(.internal) else null;
-    const transport: Transport = if (streamed != null) .stream else .rest;
-    const outcome = provider_processing.process(gpa, streamed_owned, r.cleanup_enabled and r.groq_api_key.len > 0, .{
+    const streamed_owned = if (streamed) |text| gpa.dupe(u8, text) catch return fail(.internal, r.processing_profile, transport) else null;
+    const outcome = provider_processing.process(gpa, streamed_owned, r.processing_profile, .{
         .max_bytes = max_output_bytes,
         .require_utf8 = true,
     }, .{
         .context = &context,
         .rest = coreRest,
-        .cleanup = coreCleanup,
-    }) catch |err| return failWithTransport(
+        .clean = coreClean,
+        .planner = corePlanner,
+    }) catch |err| return fail(
         if (err == error.ResponseTooLarge) .response_too_large else mapDeepgramError(err),
+        r.processing_profile,
         transport,
     );
     return switch (outcome) {
-        .no_speech => .{ .status = .no_speech, .transport = transport },
+        .no_speech => .{ .status = .no_speech, .processing_profile = r.processing_profile, .transport = transport },
         .success => |value| .{
             .status = .success,
             .text = value.text,
-            .warning = if (value.warning != null) .cleanup_failed else null,
+            .warning = if (value.warning != null) .transformation_failed else null,
+            .processing_profile = r.processing_profile,
             .transport = transport,
         },
     };
@@ -151,22 +158,24 @@ fn coreRest(context_ptr: ?*anyopaque, gpa: std.mem.Allocator) ![]u8 {
     return context.seam.transcribe(context.seam.context, gpa, context.io, context.stt, context.wav);
 }
 
-fn coreCleanup(context_ptr: ?*anyopaque, gpa: std.mem.Allocator, raw: []const u8) ![]u8 {
+fn coreClean(context_ptr: ?*anyopaque, gpa: std.mem.Allocator, raw: []const u8) ![]u8 {
     const context: *CoreContext = @ptrCast(@alignCast(context_ptr.?));
+    return context.seam.clean(context.seam.context, gpa, context.request.deepgram_keyterms, raw);
+}
+
+fn corePlanner(context_ptr: ?*anyopaque, gpa: std.mem.Allocator, profile: processing.Profile, raw: []const u8) ![]u8 {
+    const context: *CoreContext = @ptrCast(@alignCast(context_ptr.?));
+    if (profile != context.request.processing_profile) return error.InvalidProfile;
     const llm: provider.LlmConfig = .{
         .api_key = context.request.groq_api_key,
         .model = context.request.groq_model,
         .base_url = context.request.groq_base_url,
     };
-    return context.seam.cleanup(context.seam.context, gpa, context.io, &llm, context.request.deepgram_keyterms, raw);
+    return context.seam.planner(context.seam.context, gpa, context.io, &llm, context.request.deepgram_keyterms, profile, raw);
 }
 
-fn fail(code: ErrorCode) Result {
-    return .{ .status = .@"error", .@"error" = code };
-}
-
-fn failWithTransport(code: ErrorCode, transport: Transport) Result {
-    return .{ .status = .@"error", .@"error" = code, .transport = transport };
+fn fail(code: ErrorCode, profile: processing.Profile, transport: Transport) Result {
+    return .{ .status = .@"error", .@"error" = code, .processing_profile = profile, .transport = transport };
 }
 
 fn safeSecret(secret: []const u8) bool {
@@ -249,8 +258,16 @@ fn liveTranscribe(_: ?*anyopaque, gpa: std.mem.Allocator, io: std.Io, cfg: *cons
     return deepgram.transcribe(gpa, io, cfg, wav, false);
 }
 
-fn liveCleanup(_: ?*anyopaque, gpa: std.mem.Allocator, io: std.Io, cfg: *const provider.LlmConfig, keyterms: []const []const u8, raw: []const u8) ![]u8 {
-    return groq.cleanup(gpa, io, cfg, keyterms, raw, false);
+fn liveClean(_: ?*anyopaque, gpa: std.mem.Allocator, keyterms: []const []const u8, raw: []const u8) ![]u8 {
+    return groq.clean(gpa, raw, keyterms);
+}
+
+fn livePlanner(_: ?*anyopaque, gpa: std.mem.Allocator, io: std.Io, cfg: *const provider.LlmConfig, keyterms: []const []const u8, profile: processing.Profile, raw: []const u8) ![]u8 {
+    return switch (profile) {
+        .polished => groq.polished(gpa, io, cfg, keyterms, raw, false),
+        .legacy_v1 => groq.cleanup(gpa, io, cfg, keyterms, raw, false),
+        else => error.InvalidProfile,
+    };
 }
 
 const FakeProvider = struct {
@@ -258,9 +275,17 @@ const FakeProvider = struct {
     cleanup_fails: bool = false,
     expected_region: []const u8 = "global",
     expected_formatting: bool = false,
+    transcribe_calls: usize = 0,
+    clean_calls: usize = 0,
+    planner_calls: usize = 0,
+    polished_calls: usize = 0,
+    legacy_calls: usize = 0,
+    invalid_polished_plan: bool = false,
+    valid_no_change_plan: bool = false,
 
     fn transcribe(context: ?*anyopaque, gpa: std.mem.Allocator, _: std.Io, cfg: *const provider.SttConfig, _: []const u8) ![]u8 {
         const self: *FakeProvider = @ptrCast(@alignCast(context.?));
+        self.transcribe_calls += 1;
         if (!std.mem.eql(u8, cfg.region, self.expected_region)) return error.UnexpectedRegion;
         if (cfg.smart_format != self.expected_formatting or cfg.punctuate != self.expected_formatting or
             cfg.dictation != self.expected_formatting or cfg.numerals != self.expected_formatting or
@@ -268,14 +293,29 @@ const FakeProvider = struct {
         return gpa.dupe(u8, self.transcript);
     }
 
-    fn cleanup(context: ?*anyopaque, gpa: std.mem.Allocator, _: std.Io, _: *const provider.LlmConfig, _: []const []const u8, raw: []const u8) ![]u8 {
+    fn clean(context: ?*anyopaque, gpa: std.mem.Allocator, _: []const []const u8, raw: []const u8) ![]u8 {
         const self: *FakeProvider = @ptrCast(@alignCast(context.?));
+        self.clean_calls += 1;
         if (self.cleanup_fails) return error.RequestFailed;
         return std.fmt.allocPrint(gpa, "clean: {s}", .{raw});
     }
 
+    fn planner(context: ?*anyopaque, gpa: std.mem.Allocator, _: std.Io, _: *const provider.LlmConfig, keyterms: []const []const u8, profile: processing.Profile, raw: []const u8) ![]u8 {
+        const self: *FakeProvider = @ptrCast(@alignCast(context.?));
+        self.planner_calls += 1;
+        switch (profile) {
+            .polished => self.polished_calls += 1,
+            .legacy_v1 => self.legacy_calls += 1,
+            else => return error.InvalidProfile,
+        }
+        if (self.cleanup_fails) return error.RequestFailed;
+        if (self.invalid_polished_plan and profile == .polished) return groq.cleanup_engine.polishedFromJson(gpa, raw, keyterms, "{}");
+        if (self.valid_no_change_plan and profile == .polished) return groq.cleanup_engine.polished(gpa, raw, keyterms, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
+        return std.fmt.allocPrint(gpa, "{s}: {s}", .{ @tagName(profile), raw });
+    }
+
     fn seam(self: *FakeProvider) Seam {
-        return .{ .context = self, .transcribe = transcribe, .cleanup = cleanup };
+        return .{ .context = self, .transcribe = transcribe, .clean = clean, .planner = planner };
     }
 };
 
@@ -298,25 +338,33 @@ fn writeTestWav(tmp: *std.testing.TmpDir, sample_bytes: usize) ![]u8 {
 }
 
 test "strict bounded request and result JSON" {
-    const json = "{\"version\":2,\"wav_path\":\"/a\",\"deepgram_api_key\":\"d\",\"groq_api_key\":\"g\",\"cleanup_enabled\":true}";
+    const json = "{\"version\":3,\"wav_path\":\"/a\",\"deepgram_api_key\":\"d\",\"groq_api_key\":\"g\",\"processing_profile\":\"polished\"}";
     const parsed = try parseRequest(std.testing.allocator, json);
     defer parsed.deinit();
     try std.testing.expectError(error.InvalidRequest, parseRequest(std.testing.allocator, json ++ "x"));
-    const out = try stringifyResult(std.testing.allocator, .{ .status = .success, .text = "München" });
+    try std.testing.expectError(error.InvalidRequest, parseRequest(std.testing.allocator, "{\"version\":3,\"wav_path\":\"/a\",\"deepgram_api_key\":\"d\",\"groq_api_key\":\"g\"}"));
+    try std.testing.expectError(error.InvalidRequest, parseRequest(std.testing.allocator, "{\"version\":3,\"wav_path\":\"/a\",\"deepgram_api_key\":\"d\",\"groq_api_key\":\"g\",\"cleanup_enabled\":true}"));
+    const out = try stringifyResult(std.testing.allocator, .{
+        .status = .success,
+        .text = "München",
+        .processing_profile = .verbatim,
+        .transport = .rest,
+    });
     defer std.testing.allocator.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "München") != null);
 }
 
 test "worker result decoder requires fields and status semantics" {
-    const valid = try parseResult(std.testing.allocator, "{\"version\":2,\"status\":\"success\",\"text\":\"hello\",\"future\":true}");
+    const valid = try parseResult(std.testing.allocator, "{\"version\":3,\"status\":\"success\",\"text\":\"hello\",\"processing_profile\":\"clean\",\"transport\":\"stream\",\"future\":true}");
     defer valid.deinit();
     try std.testing.expectEqualStrings("hello", valid.value.text.?);
     for ([_][]const u8{
         "{\"status\":\"success\",\"text\":\"hello\"}",
-        "{\"version\":2,\"status\":\"success\"}",
-        "{\"version\":2,\"status\":\"success\",\"text\":\"\"}",
-        "{\"version\":2,\"status\":\"no_speech\",\"text\":\"unexpected\"}",
-        "{\"version\":2,\"status\":\"error\"}",
+        "{\"version\":3,\"status\":\"success\",\"text\":\"hello\",\"transport\":\"rest\"}",
+        "{\"version\":3,\"status\":\"success\",\"text\":\"hello\",\"processing_profile\":\"verbatim\"}",
+        "{\"version\":3,\"status\":\"success\",\"text\":\"\",\"processing_profile\":\"verbatim\",\"transport\":\"rest\"}",
+        "{\"version\":3,\"status\":\"no_speech\",\"text\":\"unexpected\",\"processing_profile\":\"verbatim\",\"transport\":\"rest\"}",
+        "{\"version\":3,\"status\":\"error\",\"processing_profile\":\"verbatim\",\"transport\":\"rest\"}",
     }) |invalid_json| try std.testing.expectError(error.InvalidResult, parseResult(std.testing.allocator, invalid_json));
 }
 
@@ -326,7 +374,7 @@ test "provider mapping is deterministic" {
     try std.testing.expectEqual(ErrorCode.deepgram_server, mapDeepgramError(error.ServerError));
 }
 
-test "process validates canonical audio and preserves raw transcript when cleanup fails" {
+test "REST fallback preserves polished profile when transformation fails" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     const path = try writeTestWav(&tmp, 16_000);
@@ -342,21 +390,91 @@ test "process validates canonical audio and preserves raw transcript when cleanu
         .deepgram_numerals = true,
         .deepgram_measurements = true,
         .groq_api_key = "groq",
-        .cleanup_enabled = true,
+        .processing_profile = .polished,
     };
     var fake: FakeProvider = .{ .cleanup_fails = true, .expected_region = "eu", .expected_formatting = true };
     const result = process(std.testing.allocator, std.testing.io, request, fake.seam());
     defer if (result.text) |text| std.testing.allocator.free(text);
     try std.testing.expectEqual(.success, result.status);
-    try std.testing.expectEqual(Transport.rest, result.transport.?);
-    try std.testing.expectEqual(Warning.cleanup_failed, result.warning.?);
+    try std.testing.expectEqual(Transport.rest, result.transport);
+    try std.testing.expectEqual(processing.Profile.polished, result.processing_profile);
+    try std.testing.expectEqual(@as(usize, 1), fake.transcribe_calls);
+    try std.testing.expectEqual(@as(usize, 1), fake.polished_calls);
+    try std.testing.expectEqual(@as(usize, 0), fake.legacy_calls);
+    try std.testing.expectEqual(Warning.transformation_failed, result.warning.?);
     try std.testing.expectEqualStrings("München", result.text.?);
 
     const streamed = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "streamed");
     defer if (streamed.text) |text| std.testing.allocator.free(text);
     try std.testing.expectEqual(.success, streamed.status);
-    try std.testing.expectEqual(Transport.stream, streamed.transport.?);
+    try std.testing.expectEqual(Transport.stream, streamed.transport);
+    try std.testing.expectEqual(processing.Profile.polished, streamed.processing_profile);
     try std.testing.expectEqualStrings("streamed", streamed.text.?);
+}
+
+test "protocol v3 routes clean polished and legacy engines by profile" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const path = try writeTestWav(&tmp, 16_000);
+    defer std.testing.allocator.free(path);
+    var fake: FakeProvider = .{};
+    var request: Request = .{
+        .version = worker_protocol.version,
+        .wav_path = path,
+        .deepgram_api_key = "deepgram",
+        .groq_api_key = "groq",
+        .processing_profile = .verbatim,
+    };
+
+    const verbatim = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "raw");
+    defer if (verbatim.text) |text| std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("raw", verbatim.text.?);
+    try std.testing.expectEqual(@as(usize, 0), fake.transcribe_calls);
+    try std.testing.expectEqual(@as(usize, 0), fake.clean_calls);
+    try std.testing.expectEqual(@as(usize, 0), fake.planner_calls);
+
+    request.processing_profile = .clean;
+    const clean = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "raw");
+    defer if (clean.text) |text| std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("clean: raw", clean.text.?);
+    try std.testing.expectEqual(@as(usize, 1), fake.clean_calls);
+    try std.testing.expectEqual(@as(usize, 0), fake.planner_calls);
+
+    request.processing_profile = .polished;
+    const polished = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "raw");
+    defer if (polished.text) |text| std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("polished: raw", polished.text.?);
+    try std.testing.expectEqual(@as(usize, 1), fake.polished_calls);
+    try std.testing.expectEqual(@as(usize, 0), fake.legacy_calls);
+
+    request.processing_profile = .legacy_v1;
+    const legacy = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "raw");
+    defer if (legacy.text) |text| std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("legacy_v1: raw", legacy.text.?);
+    try std.testing.expectEqual(@as(usize, 1), fake.polished_calls);
+    try std.testing.expectEqual(@as(usize, 1), fake.legacy_calls);
+
+    fake.invalid_polished_plan = true;
+    request.processing_profile = .polished;
+    const invalid_plan = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "do not change");
+    defer if (invalid_plan.text) |text| std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("do not change", invalid_plan.text.?);
+    try std.testing.expectEqual(Warning.transformation_failed, invalid_plan.warning.?);
+    try std.testing.expectEqual(@as(usize, 2), fake.polished_calls);
+    try std.testing.expectEqual(@as(usize, 0), fake.transcribe_calls);
+
+    fake.invalid_polished_plan = false;
+    fake.valid_no_change_plan = true;
+    const no_change = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "keep  exactly\nthis");
+    defer if (no_change.text) |text| std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("keep  exactly\nthis", no_change.text.?);
+    try std.testing.expectEqual(@as(?Warning, null), no_change.warning);
+}
+
+test "live clean uses deterministic engine without planner or IO" {
+    const out = try liveClean(null, std.testing.allocator, &.{"SayAll"}, "um hello SayAll");
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("hello SayAll", out);
 }
 
 test "process distinguishes short and invalid audio without calling providers" {
@@ -369,7 +487,7 @@ test "process distinguishes short and invalid audio without calling providers" {
         .wav_path = path,
         .deepgram_api_key = "deepgram",
         .groq_api_key = "",
-        .cleanup_enabled = false,
+        .processing_profile = .verbatim,
     };
     var fake: FakeProvider = .{};
     const result = process(std.testing.allocator, std.testing.io, request, fake.seam());
@@ -387,7 +505,7 @@ test "process rejects incompatible requests and oversized provider output" {
         .wav_path = "/unused",
         .deepgram_api_key = "deepgram",
         .groq_api_key = "",
-        .cleanup_enabled = false,
+        .processing_profile = .verbatim,
     }, fake.seam());
     try std.testing.expectEqual(ErrorCode.incompatible_version, incompatible.@"error".?);
 
@@ -404,7 +522,7 @@ test "process rejects incompatible requests and oversized provider output" {
         .wav_path = path,
         .deepgram_api_key = "deepgram",
         .groq_api_key = "",
-        .cleanup_enabled = false,
+        .processing_profile = .verbatim,
     }, fake.seam());
     try std.testing.expectEqual(ErrorCode.response_too_large, result.@"error".?);
 }

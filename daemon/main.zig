@@ -609,11 +609,12 @@ fn doctor(arena: std.mem.Allocator, io: Io, env: *const std.process.Environ.Map)
                 failures += 1;
                 try diagnostic(arena, io, "fail", "Deepgram credentials", "missing API key");
             }
-            if (cfg.llm.enabled and cfg.llm.api_key.len == 0) {
+            const processing_profile = config.effectiveProcessingProfile(&cfg);
+            if (processing_profile.usesPlanner() and cfg.llm.api_key.len == 0) {
                 warnings += 1;
-                try diagnostic(arena, io, "warn", "Groq credentials", "cleanup is enabled but its API key is missing");
+                try diagnostic(arena, io, "warn", "Groq credentials", "polished processing is selected but its API key is missing");
             } else {
-                try diagnostic(arena, io, "ok", "Groq cleanup", if (cfg.llm.enabled) "configured" else "disabled");
+                try diagnostic(arena, io, "ok", "Processing profile", @tagName(processing_profile));
             }
         } else |err| {
             failures += 1;

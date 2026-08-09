@@ -3,6 +3,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const config = @import("config.zig");
 const deepgram = @import("stt/deepgram.zig");
+const processing = @import("processing.zig");
 
 pub const Outcome = enum { success, no_speech, failed };
 
@@ -47,6 +48,9 @@ pub const Record = struct {
     word_count: ?u64 = null,
     character_count: ?u64 = null,
     connection_ms: ?u64 = null,
+    processing_profile: ?processing.Profile = null,
+    transformation_outcome: processing.TransformationOutcome = .not_requested,
+    planner_latency_ms: ?u64 = null,
 };
 
 pub const State = struct {
@@ -74,6 +78,15 @@ pub const CompletionMetadata = struct {
     word_count: ?u64 = null,
     character_count: ?u64 = null,
     connection_ms: ?u64 = null,
+    processing_profile: ?processing.Profile = null,
+    transformation_outcome: processing.TransformationOutcome = .not_requested,
+    planner_latency_ms: ?u64 = null,
+};
+
+pub const ProcessingMetadata = struct {
+    processing_profile: processing.Profile,
+    transformation_outcome: processing.TransformationOutcome,
+    planner_latency_ms: ?u64 = null,
 };
 
 pub const TransportSummary = struct {
@@ -125,6 +138,8 @@ pub const TrackedResult = struct {
     transcript: []u8,
     latency_ms: u64,
     outcome: Outcome,
+    /// Allocator-owned when present; lets the caller add post-STT metadata.
+    metrics_attempt_id: ?[]u8 = null,
 };
 
 pub fn transcribeTracked(
@@ -179,9 +194,13 @@ pub fn transcribeTracked(
             .character_count = if (outcome == .success) countCharacters(transcript) else null,
         }) catch {};
     };
-    return .{ .transcript = transcript, .latency_ms = elapsed, .outcome = outcome };
+    const metrics_attempt_id = attempt_id;
+    attempt_id = null;
+    return .{ .transcript = transcript, .latency_ms = elapsed, .outcome = outcome, .metrics_attempt_id = metrics_attempt_id };
 }
 
+/// Records the STT result and returns an allocator-owned attempt ID when
+/// persistence succeeded so post-STT processing metadata can be attached.
 pub fn recordCompletedTranscript(
     gpa: Allocator,
     io: Io,
@@ -194,8 +213,8 @@ pub fn recordCompletedTranscript(
     latency_ms: u64,
     stop_to_final_ms: u64,
     connection_ms: u64,
-) void {
-    const metrics_store = store orelse return;
+) ?[]u8 {
+    const metrics_store = store orelse return null;
     const id = metrics_store.begin(gpa, io, .{
         .source = source,
         .provider = cfg.provider,
@@ -204,8 +223,7 @@ pub fn recordCompletedTranscript(
         .audio_ms = audio_ms,
         .region = cfg.region,
         .transport = transport,
-    }) catch return;
-    defer gpa.free(id);
+    }) catch return null;
     const outcome: Outcome = if (transcript.len == 0) .no_speech else .success;
     metrics_store.complete(gpa, io, id, .{
         .outcome = outcome,
@@ -214,7 +232,11 @@ pub fn recordCompletedTranscript(
         .word_count = if (outcome == .success) countWords(transcript) else null,
         .character_count = if (outcome == .success) countCharacters(transcript) else null,
         .connection_ms = connection_ms,
-    }) catch {};
+    }) catch {
+        gpa.free(id);
+        return null;
+    };
+    return id;
 }
 
 pub fn recordFailedStream(
@@ -305,6 +327,11 @@ pub const Store = struct {
             .history_limit = self.history_limit,
         };
         try self.update(gpa, io, &change, CompleteUpdate.apply);
+    }
+
+    pub fn annotateProcessing(self: Store, gpa: Allocator, io: Io, attempt_id: []const u8, metadata: ProcessingMetadata) !void {
+        var change: ProcessingUpdate = .{ .attempt_id = attempt_id, .metadata = metadata };
+        try self.update(gpa, io, &change, ProcessingUpdate.apply);
     }
 
     pub fn recordPreSttFailure(self: Store, gpa: Allocator, io: Io) !void {
@@ -451,8 +478,31 @@ const CompleteUpdate = struct {
             .word_count = self.completion.word_count,
             .character_count = self.completion.character_count,
             .connection_ms = self.completion.connection_ms,
+            .processing_profile = self.completion.processing_profile,
+            .transformation_outcome = self.completion.transformation_outcome,
+            .planner_latency_ms = self.completion.planner_latency_ms,
         }, self.history_limit) catch return error.OutOfMemory;
         account(&state.totals, self.completion.outcome, self.completion.latency_ms);
+    }
+};
+
+const ProcessingUpdate = struct {
+    attempt_id: []const u8,
+    metadata: ProcessingMetadata,
+
+    fn apply(self: *ProcessingUpdate, arena: Allocator, state: *State) !void {
+        var index = state.history.len;
+        while (index > 0) {
+            index -= 1;
+            if (!std.mem.eql(u8, state.history[index].attempt_id, self.attempt_id)) continue;
+            const history = try arena.dupe(Record, state.history);
+            history[index].processing_profile = self.metadata.processing_profile;
+            history[index].transformation_outcome = self.metadata.transformation_outcome;
+            history[index].planner_latency_ms = self.metadata.planner_latency_ms;
+            state.history = history;
+            return;
+        }
+        return error.AttemptNotFound;
     }
 };
 
@@ -728,6 +778,14 @@ test "store persists outcomes and rotates detailed history" {
             .stop_to_final_ms = if (outcome == .success) 300 else null,
             .word_count = if (outcome == .success) 4 else null,
             .character_count = if (outcome == .success) 20 else null,
+            .processing_profile = if (outcome == .success) .polished else null,
+            .transformation_outcome = if (outcome == .success) .changed else .not_requested,
+            .planner_latency_ms = if (outcome == .success) 41 else null,
+        });
+        if (outcome == .success) try store.annotateProcessing(std.testing.allocator, std.testing.io, id, .{
+            .processing_profile = .polished,
+            .transformation_outcome = .no_change,
+            .planner_latency_ms = 42,
         });
     }
     const result = try store.summary(std.testing.allocator, std.testing.io);
@@ -740,6 +798,48 @@ test "store persists outcomes and rotates detailed history" {
     try std.testing.expectApproxEqAbs(@as(f64, 75), result.average_latency_ms_per_word.?, 0.001);
     try std.testing.expectEqual(@as(usize, 1), result.stop_to_final_under_500);
     try std.testing.expectEqual(@as(usize, 1), result.eu_rest.samples);
+
+    const bytes = try Io.Dir.cwd().readFileAlloc(std.testing.io, path, std.testing.allocator, .limited(1024 * 1024));
+    defer std.testing.allocator.free(bytes);
+    const persisted = try std.json.parseFromSlice(State, std.testing.allocator, bytes, .{});
+    defer persisted.deinit();
+    const latest = persisted.value.history[persisted.value.history.len - 1];
+    try std.testing.expectEqual(processing.Profile.polished, latest.processing_profile.?);
+    try std.testing.expectEqual(processing.TransformationOutcome.no_change, latest.transformation_outcome);
+    try std.testing.expectEqual(@as(?u64, 42), latest.planner_latency_ms);
+}
+
+test "metrics processing metadata is backward-compatible and serializable" {
+    const legacy_json =
+        \\{"attempt_id":"old","started_at_unix_ms":0,"source":"daemon","provider":"deepgram","model":"nova-3","language":"en","audio_ms":1000,"latency_ms":200,"outcome":"success"}
+    ;
+    const legacy = try std.json.parseFromSlice(Record, std.testing.allocator, legacy_json, .{});
+    defer legacy.deinit();
+    try std.testing.expectEqual(@as(?processing.Profile, null), legacy.value.processing_profile);
+    try std.testing.expectEqual(processing.TransformationOutcome.not_requested, legacy.value.transformation_outcome);
+    try std.testing.expectEqual(@as(?u64, null), legacy.value.planner_latency_ms);
+
+    const enriched: Record = .{
+        .attempt_id = "new",
+        .started_at_unix_ms = 1,
+        .source = "daemon",
+        .provider = "deepgram",
+        .model = "nova-3",
+        .language = "en",
+        .audio_ms = 1000,
+        .latency_ms = 200,
+        .outcome = .success,
+        .processing_profile = .clean,
+        .transformation_outcome = .changed,
+        .planner_latency_ms = 17,
+    };
+    const json = try std.json.Stringify.valueAlloc(std.testing.allocator, enriched, .{});
+    defer std.testing.allocator.free(json);
+    const roundtrip = try std.json.parseFromSlice(Record, std.testing.allocator, json, .{});
+    defer roundtrip.deinit();
+    try std.testing.expectEqual(processing.Profile.clean, roundtrip.value.processing_profile.?);
+    try std.testing.expectEqual(processing.TransformationOutcome.changed, roundtrip.value.transformation_outcome);
+    try std.testing.expectEqual(@as(?u64, 17), roundtrip.value.planner_latency_ms);
 }
 
 test "store reconciles an interrupted attempt" {

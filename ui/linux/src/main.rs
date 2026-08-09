@@ -164,14 +164,23 @@ impl Model {
                 snapshot.message.as_deref(),
                 Some("transcript copied to clipboard")
                     | Some("typing failed; transcript copied to clipboard")
+                    | Some("transformation failed; raw transcript copied to clipboard")
+                    | Some(
+                        "transformation failed; typing failed and raw transcript was copied to clipboard"
+                    )
             );
+        let transformation_warning = snapshot.state == session::State::Success
+            && snapshot
+                .message
+                .as_deref()
+                .is_some_and(|message| message.starts_with("transformation failed;"));
         self.show_timer = snapshot.show_timer;
         self.state = match snapshot.state {
             session::State::Idle => HudState::Idle,
             session::State::Starting | session::State::Recording => HudState::Recording,
             session::State::Stopping => HudState::Stopping,
             session::State::Processing | session::State::Delivering => HudState::Processing,
-            session::State::Success if copied => HudState::Success,
+            session::State::Success if copied || transformation_warning => HudState::Success,
             session::State::Success => HudState::Idle,
             session::State::Error | session::State::Cancelled => HudState::Error,
         };
@@ -183,7 +192,13 @@ impl Model {
             self.processing_started = Some(Instant::now());
         }
         if copied {
-            self.success_message = "Copied to clipboard".to_owned();
+            self.success_message = if transformation_warning {
+                "Raw transcript copied to clipboard".to_owned()
+            } else {
+                "Copied to clipboard".to_owned()
+            };
+        } else if transformation_warning {
+            self.success_message = "Raw transcript delivered".to_owned();
         } else if matches!(
             snapshot.state,
             session::State::Error | session::State::Cancelled
@@ -192,6 +207,7 @@ impl Model {
             self.error.clone_from(message);
         }
         if copied
+            || transformation_warning
             || matches!(
                 snapshot.state,
                 session::State::Error | session::State::Cancelled
@@ -379,6 +395,17 @@ fn reload_configuration() -> Result<(), String> {
         .reload()
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+fn set_processing_mode(mode: config::ProcessingMode) -> Result<(), String> {
+    let slot = NATIVE.get().ok_or("native host is unavailable")?;
+    let guard = slot.lock().map_err(|_| "native host is unavailable")?;
+    let native = guard.as_ref().ok_or("native host is unavailable")?;
+    native
+        .controller
+        .set_processing_mode(mode)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 fn start_native_host() -> io::Result<()> {
@@ -982,6 +1009,37 @@ mod tests {
             assert_eq!(model.success_message, "Copied to clipboard");
             assert!(model.error.is_empty());
         }
+    }
+
+    #[test]
+    fn native_transformation_warning_is_visible_without_provider_branding() {
+        let mut model = Model::default();
+        model.apply_native_terminal(&session::Snapshot {
+            state: session::State::Success,
+            generation: 1,
+            message: Some("transformation failed; raw transcript delivered".to_owned()),
+            ..session::Snapshot::default()
+        });
+        assert_eq!(model.state, HudState::Success);
+        assert_eq!(model.success_message, "Raw transcript delivered");
+        assert!(model.hide_at.is_some());
+    }
+
+    #[test]
+    fn native_transformation_warning_preserves_clipboard_destination() {
+        let mut model = Model::default();
+        model.apply_native_terminal(&session::Snapshot {
+            state: session::State::Success,
+            generation: 1,
+            message: Some(
+                "transformation failed; typing failed and raw transcript was copied to clipboard"
+                    .to_owned(),
+            ),
+            ..session::Snapshot::default()
+        });
+        assert_eq!(model.state, HudState::Success);
+        assert_eq!(model.success_message, "Raw transcript copied to clipboard");
+        assert!(model.hide_at.is_some());
     }
 
     #[test]

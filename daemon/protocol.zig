@@ -2,6 +2,7 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const fixtures = @import("protocol_fixtures");
+const processing = @import("processing.zig");
 
 pub const version: u16 = 1;
 /// Maximum bytes in one NDJSON frame, including its trailing newline.
@@ -88,12 +89,16 @@ pub const OutputCompleted = struct {
     method: []const u8,
 };
 pub const SessionPhase = enum { pre_stt, stt, post_stt };
+pub const TransformationOutcome = processing.TransformationOutcome;
 pub const SessionCompleted = struct {
     ok: bool,
     phase: SessionPhase,
     reason: ?[]const u8,
     stt_attempted: bool,
     latency_ms: u64,
+    processing_profile: processing.Profile = .verbatim,
+    transformation_outcome: TransformationOutcome = .not_requested,
+    planner_latency_ms: ?u64 = null,
 };
 
 pub const EventName = enum {
@@ -293,7 +298,30 @@ test "shared golden request and envelopes remain v1 compatible" {
             const parsed = try parseGolden(EventFrame(SessionCompleted), line);
             defer parsed.deinit();
             try std.testing.expectEqual(SessionPhase.post_stt, parsed.value.data.phase);
+            try std.testing.expectEqual(processing.Profile.verbatim, parsed.value.data.processing_profile);
+            try std.testing.expectEqual(TransformationOutcome.not_requested, parsed.value.data.transformation_outcome);
+            try std.testing.expectEqual(@as(?u64, null), parsed.value.data.planner_latency_ms);
         } else return error.MissingKnownEventSchema;
     }
     try std.testing.expectEqual(@as(u64, 26), expected_seq);
+}
+
+test "session completion serializes explicit no-change processing outcome" {
+    const completed: SessionCompleted = .{
+        .ok = true,
+        .phase = .post_stt,
+        .reason = null,
+        .stt_attempted = true,
+        .latency_ms = 125,
+        .processing_profile = .polished,
+        .transformation_outcome = .no_change,
+        .planner_latency_ms = 40,
+    };
+    const json = try std.json.Stringify.valueAlloc(std.testing.allocator, completed, .{});
+    defer std.testing.allocator.free(json);
+    const parsed = try std.json.parseFromSlice(SessionCompleted, std.testing.allocator, json, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(processing.Profile.polished, parsed.value.processing_profile);
+    try std.testing.expectEqual(TransformationOutcome.no_change, parsed.value.transformation_outcome);
+    try std.testing.expectEqual(@as(?u64, 40), parsed.value.planner_latency_ms);
 }
