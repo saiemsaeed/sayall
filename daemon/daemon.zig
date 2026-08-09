@@ -98,12 +98,16 @@ fn providerRest(context_ptr: ?*anyopaque, gpa: Allocator) ![]u8 {
     return tracked.transcript;
 }
 
-fn providerCleanup(context_ptr: ?*anyopaque, gpa: Allocator, raw: []const u8) ![]u8 {
+fn providerPlanner(context_ptr: ?*anyopaque, gpa: Allocator, profile: config.processing.Profile, raw: []const u8) ![]u8 {
     const context: *ProviderContext = @ptrCast(@alignCast(context_ptr.?));
     const d = context.daemon;
     d.setStage(.cleaning);
     const started = d.nowMs();
-    const cleaned = groq.cleanup(gpa, d.io, &d.cfg.llm, d.cfg.stt.keyterms, raw, d.cfg.verbose) catch |err| {
+    const cleaned = switch (profile) {
+        .polished => groq.polished(gpa, d.io, &d.cfg.llm, d.cfg.stt.keyterms, raw, d.cfg.verbose),
+        .legacy_v1 => groq.cleanup(gpa, d.io, &d.cfg.llm, d.cfg.stt.keyterms, raw, d.cfg.verbose),
+        else => error.InvalidProfile,
+    } catch |err| {
         d.log("llm cleanup failed: {s} — using raw transcript", .{@errorName(err)});
         return err;
     };
@@ -111,10 +115,10 @@ fn providerCleanup(context_ptr: ?*anyopaque, gpa: Allocator, raw: []const u8) ![
     return cleaned;
 }
 
-/// Clean is wired to a deterministic Zig transform in the next stacked
-/// branch. Until then identity preserves the contract without provider I/O.
-fn providerClean(_: ?*anyopaque, gpa: Allocator, raw: []const u8) ![]u8 {
-    return gpa.dupe(u8, raw);
+fn providerClean(context_ptr: ?*anyopaque, gpa: Allocator, raw: []const u8) ![]u8 {
+    const context: *ProviderContext = @ptrCast(@alignCast(context_ptr.?));
+    context.daemon.setStage(.cleaning);
+    return groq.clean(gpa, raw, context.daemon.cfg.stt.keyterms);
 }
 
 pub fn run(gpa: Allocator, io: Io, cfg: *config.Config, runtime: paths.Runtime, metrics_path: []const u8) !void {
@@ -797,7 +801,7 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
         .context = &provider_context,
         .rest = providerRest,
         .clean = providerClean,
-        .planner = providerCleanup,
+        .planner = providerPlanner,
     }) catch |err| {
         completion_reason = "transcription_failed";
         d.publishError("transcription_failed", "Transcription failed");

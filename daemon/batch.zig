@@ -68,8 +68,8 @@ pub const WireResult = struct {
 pub const Seam = struct {
     context: ?*anyopaque = null,
     transcribe: *const fn (?*anyopaque, std.mem.Allocator, std.Io, *const provider.SttConfig, []const u8) anyerror![]u8 = liveTranscribe,
-    clean: *const fn (?*anyopaque, std.mem.Allocator, []const u8) anyerror![]u8 = liveClean,
-    planner: *const fn (?*anyopaque, std.mem.Allocator, std.Io, *const provider.LlmConfig, []const []const u8, []const u8) anyerror![]u8 = livePlanner,
+    clean: *const fn (?*anyopaque, std.mem.Allocator, []const []const u8, []const u8) anyerror![]u8 = liveClean,
+    planner: *const fn (?*anyopaque, std.mem.Allocator, std.Io, *const provider.LlmConfig, []const []const u8, processing.Profile, []const u8) anyerror![]u8 = livePlanner,
 };
 
 pub fn parseRequest(gpa: std.mem.Allocator, input: []const u8) !std.json.Parsed(Request) {
@@ -160,17 +160,18 @@ fn coreRest(context_ptr: ?*anyopaque, gpa: std.mem.Allocator) ![]u8 {
 
 fn coreClean(context_ptr: ?*anyopaque, gpa: std.mem.Allocator, raw: []const u8) ![]u8 {
     const context: *CoreContext = @ptrCast(@alignCast(context_ptr.?));
-    return context.seam.clean(context.seam.context, gpa, raw);
+    return context.seam.clean(context.seam.context, gpa, context.request.deepgram_keyterms, raw);
 }
 
-fn corePlanner(context_ptr: ?*anyopaque, gpa: std.mem.Allocator, raw: []const u8) ![]u8 {
+fn corePlanner(context_ptr: ?*anyopaque, gpa: std.mem.Allocator, profile: processing.Profile, raw: []const u8) ![]u8 {
     const context: *CoreContext = @ptrCast(@alignCast(context_ptr.?));
+    if (profile != context.request.processing_profile) return error.InvalidProfile;
     const llm: provider.LlmConfig = .{
         .api_key = context.request.groq_api_key,
         .model = context.request.groq_model,
         .base_url = context.request.groq_base_url,
     };
-    return context.seam.planner(context.seam.context, gpa, context.io, &llm, context.request.deepgram_keyterms, raw);
+    return context.seam.planner(context.seam.context, gpa, context.io, &llm, context.request.deepgram_keyterms, profile, raw);
 }
 
 fn fail(code: ErrorCode, profile: processing.Profile, transport: Transport) Result {
@@ -257,14 +258,16 @@ fn liveTranscribe(_: ?*anyopaque, gpa: std.mem.Allocator, io: std.Io, cfg: *cons
     return deepgram.transcribe(gpa, io, cfg, wav, false);
 }
 
-/// Integration seam for the deterministic Clean engine supplied by the next
-/// stacked branch. Identity is the only safe implementation at this layer.
-fn liveClean(_: ?*anyopaque, gpa: std.mem.Allocator, raw: []const u8) ![]u8 {
-    return gpa.dupe(u8, raw);
+fn liveClean(_: ?*anyopaque, gpa: std.mem.Allocator, keyterms: []const []const u8, raw: []const u8) ![]u8 {
+    return groq.clean(gpa, raw, keyterms);
 }
 
-fn livePlanner(_: ?*anyopaque, gpa: std.mem.Allocator, io: std.Io, cfg: *const provider.LlmConfig, keyterms: []const []const u8, raw: []const u8) ![]u8 {
-    return groq.cleanup(gpa, io, cfg, keyterms, raw, false);
+fn livePlanner(_: ?*anyopaque, gpa: std.mem.Allocator, io: std.Io, cfg: *const provider.LlmConfig, keyterms: []const []const u8, profile: processing.Profile, raw: []const u8) ![]u8 {
+    return switch (profile) {
+        .polished => groq.polished(gpa, io, cfg, keyterms, raw, false),
+        .legacy_v1 => groq.cleanup(gpa, io, cfg, keyterms, raw, false),
+        else => error.InvalidProfile,
+    };
 }
 
 const FakeProvider = struct {
@@ -272,11 +275,16 @@ const FakeProvider = struct {
     cleanup_fails: bool = false,
     expected_region: []const u8 = "global",
     expected_formatting: bool = false,
+    transcribe_calls: usize = 0,
     clean_calls: usize = 0,
     planner_calls: usize = 0,
+    polished_calls: usize = 0,
+    legacy_calls: usize = 0,
+    invalid_polished_plan: bool = false,
 
     fn transcribe(context: ?*anyopaque, gpa: std.mem.Allocator, _: std.Io, cfg: *const provider.SttConfig, _: []const u8) ![]u8 {
         const self: *FakeProvider = @ptrCast(@alignCast(context.?));
+        self.transcribe_calls += 1;
         if (!std.mem.eql(u8, cfg.region, self.expected_region)) return error.UnexpectedRegion;
         if (cfg.smart_format != self.expected_formatting or cfg.punctuate != self.expected_formatting or
             cfg.dictation != self.expected_formatting or cfg.numerals != self.expected_formatting or
@@ -284,18 +292,24 @@ const FakeProvider = struct {
         return gpa.dupe(u8, self.transcript);
     }
 
-    fn clean(context: ?*anyopaque, gpa: std.mem.Allocator, raw: []const u8) ![]u8 {
+    fn clean(context: ?*anyopaque, gpa: std.mem.Allocator, _: []const []const u8, raw: []const u8) ![]u8 {
         const self: *FakeProvider = @ptrCast(@alignCast(context.?));
         self.clean_calls += 1;
         if (self.cleanup_fails) return error.RequestFailed;
         return std.fmt.allocPrint(gpa, "clean: {s}", .{raw});
     }
 
-    fn planner(context: ?*anyopaque, gpa: std.mem.Allocator, _: std.Io, _: *const provider.LlmConfig, _: []const []const u8, raw: []const u8) ![]u8 {
+    fn planner(context: ?*anyopaque, gpa: std.mem.Allocator, _: std.Io, _: *const provider.LlmConfig, keyterms: []const []const u8, profile: processing.Profile, raw: []const u8) ![]u8 {
         const self: *FakeProvider = @ptrCast(@alignCast(context.?));
         self.planner_calls += 1;
+        switch (profile) {
+            .polished => self.polished_calls += 1,
+            .legacy_v1 => self.legacy_calls += 1,
+            else => return error.InvalidProfile,
+        }
         if (self.cleanup_fails) return error.RequestFailed;
-        return std.fmt.allocPrint(gpa, "polished: {s}", .{raw});
+        if (self.invalid_polished_plan and profile == .polished) return groq.cleanup_engine.polishedFromJson(gpa, raw, keyterms, "{}");
+        return std.fmt.allocPrint(gpa, "{s}: {s}", .{ @tagName(profile), raw });
     }
 
     fn seam(self: *FakeProvider) Seam {
@@ -358,7 +372,7 @@ test "provider mapping is deterministic" {
     try std.testing.expectEqual(ErrorCode.deepgram_server, mapDeepgramError(error.ServerError));
 }
 
-test "process validates canonical audio and preserves raw transcript when transformation fails" {
+test "REST fallback preserves polished profile when transformation fails" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     const path = try writeTestWav(&tmp, 16_000);
@@ -382,6 +396,9 @@ test "process validates canonical audio and preserves raw transcript when transf
     try std.testing.expectEqual(.success, result.status);
     try std.testing.expectEqual(Transport.rest, result.transport);
     try std.testing.expectEqual(processing.Profile.polished, result.processing_profile);
+    try std.testing.expectEqual(@as(usize, 1), fake.transcribe_calls);
+    try std.testing.expectEqual(@as(usize, 1), fake.polished_calls);
+    try std.testing.expectEqual(@as(usize, 0), fake.legacy_calls);
     try std.testing.expectEqual(Warning.transformation_failed, result.warning.?);
     try std.testing.expectEqualStrings("München", result.text.?);
 
@@ -389,10 +406,11 @@ test "process validates canonical audio and preserves raw transcript when transf
     defer if (streamed.text) |text| std.testing.allocator.free(text);
     try std.testing.expectEqual(.success, streamed.status);
     try std.testing.expectEqual(Transport.stream, streamed.transport);
+    try std.testing.expectEqual(processing.Profile.polished, streamed.processing_profile);
     try std.testing.expectEqualStrings("streamed", streamed.text.?);
 }
 
-test "verbatim and clean batch profiles never invoke planner" {
+test "protocol v3 routes clean polished and legacy engines by profile" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     const path = try writeTestWav(&tmp, 16_000);
@@ -409,6 +427,7 @@ test "verbatim and clean batch profiles never invoke planner" {
     const verbatim = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "raw");
     defer if (verbatim.text) |text| std.testing.allocator.free(text);
     try std.testing.expectEqualStrings("raw", verbatim.text.?);
+    try std.testing.expectEqual(@as(usize, 0), fake.transcribe_calls);
     try std.testing.expectEqual(@as(usize, 0), fake.clean_calls);
     try std.testing.expectEqual(@as(usize, 0), fake.planner_calls);
 
@@ -418,6 +437,35 @@ test "verbatim and clean batch profiles never invoke planner" {
     try std.testing.expectEqualStrings("clean: raw", clean.text.?);
     try std.testing.expectEqual(@as(usize, 1), fake.clean_calls);
     try std.testing.expectEqual(@as(usize, 0), fake.planner_calls);
+
+    request.processing_profile = .polished;
+    const polished = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "raw");
+    defer if (polished.text) |text| std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("polished: raw", polished.text.?);
+    try std.testing.expectEqual(@as(usize, 1), fake.polished_calls);
+    try std.testing.expectEqual(@as(usize, 0), fake.legacy_calls);
+
+    request.processing_profile = .legacy_v1;
+    const legacy = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "raw");
+    defer if (legacy.text) |text| std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("legacy_v1: raw", legacy.text.?);
+    try std.testing.expectEqual(@as(usize, 1), fake.polished_calls);
+    try std.testing.expectEqual(@as(usize, 1), fake.legacy_calls);
+
+    fake.invalid_polished_plan = true;
+    request.processing_profile = .polished;
+    const invalid_plan = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "do not change");
+    defer if (invalid_plan.text) |text| std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("do not change", invalid_plan.text.?);
+    try std.testing.expectEqual(@as(?Warning, null), invalid_plan.warning);
+    try std.testing.expectEqual(@as(usize, 2), fake.polished_calls);
+    try std.testing.expectEqual(@as(usize, 0), fake.transcribe_calls);
+}
+
+test "live clean uses deterministic engine without planner or IO" {
+    const out = try liveClean(null, std.testing.allocator, &.{"SayAll"}, "um hello SayAll");
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("hello SayAll", out);
 }
 
 test "process distinguishes short and invalid audio without calling providers" {

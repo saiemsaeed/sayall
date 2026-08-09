@@ -22,7 +22,7 @@ pub const Seam = struct {
     context: ?*anyopaque = null,
     rest: *const fn (?*anyopaque, std.mem.Allocator) anyerror![]u8,
     clean: *const fn (?*anyopaque, std.mem.Allocator, []const u8) anyerror![]u8,
-    planner: *const fn (?*anyopaque, std.mem.Allocator, []const u8) anyerror![]u8,
+    planner: *const fn (?*anyopaque, std.mem.Allocator, processing.Profile, []const u8) anyerror![]u8,
 };
 
 /// Selects a completed stream (including an empty transcript) or performs one
@@ -45,12 +45,12 @@ pub fn process(
         return .no_speech;
     }
 
-    const transform = switch (profile) {
+    const transformed_result = switch (profile) {
         .verbatim => return .{ .success = .{ .text = raw } },
-        .clean => seam.clean,
-        .polished, .legacy_v1 => seam.planner,
+        .clean => seam.clean(seam.context, allocator, raw),
+        .polished, .legacy_v1 => seam.planner(seam.context, allocator, profile, raw),
     };
-    if (transform(seam.context, allocator, raw)) |transformed| {
+    if (transformed_result) |transformed| {
         validate(transformed, output_policy) catch {
             allocator.free(transformed);
             return .{ .success = .{ .text = raw, .warning = .transformation_failed } };
@@ -77,6 +77,8 @@ const Fake = struct {
     rest_calls: usize = 0,
     clean_calls: usize = 0,
     planner_calls: usize = 0,
+    polished_calls: usize = 0,
+    legacy_calls: usize = 0,
 
     fn rest(context: ?*anyopaque, allocator: std.mem.Allocator) ![]u8 {
         const self: *Fake = @ptrCast(@alignCast(context.?));
@@ -92,9 +94,14 @@ const Fake = struct {
         return allocator.dupe(u8, self.clean_text);
     }
 
-    fn planner(context: ?*anyopaque, allocator: std.mem.Allocator, _: []const u8) ![]u8 {
+    fn planner(context: ?*anyopaque, allocator: std.mem.Allocator, profile: processing.Profile, _: []const u8) ![]u8 {
         const self: *Fake = @ptrCast(@alignCast(context.?));
         self.planner_calls += 1;
+        switch (profile) {
+            .polished => self.polished_calls += 1,
+            .legacy_v1 => self.legacy_calls += 1,
+            else => return error.InvalidProfile,
+        }
         if (self.cleanup_error) |err| return err;
         return allocator.dupe(u8, self.clean_text);
     }
@@ -160,10 +167,14 @@ test "all profiles route once and verbatim clean never invoke planner" {
     const polished = try process(std.testing.allocator, null, .polished, worker_policy, fake.seam());
     defer freeOutcome(polished);
     try std.testing.expectEqual(@as(usize, 1), fake.planner_calls);
+    try std.testing.expectEqual(@as(usize, 1), fake.polished_calls);
+    try std.testing.expectEqual(@as(usize, 0), fake.legacy_calls);
 
     const legacy = try process(std.testing.allocator, null, .legacy_v1, worker_policy, fake.seam());
     defer freeOutcome(legacy);
     try std.testing.expectEqual(@as(usize, 2), fake.planner_calls);
+    try std.testing.expectEqual(@as(usize, 1), fake.polished_calls);
+    try std.testing.expectEqual(@as(usize, 1), fake.legacy_calls);
 
     fake.cleanup_error = error.RequestFailed;
     const clean_fallback = try process(std.testing.allocator, try owned("raw"), .clean, worker_policy, fake.seam());
