@@ -1579,3 +1579,36 @@ final class StartupMetricsTests: XCTestCase {
         XCTAssertLessThan(samples.count, 3)
     }
 }
+
+final class PipelineMetricsTests: XCTestCase {
+    func testTimingDecodesWithoutWeakeningResultContract() throws {
+        let result = try HelperDecoder.decode(Data(#"{"version":3,"status":"success","text":"hello","processing_profile":"clean","transport":"stream","timing":{"deepgram_connect_ms":12,"deepgram_stop_to_final_ms":34,"deterministic_processing_ms":5,"processing_total_ms":40}}"#.utf8))
+        XCTAssertEqual(result.timing?.deepgramConnectMs, 12)
+        XCTAssertEqual(result.timing?.deepgramStopToFinalMs, 34)
+        XCTAssertEqual(result.timing?.deterministicProcessingMs, 5)
+        XCTAssertNil(result.timing?.restSTTMs)
+        XCTAssertThrowsError(try HelperDecoder.decode(Data(#"{"version":3,"status":"success","text":"hello","processing_profile":"clean","transport":"stream","timing":{"processing_total_ms":40}}"#.utf8)))
+    }
+
+    func testPipelineStoreIsBoundedAndPrivate() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let url = directory.appendingPathComponent("pipeline-metrics-v1.json")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = PipelineMetricsStore(url: url, maximumBytes: 700)
+        let sample = PipelineMetricSample(correlationID: "00000000-0000-0000-0000-000000000001",
+            deepgramConnectMs: 1, deepgramStopToFinalMs: 2,
+            restSTTMs: nil, deterministicProcessingMs: 3, plannerMs: 4, processingTotalMs: 5,
+            helperFinishMs: 6, deliveryMs: 7, stopToDeliveredMs: 13,
+            outcome: "success", profile: .polished, transport: .stream)
+        await store.record(sample, enabled: true, limit: 1)
+        await store.record(sample, enabled: true, limit: 1)
+        let samples = await store.samplesForTesting()
+        XCTAssertEqual(samples, [sample])
+        let encoded = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertFalse(encoded.contains("transcript"))
+        let directoryMode = try XCTUnwrap(try FileManager.default.attributesOfItem(atPath: directory.path)[.posixPermissions] as? NSNumber)
+        let fileMode = try XCTUnwrap(try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)
+        XCTAssertEqual(directoryMode.intValue & 0o777, 0o700)
+        XCTAssertEqual(fileMode.intValue & 0o777, 0o600)
+    }
+}

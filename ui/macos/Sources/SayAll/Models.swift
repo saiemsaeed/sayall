@@ -147,6 +147,22 @@ enum WorkerErrorCode: String, Codable, Equatable {
 }
 
 struct HelperResult: Codable, Equatable {
+    struct Timing: Codable, Equatable {
+        let deepgramConnectMs: Int?
+        let deepgramStopToFinalMs: Int?
+        let restSTTMs: Int?
+        let deterministicProcessingMs: Int
+        let plannerMs: Int?
+        let processingTotalMs: Int
+        enum CodingKeys: String, CodingKey {
+            case deepgramConnectMs = "deepgram_connect_ms"
+            case deepgramStopToFinalMs = "deepgram_stop_to_final_ms"
+            case restSTTMs = "rest_stt_ms"
+            case deterministicProcessingMs = "deterministic_processing_ms"
+            case plannerMs = "planner_ms"
+            case processingTotalMs = "processing_total_ms"
+        }
+    }
     enum Status: String, Codable { case success, noSpeech = "no_speech", error }
     enum Transport: String, Codable { case rest, stream }
     let version: Int
@@ -156,8 +172,9 @@ struct HelperResult: Codable, Equatable {
     let error: WorkerErrorCode?
     let processingProfile: ProcessingProfile
     let transport: Transport
+    let timing: Timing?
     enum CodingKeys: String, CodingKey {
-        case version, status, text, warning, error, transport
+        case version, status, text, warning, error, transport, timing
         case processingProfile = "processing_profile"
     }
 }

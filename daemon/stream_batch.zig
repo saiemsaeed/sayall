@@ -110,18 +110,24 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
     }
 
     var streamed: ?[]u8 = null;
+    var connect_ms: ?u64 = null;
+    var stop_to_final_ms: ?u64 = null;
     defer if (streamed) |text| gpa.free(text);
     if (session) |active| {
         if (finish.force_rest) {
             active.cancel();
         } else switch (active.finish()) {
-            .success => |success| streamed = success.transcript,
+            .success => |success| {
+                streamed = success.transcript;
+                connect_ms = success.connect_ms;
+                stop_to_final_ms = success.stop_to_final_ms;
+            },
             .failed => {},
         }
         session = null;
     }
 
-    const result = batch.processWithTranscript(gpa, io, batchRequest(request), .{}, streamed);
+    const result = batch.processWithTranscriptTiming(gpa, io, batchRequest(request), .{}, streamed, connect_ms, stop_to_final_ms);
     defer if (result.text) |text| gpa.free(text);
     try writeResult(gpa, io, result);
 }

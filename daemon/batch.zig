@@ -47,6 +47,14 @@ pub const ErrorCode = enum {
 pub const Warning = enum { transformation_failed };
 pub const Status = enum { success, no_speech, @"error" };
 pub const Transport = enum { rest, stream };
+pub const Timing = struct {
+    deepgram_connect_ms: ?u64 = null,
+    deepgram_stop_to_final_ms: ?u64 = null,
+    rest_stt_ms: ?u64 = null,
+    deterministic_processing_ms: u64,
+    planner_ms: ?u64 = null,
+    processing_total_ms: u64,
+};
 pub const Result = struct {
     version: u32 = worker_protocol.version,
     status: Status,
@@ -55,6 +63,7 @@ pub const Result = struct {
     @"error": ?ErrorCode = null,
     processing_profile: processing.Profile,
     transport: Transport,
+    timing: ?Timing = null,
 };
 pub const WireResult = struct {
     version: u32,
@@ -64,6 +73,7 @@ pub const WireResult = struct {
     @"error": ?ErrorCode = null,
     processing_profile: processing.Profile,
     transport: Transport,
+    timing: ?Timing = null,
 };
 pub const Seam = struct {
     context: ?*anyopaque = null,
@@ -83,6 +93,10 @@ pub fn process(gpa: std.mem.Allocator, io: std.Io, r: Request, seam: Seam) Resul
 }
 
 pub fn processWithTranscript(gpa: std.mem.Allocator, io: std.Io, r: Request, seam: Seam, streamed: ?[]const u8) Result {
+    return processWithTranscriptTiming(gpa, io, r, seam, streamed, null, null);
+}
+
+pub fn processWithTranscriptTiming(gpa: std.mem.Allocator, io: std.Io, r: Request, seam: Seam, streamed: ?[]const u8, connect_ms: ?u64, stop_to_final_ms: ?u64) Result {
     const transport: Transport = if (streamed != null) .stream else .rest;
     if (r.version != worker_protocol.version) return fail(.incompatible_version, r.processing_profile, transport);
     if (r.deepgram_api_key.len == 0) return fail(.missing_deepgram_key, r.processing_profile, transport);
@@ -121,6 +135,7 @@ pub fn processWithTranscript(gpa: std.mem.Allocator, io: std.Io, r: Request, sea
     };
     var context: CoreContext = .{ .io = io, .request = &r, .seam = seam, .stt = &stt, .wav = wav };
     const streamed_owned = if (streamed) |text| gpa.dupe(u8, text) catch return fail(.internal, r.processing_profile, transport) else null;
+    const processing_started = nowMs(io);
     const outcome = provider_processing.process(gpa, streamed_owned, r.processing_profile, .{
         .max_bytes = max_output_bytes,
         .require_utf8 = true,
@@ -135,14 +150,23 @@ pub fn processWithTranscript(gpa: std.mem.Allocator, io: std.Io, r: Request, sea
         r.processing_profile,
         transport,
     );
+    const timing: Timing = .{
+        .deepgram_connect_ms = connect_ms,
+        .deepgram_stop_to_final_ms = stop_to_final_ms,
+        .rest_stt_ms = context.rest_stt_ms,
+        .deterministic_processing_ms = context.deterministic_processing_ms,
+        .planner_ms = context.planner_ms,
+        .processing_total_ms = elapsedMs(processing_started, io),
+    };
     return switch (outcome) {
-        .no_speech => .{ .status = .no_speech, .processing_profile = r.processing_profile, .transport = transport },
+        .no_speech => .{ .status = .no_speech, .processing_profile = r.processing_profile, .transport = transport, .timing = timing },
         .success => |value| .{
             .status = .success,
             .text = value.text,
             .warning = if (value.warning != null) .transformation_failed else null,
             .processing_profile = r.processing_profile,
             .transport = transport,
+            .timing = timing,
         },
     };
 }
@@ -153,25 +177,36 @@ const CoreContext = struct {
     seam: Seam,
     stt: *const provider.SttConfig,
     wav: []const u8,
+    rest_stt_ms: ?u64 = null,
+    deterministic_processing_ms: u64 = 0,
+    planner_ms: ?u64 = null,
 };
 
 fn coreRest(context_ptr: ?*anyopaque, gpa: std.mem.Allocator) ![]u8 {
     const context: *CoreContext = @ptrCast(@alignCast(context_ptr.?));
+    const started = nowMs(context.io);
+    defer context.rest_stt_ms = elapsedMs(started, context.io);
     return context.seam.transcribe(context.seam.context, gpa, context.io, context.stt, context.wav);
 }
 
 fn coreClean(context_ptr: ?*anyopaque, gpa: std.mem.Allocator, raw: []const u8) ![]u8 {
     const context: *CoreContext = @ptrCast(@alignCast(context_ptr.?));
+    const started = nowMs(context.io);
+    defer context.deterministic_processing_ms += elapsedMs(started, context.io);
     return context.seam.clean(context.seam.context, gpa, context.request.deepgram_keyterms, raw);
 }
 
 fn coreBaseline(context_ptr: ?*anyopaque, gpa: std.mem.Allocator, raw: []const u8) !cloud_planner.cleanup_engine.PolishedBaseline {
     const context: *CoreContext = @ptrCast(@alignCast(context_ptr.?));
+    const started = nowMs(context.io);
+    defer context.deterministic_processing_ms += elapsedMs(started, context.io);
     return context.seam.baseline(context.seam.context, gpa, context.request.deepgram_keyterms, raw);
 }
 
 fn corePlanner(context_ptr: ?*anyopaque, gpa: std.mem.Allocator, profile: processing.Profile, raw: []const u8) ![]u8 {
     const context: *CoreContext = @ptrCast(@alignCast(context_ptr.?));
+    const started = nowMs(context.io);
+    defer context.planner_ms = elapsedMs(started, context.io);
     if (profile != context.request.processing_profile) return error.InvalidProfile;
     const llm: provider.LlmConfig = .{
         .api_key = context.request.llm_api_key,
@@ -179,6 +214,14 @@ fn corePlanner(context_ptr: ?*anyopaque, gpa: std.mem.Allocator, profile: proces
         .base_url = context.request.llm_base_url,
     };
     return context.seam.planner(context.seam.context, gpa, context.io, &llm, context.request.deepgram_keyterms, profile, raw);
+}
+
+fn nowMs(io: std.Io) i64 {
+    return std.Io.Clock.now(.awake, io).toMilliseconds();
+}
+
+fn elapsedMs(started: i64, io: std.Io) u64 {
+    return @intCast(@max(0, nowMs(io) - started));
 }
 
 fn fail(code: ErrorCode, profile: processing.Profile, transport: Transport) Result {
@@ -367,6 +410,27 @@ test "strict bounded request and result JSON" {
     });
     defer std.testing.allocator.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "München") != null);
+}
+
+test "result timing is additive and round trips" {
+    const encoded = try stringifyResult(std.testing.allocator, .{
+        .status = .success,
+        .text = "ok",
+        .processing_profile = .clean,
+        .transport = .stream,
+        .timing = .{
+            .deepgram_connect_ms = 12,
+            .deepgram_stop_to_final_ms = 34,
+            .deterministic_processing_ms = 5,
+            .processing_total_ms = 40,
+        },
+    });
+    defer std.testing.allocator.free(encoded);
+    const parsed = try parseResult(std.testing.allocator, encoded);
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(?u64, 12), parsed.value.timing.?.deepgram_connect_ms);
+    try std.testing.expectEqual(@as(u64, 5), parsed.value.timing.?.deterministic_processing_ms);
+    try std.testing.expectEqual(@as(?u64, null), parsed.value.timing.?.rest_stt_ms);
 }
 
 test "worker result decoder requires fields and status semantics" {
