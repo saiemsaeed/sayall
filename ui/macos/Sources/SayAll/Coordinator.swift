@@ -114,10 +114,16 @@ final class Coordinator {
     }
     var controlState: String { hostControlState.rawValue }
     var canChangeConfiguration: Bool { state == .idle && operationID == nil }
+    var configuredProcessingProfile: ProcessingProfile? {
+        try? configuration.load().processingProfile
+    }
     var configuredProcessingMode: ProcessingMode? {
-        try? configuration.load().processingProfile.userMode
+        configuredProcessingProfile?.userMode
     }
     var operationProcessingProfile: ProcessingProfile? { operationConfig?.processingProfile }
+    var displayedProcessingProfile: ProcessingProfile? {
+        operationProcessingProfile ?? configuredProcessingProfile
+    }
 
     func takePendingWarning() -> String? {
         defer { pendingWarning = nil }
@@ -334,6 +340,9 @@ final class Coordinator {
                         timeout: Self.remainingProcessingTime(since: processingStarted))
                 }
                 guard operationID == id, !Task.isCancelled else { return }
+                guard result.processingProfile == config.processingProfile else {
+                    throw HelperFailure.malformedOutput
+                }
                 guard result.status == .success, let text = result.text, !text.isEmpty else {
                     completeAndHide(id)
                     return

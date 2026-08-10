@@ -12,7 +12,7 @@ import re
 import sys
 from collections import Counter, defaultdict
 
-SCORER_VERSION = "1.2.0"
+SCORER_VERSION = "1.2.1"
 MODES = {"verbatim", "clean", "polished"}
 OUTCOMES = {"applied", "safe_fallback", "unsafe_plan", "adapter_error"}
 INVOCATION_MODES = {"not_applicable", "not_attempted_no_credential", "live_attempted"}
@@ -21,13 +21,6 @@ SEMANTIC_TOKEN = re.compile(
     r"[+-]?[$€£¥]?\d[\d,]*(?:\.\d+)?%?|[^\W\d_]+(?:['’][^\W\d_]+)?|_|[^\w\s]",
     re.UNICODE,
 )
-ORDINALS = {
-    word: f"ordinal:{number}"
-    for number, word in enumerate(
-        ("first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"),
-        start=1,
-    )
-}
 LIST_ITEM = re.compile(r"^[ \t]*(?:(-)|([1-9]\d*)\.)[ \t]+(.*)$")
 FORMATTING_PUNCTUATION = set(".,!?:;'\"“”‘’()[]{}—–…")
 
@@ -108,15 +101,10 @@ def semantic_units(text: str) -> list[str]:
     units = []
     for match in SEMANTIC_TOKEN.finditer(text):
         token = match.group()
-        folded = token.casefold().replace("’", "'")
+        folded = "".join(chr(ord(char) + 32) if "A" <= char <= "Z" else char for char in token)
         numeric = re.fullmatch(r"([+-]?)([$€£¥]?)(\d[\d,]*(?:\.\d+)?)(%?)", token)
-        if numeric and numeric.group(2) == "$":
-            units.extend((numeric.group(1) + numeric.group(3).replace(",", "") + numeric.group(4),
-                          "dollars"))
-        elif folded in ORDINALS:
-            units.append(ORDINALS[folded])
-        elif numeric:
-            units.append(token.replace(",", ""))
+        if numeric:
+            units.append(token)
         elif token[0].isalnum():
             units.append(folded)
         elif token not in FORMATTING_PUNCTUATION:
@@ -124,60 +112,29 @@ def semantic_units(text: str) -> list[str]:
     return units
 
 
-def normalized_output_units(output: str) -> tuple[list[str], list[list[int]]]:
+def normalized_source_units(source: str) -> list[str]:
     units = []
-    item_groups = []
-    active_group = []
-    active_kind = None
-    previous_number = None
+    for line in source.splitlines():
+        marker = LIST_ITEM.match(line)
+        if marker:
+            units.append("source:bullet" if marker.group(1) else f"source:numbered:{marker.group(2)}")
+        units.extend(semantic_units(marker.group(3) if marker else line))
+    return units
+
+
+def normalized_output_units(output: str, preserve_markers: bool = False) -> list[str]:
+    units = []
     for line in output.splitlines():
         marker = LIST_ITEM.match(line)
-        if not marker:
-            if active_group:
-                item_groups.append(active_group)
-                active_group = []
-                active_kind = None
-                previous_number = None
-            units.extend(semantic_units(line))
-            continue
-        kind = "bullet" if marker.group(1) else "numbered"
-        number = int(marker.group(2)) if marker.group(2) else None
-        continues_group = kind == active_kind and (kind == "bullet" or number == previous_number + 1)
-        if active_group and not continues_group:
-            item_groups.append(active_group)
-            active_group = []
-        active_group.append(len(units))
-        active_kind = kind
-        previous_number = number
-        item_units = semantic_units(marker.group(3))
-        if number is not None:
-            ordinal = f"ordinal:{number}"
-            # Production preserves spoken ordinals after generated markers;
-            # reference variants may replace the ordinal with the marker.
-            if not item_units or item_units[0] != ordinal:
-                units.append(ordinal)
-        units.extend(item_units)
-    if active_group:
-        item_groups.append(active_group)
-    return units, item_groups
+        if marker and preserve_markers:
+            units.append("source:bullet" if marker.group(1) else f"source:numbered:{marker.group(2)}")
+        units.extend(semantic_units(marker.group(3) if marker else line))
+    return units
 
 
 def polished_semantic_invariant(source: str, output: str) -> bool:
-    source_units, _ = normalized_output_units(source)
-    output_units, item_groups = normalized_output_units(output)
-    if source_units == output_units:
-        return True
-    for item_group in item_groups:
-        if len(item_group) < 2:
-            continue
-        # A contiguous rendered list may replace only the conjunction
-        # immediately before its final item.
-        final_item_start = item_group[-1]
-        with_source_conjunction = (output_units[:final_item_start] + ["and"]
-                                   + output_units[final_item_start:])
-        if source_units == with_source_conjunction:
-            return True
-    return False
+    source_has_markers = any(LIST_ITEM.match(line) for line in source.splitlines())
+    return normalized_source_units(source) == normalized_output_units(output, preserve_markers=source_has_markers)
 
 
 def validate_results(results: list[dict], cases_by_id: dict[str, dict]) -> dict[str, dict]:
@@ -277,6 +234,8 @@ def score(cases: list[dict], results: list[dict], corpus_sha256: str,
     for case in cases:
         result = indexed.get(case["id"])
         violations = []
+        safe_outputs = {case["input"], case["expected_output"],
+                        *case["safety"].get("accepted_outputs", [])}
         output = None if result is None else result["output"]
         outcome = "missing_result" if result is None else result["outcome"]
         if result is None:
@@ -292,8 +251,6 @@ def score(cases: list[dict], results: list[dict], corpus_sha256: str,
             elif outcome == "safe_fallback" and output != case["input"]:
                 violations.append("fallback_changed_source")
         if output is not None:
-            safe_outputs = {case["input"], case["expected_output"],
-                            *case["safety"].get("accepted_outputs", [])}
             if outcome == "applied":
                 if case["mode"] == "polished":
                     if not polished_semantic_invariant(case["input"], output):

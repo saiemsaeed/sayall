@@ -141,7 +141,7 @@ def main(argv=None) -> int:
     parser.add_argument("--no-live-provider", action="store_true")
     parser.add_argument("--adapter-version", default=os.environ.get("GITHUB_SHA", "dev"))
     parser.add_argument("--timeout", type=positive_finite, default=45.0)
-    parser.add_argument("--concurrency", type=positive_integer, default=4)
+    parser.add_argument("--concurrency", type=positive_integer, default=1)
     args = parser.parse_args(argv)
 
     cases, _ = read_jsonl(args.corpus)

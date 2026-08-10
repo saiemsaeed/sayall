@@ -251,6 +251,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development"
         let product = NSMenuItem(title: "SayAll \(version)", action: nil, keyEquivalent: ""); product.isEnabled = false; menu.addItem(product)
         let state = NSMenuItem(title: "State: \(coordinator.state.rawValue.capitalized)", action: nil, keyEquivalent: ""); state.isEnabled = false; menu.addItem(state)
+        let mode = NSMenuItem(
+            title: "Mode: \(coordinator.displayedProcessingProfile?.title ?? "Unavailable")",
+            action: nil,
+            keyEquivalent: ""
+        )
+        mode.isEnabled = false
+        menu.addItem(mode)
         if !shortcutAvailable {
             let conflict = NSMenuItem(title: "Control+/ unavailable — use this menu", action: nil, keyEquivalent: "")
             conflict.isEnabled = false; menu.addItem(conflict)

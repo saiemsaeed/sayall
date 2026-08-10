@@ -28,7 +28,8 @@ pub const Correction = struct { start_token: usize, end_token: usize, source: []
 pub const PunctuationMark = enum { period, comma, question, exclamation, colon, semicolon };
 pub const Punctuation = struct { after_token: usize, mark: PunctuationMark };
 pub const ListKind = enum { bullet, numbered };
-pub const List = struct { start_token: usize, end_token: usize, item_tokens: []const usize, kind: ListKind };
+pub const ListAnchor = struct { start_token: usize };
+pub const List = struct { start_token: usize, end_token: usize, items: []const ListAnchor, kind: ListKind };
 pub const PolishedPlan = struct {
     version: u32,
     deletions: []const Deletion,
@@ -111,7 +112,7 @@ pub fn polished(gpa: Allocator, transcript: []const u8, glossary: []const []cons
     defer gpa.free(tokens);
     if (tokens.len == 0 or tokens.len > max_tokens) return error.InvalidPlan;
     const operation_count = plan.deletions.len + plan.corrections.len + plan.punctuation.len + plan.paragraph_breaks.len + plan.lists.len;
-    if (plan.version != 2 or operation_count > max_operations or (operation_count > 0 and hasDecorationOnlyChunk(transcript, tokens))) return error.InvalidPlan;
+    if (plan.version != 2 or plan.deletions.len != 0 or operation_count > max_operations or (operation_count > 0 and hasDecorationOnlyChunk(transcript, tokens))) return error.InvalidPlan;
     const protected = try protectionMap(gpa, transcript, tokens, glossary);
     defer gpa.free(protected);
     var deleted = try gpa.alloc(bool, tokens.len);
@@ -160,7 +161,7 @@ pub fn polished(gpa: Allocator, transcript: []const u8, glossary: []const []cons
     // must be sorted, in range, and point at a surviving source token.
     var last: ?usize = null;
     for (plan.punctuation) |p| {
-        if (p.after_token >= tokens.len or deleted[p.after_token] or protected[p.after_token] or (last != null and p.after_token <= last.?)) return error.InvalidPlan;
+        if (p.after_token >= tokens.len or deleted[p.after_token] or tokens[p.after_token].protected or hasUnsafeDecoration(transcript, tokens, p.after_token) or (technical(tokens[p.after_token].text) and hasFixedTrailingPunctuation(transcript, tokens[p.after_token])) or (last != null and p.after_token <= last.?)) return error.InvalidPlan;
         for (plan.corrections) |c| if (p.after_token >= c.start_token and p.after_token + 1 < c.end_token) return error.InvalidPlan;
         last = p.after_token;
     }
@@ -168,14 +169,14 @@ pub fn polished(gpa: Allocator, transcript: []const u8, glossary: []const []cons
     var list_end: usize = 0;
     var item_total: usize = 0;
     for (plan.lists) |list| {
-        item_total += list.item_tokens.len;
-        if (list.start_token >= list.end_token or list.end_token > tokens.len or list.start_token < list_end or list.item_tokens.len < 2 or item_total > max_list_items or list.item_tokens[0] != list.start_token or !strictListItems(list.item_tokens, list.start_token, list.end_token, deleted, protected) or protectedLayoutBoundary(list.start_token, deleted, protected) or (list.end_token < tokens.len and protectedLayoutBoundary(list.end_token, deleted, protected))) return error.InvalidPlan;
-        for (list.item_tokens) |item| if (hasLocalListMarker(transcript, tokens[item])) return error.InvalidPlan;
+        item_total += list.items.len;
+        if (list.start_token >= list.end_token or list.end_token > tokens.len or list.start_token < list_end or list.items.len < 2 or item_total > max_list_items or list.items[0].start_token != list.start_token or !strictListItems(list.items, list.start_token, list.end_token, deleted, protected) or protectedLayoutBoundary(list.start_token, deleted, protected) or (list.end_token < tokens.len and protectedLayoutBoundary(list.end_token, deleted, protected))) return error.InvalidPlan;
+        for (list.items) |item| if (hasLocalListMarker(transcript, tokens[item.start_token])) return error.InvalidPlan;
         list_end = list.end_token;
     }
     for (plan.paragraph_breaks) |a| for (plan.corrections) |c| if (a > c.start_token and a < c.end_token) return error.InvalidPlan;
     for (plan.lists) |list| {
-        for (list.item_tokens) |a| for (plan.corrections) |c| if (a > c.start_token and a < c.end_token) return error.InvalidPlan;
+        for (list.items) |item| for (plan.corrections) |c| if (item.start_token > c.start_token and item.start_token < c.end_token) return error.InvalidPlan;
         for (plan.corrections) |c| if (list.end_token > c.start_token and list.end_token < c.end_token) return error.InvalidPlan;
     }
     return renderPolished(gpa, transcript, tokens, deleted, plan);
@@ -320,7 +321,7 @@ fn renderPolished(gpa: Allocator, source: []const u8, tokens: []const Token, del
 }
 const ListItemInfo = struct { kind: ListKind, number: usize };
 fn listItem(lists: []const List, token: usize) ?ListItemInfo {
-    for (lists) |l| for (l.item_tokens, 0..) |x, i| if (x == token) return .{ .kind = l.kind, .number = i + 1 };
+    for (lists) |l| for (l.items, 0..) |item, i| if (item.start_token == token) return .{ .kind = l.kind, .number = i + 1 };
     return null;
 }
 fn layoutAt(plan: PolishedPlan, token: usize) u2 {
@@ -371,6 +372,11 @@ fn hasUnsafeDecoration(source: []const u8, tokens: []const Token, i: usize) bool
     const e = tokenChunkEnd(source, tokens[i]);
     for (source[s..tokens[i].start]) |c| if (!std.ascii.isWhitespace(c) and std.mem.indexOfScalar(u8, ".,?!:;", c) == null) return true;
     for (source[tokens[i].end..e]) |c| if (!std.ascii.isWhitespace(c) and std.mem.indexOfScalar(u8, ".,?!:;", c) == null) return true;
+    return false;
+}
+fn hasFixedTrailingPunctuation(source: []const u8, token: Token) bool {
+    const end = tokenChunkEnd(source, token);
+    for (source[token.end..end]) |c| if (std.mem.indexOfScalar(u8, ".,?!:;", c) != null) return true;
     return false;
 }
 fn hasDecorationOnlyChunk(source: []const u8, tokens: []const Token) bool {
@@ -607,9 +613,10 @@ fn strictAnchors(v: []const usize, len: usize, deleted: []const bool, protected:
     }
     return true;
 }
-fn strictListItems(v: []const usize, start: usize, end: usize, deleted: []const bool, protected: []const bool) bool {
+fn strictListItems(v: []const ListAnchor, start: usize, end: usize, deleted: []const bool, protected: []const bool) bool {
     var p: ?usize = null;
-    for (v) |x| {
+    for (v) |item| {
+        const x = item.start_token;
         if (x < start or x >= end or protectedLayoutBoundary(x, deleted, protected) or (p != null and x <= p.?)) return false;
         p = x;
     }
@@ -704,8 +711,8 @@ test "polished compiles corrections punctuation paragraphs and numbered lists" {
     const corrections = [_]Correction{.{ .start_token = 0, .end_token = 1, .source = "hello", .replacement = "Hello", .kind = .case }};
     const punctuation_marks = [_]Punctuation{.{ .after_token = 1, .mark = .period }};
     const paragraphs = [_]usize{2};
-    const items = [_]usize{ 2, 4 };
-    const lists = [_]List{.{ .start_token = 2, .end_token = 6, .item_tokens = &items, .kind = .numbered }};
+    const items = [_]ListAnchor{ .{ .start_token = 2 }, .{ .start_token = 4 } };
+    const lists = [_]List{.{ .start_token = 2, .end_token = 6, .items = &items, .kind = .numbered }};
     const out = try polished(std.testing.allocator, source, &.{}, .{
         .version = 2,
         .deletions = &.{},
@@ -718,11 +725,11 @@ test "polished compiles corrections punctuation paragraphs and numbered lists" {
     try std.testing.expectEqualStrings("Hello world.\n\n1. first tea\n2. second coffee\nend", out);
 }
 
-test "polished deletion and bullet anchors interact only on survivors" {
+test "polished rejects provider deletion plans" {
     const deletion = [_]Deletion{.{ .start_token = 0, .end_token = 1, .source = "um", .kind = .filler, .proof_start_token = 0, .proof_end_token = 1, .cue = "um", .category = null }};
-    const items = [_]usize{ 1, 3 };
-    const lists = [_]List{.{ .start_token = 1, .end_token = 5, .item_tokens = &items, .kind = .bullet }};
-    const out = try polished(std.testing.allocator, "um first tea second coffee end", &.{}, .{
+    const items = [_]ListAnchor{ .{ .start_token = 1 }, .{ .start_token = 3 } };
+    const lists = [_]List{.{ .start_token = 1, .end_token = 5, .items = &items, .kind = .bullet }};
+    try expectInvalidPlan("um first tea second coffee end", &.{}, .{
         .version = 2,
         .deletions = &deletion,
         .corrections = &.{},
@@ -730,20 +737,14 @@ test "polished deletion and bullet anchors interact only on survivors" {
         .paragraph_breaks = &.{},
         .lists = &lists,
     });
-    defer std.testing.allocator.free(out);
-    try std.testing.expectEqualStrings("- first tea\n- second coffee\nend", out);
 }
 
-test "polished validates successful repetition backtrack and glossary proofs" {
+test "polished rejects cleanup deletions and validates glossary proofs" {
     const repetition = [_]Deletion{.{ .start_token = 2, .end_token = 4, .source = "go now", .kind = .repetition, .proof_start_token = 0, .proof_end_token = 2, .cue = "adjacent", .category = null }};
-    const repeated = try polished(std.testing.allocator, "go now go now please", &.{}, .{ .version = 2, .deletions = &repetition, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
-    defer std.testing.allocator.free(repeated);
-    try std.testing.expectEqualStrings("go now please", repeated);
+    try expectInvalidPlan("go now go now please", &.{}, .{ .version = 2, .deletions = &repetition, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
 
     const backtrack = [_]Deletion{.{ .start_token = 1, .end_token = 3, .source = "Tuesday actually", .kind = .backtrack, .proof_start_token = 3, .proof_end_token = 4, .cue = "actually", .category = .weekday }};
-    const repaired = try polished(std.testing.allocator, "meet Tuesday actually Wednesday", &.{}, .{ .version = 2, .deletions = &backtrack, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
-    defer std.testing.allocator.free(repaired);
-    try std.testing.expectEqualStrings("meet Wednesday", repaired);
+    try expectInvalidPlan("meet Tuesday actually Wednesday", &.{}, .{ .version = 2, .deletions = &backtrack, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
 
     const correction = [_]Correction{.{ .start_token = 0, .end_token = 1, .source = "sayall", .replacement = "SayAll", .kind = .glossary }};
     const corrected = try polished(std.testing.allocator, "sayall works", &.{"SayAll"}, .{ .version = 2, .deletions = &.{}, .corrections = &correction, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
@@ -771,18 +772,30 @@ test "polished empty plan preserves source slices and protected anchors reject" 
     const quoted_punctuation = [_]Punctuation{.{ .after_token = 1, .mark = .question }};
     try expectInvalidPlan("\"do not.\"", &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &quoted_punctuation, .paragraph_breaks = &.{}, .lists = &.{} });
 
-    const items = [_]usize{ 0, 2 };
-    const numbered = [_]List{.{ .start_token = 0, .end_token = 4, .item_tokens = &items, .kind = .numbered }};
+    const items = [_]ListAnchor{ .{ .start_token = 0 }, .{ .start_token = 2 } };
+    const numbered = [_]List{.{ .start_token = 0, .end_token = 4, .items = &items, .kind = .numbered }};
     try expectInvalidPlan("1. tea 2. coffee", &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &numbered });
 
     const technical_punctuation = [_]Punctuation{.{ .after_token = 1, .mark = .period }};
-    try expectInvalidPlan("visit https://example.com now", &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &technical_punctuation, .paragraph_breaks = &.{}, .lists = &.{} });
+    const technical_output = try polished(std.testing.allocator, "visit https://example.com now", &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &technical_punctuation, .paragraph_breaks = &.{}, .lists = &.{} });
+    defer std.testing.allocator.free(technical_output);
+    try std.testing.expectEqualStrings("visit https://example.com. now", technical_output);
+    const technical_comma = [_]Punctuation{.{ .after_token = 1, .mark = .comma }};
+    const comma_output = try polished(std.testing.allocator, "visit https://example.com then continue", &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &technical_comma, .paragraph_breaks = &.{}, .lists = &.{} });
+    defer std.testing.allocator.free(comma_output);
+    try std.testing.expectEqualStrings("visit https://example.com, then continue", comma_output);
+    const terminal_technical_punctuation = [_]Punctuation{.{ .after_token = 1, .mark = .period }};
+    const terminal_output = try polished(std.testing.allocator, "email user@example.com", &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &terminal_technical_punctuation, .paragraph_breaks = &.{}, .lists = &.{} });
+    defer std.testing.allocator.free(terminal_output);
+    try std.testing.expectEqualStrings("email user@example.com.", terminal_output);
+    try expectInvalidPlan("visit https://example.com/search?", &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &terminal_technical_punctuation, .paragraph_breaks = &.{}, .lists = &.{} });
+    try expectInvalidPlan("open /tmp/file;", &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &terminal_technical_punctuation, .paragraph_breaks = &.{}, .lists = &.{} });
     const technical_paragraph = [_]usize{1};
     try expectInvalidPlan("visit user@example.com now", &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &technical_paragraph, .lists = &.{} });
     const after_technical_paragraph = [_]usize{2};
     try expectInvalidPlan("visit https://example.com now", &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &after_technical_paragraph, .lists = &.{} });
-    const protected_items = [_]usize{ 0, 2 };
-    const protected_list = [_]List{.{ .start_token = 0, .end_token = 4, .item_tokens = &protected_items, .kind = .bullet }};
+    const protected_items = [_]ListAnchor{ .{ .start_token = 0 }, .{ .start_token = 2 } };
+    const protected_list = [_]List{.{ .start_token = 0, .end_token = 4, .items = &protected_items, .kind = .bullet }};
     try expectInvalidPlan("/tmp/file item second item", &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &protected_list });
     const emphasized_punctuation = [_]Punctuation{.{ .after_token = 0, .mark = .exclamation }};
     try expectInvalidPlan("*important* note", &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &emphasized_punctuation, .paragraph_breaks = &.{}, .lists = &.{} });

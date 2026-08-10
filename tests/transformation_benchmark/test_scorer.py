@@ -54,6 +54,17 @@ def perfect_report(latencies=None):
 
 
 class ScoringTests(unittest.TestCase):
+    def test_adapter_error_with_null_output_is_a_hard_failure_not_a_crash(self):
+        cases, digest = load_cases()
+        results = [result(case) for case in cases]
+        target = next(case for case in cases if case["id"] == "polished-punctuation")
+        results[cases.index(target)] = result(target, output=None, outcome="adapter_error")
+        report = score(cases, results, digest)
+        scored = next(item for item in report["cases"] if item["case_id"] == target["id"])
+        self.assertIsNone(scored["actual_output"])
+        self.assertIn("adapter_error", scored["hard_violations"])
+        self.assertFalse(report["qualification"]["passed"])
+
     def test_reference_outputs_have_zero_hard_safety_violations(self):
         cases, results, report = perfect_report()
         self.assertEqual(report["summary"]["hard_safety_violations"], 0)
@@ -126,7 +137,7 @@ class ScoringTests(unittest.TestCase):
         ))
         self.assertTrue(polished_semantic_invariant(
             "Bring apples bananas and pears",
-            "Bring:\n- Apples\n- Bananas\n- Pears",
+            "Bring:\n- Apples\n- Bananas\n- and Pears",
         ))
         self.assertFalse(polished_semantic_invariant(
             "Alice Bob approved",
@@ -157,13 +168,25 @@ class ScoringTests(unittest.TestCase):
             "First alpha second beta apples and pears",
             "1. First alpha\n2. second beta\nApples\n- Pears",
         ))
-        self.assertTrue(polished_semantic_invariant("Fourth inspect", "4. Inspect"))
+        self.assertFalse(polished_semantic_invariant("Fourth inspect", "4. Inspect"))
+        self.assertTrue(polished_semantic_invariant("Fourth inspect", "4. Fourth inspect"))
+        self.assertFalse(polished_semantic_invariant("Budget 1200 dollars", "Budget $1,200"))
+        self.assertFalse(polished_semantic_invariant("Budget 1200 dollars", "Budget 1,200 dollars"))
+        self.assertFalse(polished_semantic_invariant("Don’t stop", "Don't stop"))
+        self.assertFalse(polished_semantic_invariant("Straße", "STRASSE"))
+        self.assertFalse(polished_semantic_invariant("- Keep this", "Keep this"))
+        self.assertFalse(polished_semantic_invariant("1. Keep this", "Keep this"))
+        self.assertTrue(polished_semantic_invariant("- Keep this", "- Keep this"))
+        self.assertTrue(polished_semantic_invariant("1. Keep this", "1. Keep this"))
 
-    def test_list_conjunction_policy_is_exact_or_one_explicit_final_omission(self):
+    def test_list_conjunction_policy_requires_exact_source_units(self):
         source = "Bring apples bananas and pears"
         self.assertTrue(polished_semantic_invariant(source, source))
-        self.assertTrue(polished_semantic_invariant(
+        self.assertFalse(polished_semantic_invariant(
             source, "Bring:\n- Apples\n- Bananas\n- Pears"
+        ))
+        self.assertTrue(polished_semantic_invariant(
+            source, "Bring:\n- Apples\n- Bananas\n- and Pears"
         ))
         self.assertFalse(polished_semantic_invariant(source, "Bring apples bananas pears"))
         self.assertFalse(polished_semantic_invariant(
