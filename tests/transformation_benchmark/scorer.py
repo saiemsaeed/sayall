@@ -8,12 +8,28 @@ import hashlib
 import json
 import math
 import pathlib
+import re
 import sys
 from collections import Counter, defaultdict
 
-SCORER_VERSION = "1.0.0"
+SCORER_VERSION = "1.2.0"
 MODES = {"verbatim", "clean", "polished"}
 OUTCOMES = {"applied", "safe_fallback", "unsafe_plan", "adapter_error"}
+INVOCATION_MODES = {"not_applicable", "not_attempted_no_credential", "live_attempted"}
+DETERMINISTIC_TRANSFORMATION_GATES = {"clean-filler-um", "clean-url-path"}
+SEMANTIC_TOKEN = re.compile(
+    r"[+-]?[$€£¥]?\d[\d,]*(?:\.\d+)?%?|[^\W\d_]+(?:['’][^\W\d_]+)?|_|[^\w\s]",
+    re.UNICODE,
+)
+ORDINALS = {
+    word: f"ordinal:{number}"
+    for number, word in enumerate(
+        ("first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"),
+        start=1,
+    )
+}
+LIST_ITEM = re.compile(r"^[ \t]*(?:(-)|([1-9]\d*)\.)[ \t]+(.*)$")
+FORMATTING_PUNCTUATION = set(".,!?:;'\"“”‘’()[]{}—–…")
 
 
 class ContractError(ValueError):
@@ -43,7 +59,7 @@ def validate_corpus(cases: list[dict]) -> None:
     for case in cases:
         required = {"schema_version", "corpus_id", "id", "mode", "category", "input",
                     "expected_output", "expectation", "safety"}
-        if not required <= case.keys():
+        if not required <= case.keys() or not set(case) <= required | {"scenario"}:
             raise ContractError(f"corpus case missing fields: {case.get('id', '<unknown>')}")
         if type(case["schema_version"]) is not int or case["schema_version"] != 1:
             raise ContractError("unsupported corpus schema version")
@@ -62,7 +78,8 @@ def validate_corpus(cases: list[dict]) -> None:
         safety = case["safety"]
         if (not isinstance(safety, dict) or type(safety.get("exact_preservation")) is not bool
                 or not isinstance(safety.get("protected_literals"), list)
-                or not all(isinstance(item, str) and item for item in safety["protected_literals"])):
+                or not all(isinstance(item, str) and item for item in safety["protected_literals"])
+                or not set(safety) <= {"exact_preservation", "protected_literals", "accepted_outputs"}):
             raise ContractError(f"invalid safety contract: {case['id']}")
         alternatives = safety.get("accepted_outputs", [])
         if not isinstance(alternatives, list) or not all(isinstance(item, str) for item in alternatives):
@@ -79,18 +96,101 @@ def validate_corpus(cases: list[dict]) -> None:
             {"type": "inject_plan_failure", "fault": "unsafe_plan", "expected_outcome": "safe_fallback"},
         ):
             raise ContractError(f"invalid fault-injection scenario: {case['id']}")
+        if case["id"] in DETERMINISTIC_TRANSFORMATION_GATES and (
+                case["mode"] != "clean" or case["expectation"] != "transform" or scenario is not None):
+            raise ContractError(f"deterministic transformation gate is not Clean: {case['id']}")
     if len(identities) != 1:
         raise ContractError("all corpus records must share one schema version and corpus id")
 
 
-def validate_results(results: list[dict], case_ids: set[str]) -> dict[str, dict]:
+def semantic_units(text: str) -> list[str]:
+    """Conservative non-formatting units for source-anchoring checks."""
+    units = []
+    for match in SEMANTIC_TOKEN.finditer(text):
+        token = match.group()
+        folded = token.casefold().replace("’", "'")
+        numeric = re.fullmatch(r"([+-]?)([$€£¥]?)(\d[\d,]*(?:\.\d+)?)(%?)", token)
+        if numeric and numeric.group(2) == "$":
+            units.extend((numeric.group(1) + numeric.group(3).replace(",", "") + numeric.group(4),
+                          "dollars"))
+        elif folded in ORDINALS:
+            units.append(ORDINALS[folded])
+        elif numeric:
+            units.append(token.replace(",", ""))
+        elif token[0].isalnum():
+            units.append(folded)
+        elif token not in FORMATTING_PUNCTUATION:
+            units.append(token)
+    return units
+
+
+def normalized_output_units(output: str) -> tuple[list[str], list[list[int]]]:
+    units = []
+    item_groups = []
+    active_group = []
+    active_kind = None
+    previous_number = None
+    for line in output.splitlines():
+        marker = LIST_ITEM.match(line)
+        if not marker:
+            if active_group:
+                item_groups.append(active_group)
+                active_group = []
+                active_kind = None
+                previous_number = None
+            units.extend(semantic_units(line))
+            continue
+        kind = "bullet" if marker.group(1) else "numbered"
+        number = int(marker.group(2)) if marker.group(2) else None
+        continues_group = kind == active_kind and (kind == "bullet" or number == previous_number + 1)
+        if active_group and not continues_group:
+            item_groups.append(active_group)
+            active_group = []
+        active_group.append(len(units))
+        active_kind = kind
+        previous_number = number
+        item_units = semantic_units(marker.group(3))
+        if number is not None:
+            ordinal = f"ordinal:{number}"
+            # Production preserves spoken ordinals after generated markers;
+            # reference variants may replace the ordinal with the marker.
+            if not item_units or item_units[0] != ordinal:
+                units.append(ordinal)
+        units.extend(item_units)
+    if active_group:
+        item_groups.append(active_group)
+    return units, item_groups
+
+
+def polished_semantic_invariant(source: str, output: str) -> bool:
+    source_units, _ = normalized_output_units(source)
+    output_units, item_groups = normalized_output_units(output)
+    if source_units == output_units:
+        return True
+    for item_group in item_groups:
+        if len(item_group) < 2:
+            continue
+        # A contiguous rendered list may replace only the conjunction
+        # immediately before its final item.
+        final_item_start = item_group[-1]
+        with_source_conjunction = (output_units[:final_item_start] + ["and"]
+                                   + output_units[final_item_start:])
+        if source_units == with_source_conjunction:
+            return True
+    return False
+
+
+def validate_results(results: list[dict], cases_by_id: dict[str, dict]) -> dict[str, dict]:
     indexed = {}
     for result in results:
         required = {"schema_version", "case_id", "outcome", "output", "latency_ms", "adapter"}
         if not required <= result.keys():
             raise ContractError(f"result missing fields: {result.get('case_id', '<unknown>')}")
+        allowed = required | {"provider", "plan", "fallback_reason"}
+        if not set(result) <= allowed:
+            raise ContractError(f"result contains unknown fields: {result.get('case_id', '<unknown>')}")
         case_id = result["case_id"]
-        if not isinstance(case_id, str) or case_id not in case_ids or case_id in indexed:
+        if not isinstance(case_id, str) or case_id not in cases_by_id or case_id in indexed:
             raise ContractError(f"unknown or duplicate result case_id: {case_id!r}")
         if (type(result["schema_version"]) is not int or result["schema_version"] != 1
                 or not isinstance(result["outcome"], str) or result["outcome"] not in OUTCOMES):
@@ -111,15 +211,25 @@ def validate_results(results: list[dict], case_ids: set[str]) -> dict[str, dict]
         plan = result.get("plan")
         validate_plan_evidence(plan, case_id)
         provider = result.get("provider")
-        if (provider is not None and
-                (not isinstance(provider, dict)
-                 or not set(provider) <= {"name", "model"}
-                 or any(key in provider and not isinstance(provider[key], str)
-                        for key in ("name", "model")))):
-            raise ContractError(f"provider identity must contain only string identity fields: {case_id}")
+        if (not isinstance(provider, dict) or set(provider) != {"name", "model", "invocation_mode"}
+                or not all(isinstance(provider[key], str) for key in ("name", "model", "invocation_mode"))
+                or provider["invocation_mode"] not in INVOCATION_MODES):
+            raise ContractError(f"invalid closed provider evidence: {case_id}")
+        case = cases_by_id[case_id]
+        if ((case["mode"] == "polished") != (provider["invocation_mode"] != "not_applicable")):
+            raise ContractError(f"provider invocation mode does not match case mode: {case_id}")
         if result["outcome"] == "safe_fallback" and result.get("fallback_reason") not in {
-                "malformed_plan", "unsafe_plan", "provider_error", "adapter_rejection"}:
+                "malformed_plan", "unsafe_plan", "provider_error", "adapter_rejection",
+                "missing_credential"}:
             raise ContractError(f"safe fallback requires a closed fallback_reason: {case_id}")
+        if result["outcome"] != "safe_fallback" and "fallback_reason" in result:
+            raise ContractError(f"fallback_reason is only valid for safe fallback: {case_id}")
+        if (result.get("fallback_reason") == "missing_credential"
+                and provider["invocation_mode"] != "not_attempted_no_credential"):
+            raise ContractError(f"missing credential fallback has wrong invocation mode: {case_id}")
+        if (provider["invocation_mode"] == "not_attempted_no_credential" and not case.get("scenario")
+                and result.get("fallback_reason") != "missing_credential"):
+            raise ContractError(f"uncredentialed Polished case has wrong fallback: {case_id}")
         indexed[case_id] = result
     return indexed
 
@@ -159,7 +269,8 @@ def rate(passed: int, total: int) -> float | None:
 def score(cases: list[dict], results: list[dict], corpus_sha256: str,
           baseline: dict | None = None) -> dict:
     validate_corpus(cases)
-    indexed = validate_results(results, {case["id"] for case in cases})
+    cases_by_id = {case["id"]: case for case in cases}
+    indexed = validate_results(results, cases_by_id)
     scored, category_counts = [], defaultdict(Counter)
     hard_violations = positive_hits = positive_total = negative_hits = negative_total = 0
     latencies = []
@@ -183,8 +294,12 @@ def score(cases: list[dict], results: list[dict], corpus_sha256: str,
         if output is not None:
             safe_outputs = {case["input"], case["expected_output"],
                             *case["safety"].get("accepted_outputs", [])}
-            if outcome == "applied" and output not in safe_outputs:
-                violations.append("unsafe_output")
+            if outcome == "applied":
+                if case["mode"] == "polished":
+                    if not polished_semantic_invariant(case["input"], output):
+                        violations.append("semantic_units_changed")
+                elif output not in safe_outputs:
+                    violations.append("unsafe_output")
             if case["safety"]["exact_preservation"] and output != case["input"]:
                 violations.append("exact_preservation")
             if outcome != "safe_fallback":
@@ -218,19 +333,29 @@ def score(cases: list[dict], results: list[dict], corpus_sha256: str,
                        "category": case["category"], "expectation": case["expectation"],
                        "scenario": case.get("scenario"),
                        "source": case["input"], "expected_output": case["expected_output"],
-                       "actual_output": output,
+                       "actual_output": output if (output in safe_outputs or (
+                           case["mode"] == "polished" and isinstance(output, str)
+                           and polished_semantic_invariant(case["input"], output))) else None,
                        "outcome": outcome, "safety_pass": safety_pass,
                        "hard_violations": violations, "expected_match": expected_match,
+                       "fallback_reason": None if result is None else result.get("fallback_reason"),
                        "latency_ms": None if result is None else result["latency_ms"],
                        "adapter": None if result is None else {
                            "name": result["adapter"]["name"], "version": result["adapter"]["version"]
                        },
                        "provider": None if result is None else {
-                           key: result.get("provider", {}).get(key) for key in ("name", "model")
+                           key: result.get("provider", {}).get(key)
+                           for key in ("name", "model", "invocation_mode")
                            if isinstance(result.get("provider", {}).get(key), str)
                        },
                        "plan": None if result is None else result.get("plan")})
     identity = (cases[0]["schema_version"], cases[0]["corpus_id"])
+    polished = [item for item in scored if item["mode"] == "polished"]
+    live_polished = [item for item in polished
+                     if item.get("provider", {}).get("invocation_mode") == "live_attempted"]
+    live_latencies = [item["latency_ms"] for item in live_polished if item["latency_ms"] is not None]
+    invocation_counts = Counter(item.get("provider", {}).get("invocation_mode") for item in polished)
+    fallback_counts = Counter(item["fallback_reason"] for item in scored if item["fallback_reason"])
     summary = {
         "cases": len(cases), "results": len(results), "hard_safety_violations": hard_violations,
         "safety_pass_rate": rate(len(cases) - sum(not item["safety_pass"] for item in scored), len(cases)),
@@ -239,6 +364,17 @@ def score(cases: list[dict], results: list[dict], corpus_sha256: str,
         "positive_transformations": {"passed": positive_hits, "total": positive_total,
                                      "rate": rate(positive_hits, positive_total)},
         "latency_ms": {f"p{p}": percentile(latencies, p) for p in (50, 95, 99)},
+        "fallback_reasons": dict(sorted(fallback_counts.items())),
+        "polished_live": {
+            "cases": len(polished),
+            "live_attempted": invocation_counts["live_attempted"],
+            "not_attempted_no_credential": invocation_counts["not_attempted_no_credential"],
+            "applied": sum(item["outcome"] == "applied" for item in live_polished),
+            "safe_fallback": sum(item["outcome"] == "safe_fallback" for item in live_polished),
+            "hard_errors": sum(item["outcome"] in {"unsafe_plan", "adapter_error"}
+                               for item in live_polished),
+            "latency_ms": {f"p{p}": percentile(live_latencies, p) for p in (50, 95, 99)},
+        },
     }
     categories = {name: {"cases": counts["cases"],
                          "safety_pass_rate": rate(counts["safety_passes"], counts["cases"]),
@@ -250,11 +386,41 @@ def score(cases: list[dict], results: list[dict], corpus_sha256: str,
                              "passed": counts["negative_passed"], "total": counts["negative_total"],
                              "rate": rate(counts["negative_passed"], counts["negative_total"])}}
                   for name, counts in sorted(category_counts.items())}
-    report = {"report_schema_version": 1, "scorer_version": SCORER_VERSION,
+    polished_provider = {
+        "invocation_modes": sorted({item.get("provider", {}).get("invocation_mode") for item in polished}),
+        "models": sorted({item.get("provider", {}).get("model") for item in polished}),
+    }
+    report = {"report_schema_version": 2, "scorer_version": SCORER_VERSION,
               "generated_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
               "corpus": {"schema_version": identity[0], "id": identity[1],
                          "sha256": corpus_sha256},
+              "polished_provider": polished_provider,
               "summary": summary, "categories": categories, "cases": scored}
+    deterministic = [item for item in scored if item["case_id"] in DETERMINISTIC_TRANSFORMATION_GATES]
+    deterministic_cases = [item for item in scored if item["mode"] != "polished" or item["scenario"]]
+    report["deterministic_qualification"] = {
+        "cases": len(deterministic_cases),
+        "hard_safety": all(item["safety_pass"] for item in deterministic_cases),
+        "transformations": all(item["expected_match"] for item in deterministic)
+            and len(deterministic) == len(DETERMINISTIC_TRANSFORMATION_GATES),
+    }
+    report["deterministic_qualification"]["passed"] = (
+        report["deterministic_qualification"]["hard_safety"]
+        and report["deterministic_qualification"]["transformations"]
+    )
+    report["qualification"] = {
+        "policy": "initial-hard-gates-v1",
+        "quality_thresholds_ratified": False,
+        "adapter_integrity": summary["results"] == summary["cases"],
+        "hard_safety": summary["hard_safety_violations"] == 0,
+        "negative_preservation": summary["negative_preservation"]["rate"] == 1,
+        "deterministic_qualification": report["deterministic_qualification"]["passed"],
+    }
+    report["qualification"]["passed"] = all(
+        report["qualification"][key]
+        for key in ("adapter_integrity", "hard_safety", "negative_preservation",
+                    "deterministic_qualification")
+    )
     report["baseline"] = compare_baseline(report, baseline)
     return report
 
@@ -270,6 +436,8 @@ def compare_baseline(current: dict, baseline: dict | None) -> dict:
             reasons.append(f"corpus.{field} differs")
     if current["report_schema_version"] != baseline.get("report_schema_version"):
         reasons.append("report_schema_version differs")
+    if current.get("polished_provider") != baseline.get("polished_provider"):
+        reasons.append("Polished invocation mode or model differs")
     if reasons:
         return {"comparable": False, "reasons": reasons, "deltas": {}}
     if (not valid_baseline_metrics(baseline)
@@ -282,9 +450,12 @@ def compare_baseline(current: dict, baseline: dict | None) -> dict:
         "positive_transformation_rate": now["positive_transformations"]["rate"] - before["positive_transformations"]["rate"],
     }
     for key in ("p50", "p95", "p99"):
-        current_value, previous_value = now["latency_ms"][key], before["latency_ms"][key]
-        deltas[f"latency_{key}_ms"] = (current_value - previous_value
-                                        if current_value is not None and previous_value is not None else None)
+        current_value = now["polished_live"]["latency_ms"][key]
+        previous_value = before["polished_live"]["latency_ms"][key]
+        deltas[f"polished_live_latency_{key}_ms"] = (
+            current_value - previous_value
+            if current_value is not None and previous_value is not None else None
+        )
     category_deltas = {}
     for name, values in current["categories"].items():
         current_rate = values["positive_transformations"]["rate"]
@@ -305,6 +476,8 @@ def valid_baseline_metrics(baseline: dict) -> bool:
         quality_rates = [summary["negative_preservation"]["rate"],
                          summary["positive_transformations"]["rate"]]
         latencies = [summary["latency_ms"][key] for key in ("p50", "p95", "p99")]
+        live_latencies = [summary["polished_live"]["latency_ms"][key]
+                          for key in ("p50", "p95", "p99")]
         categories = baseline["categories"]
         if (type(hard) is not int or hard < 0
                 or not all(isinstance(value, (int, float)) and not isinstance(value, bool)
@@ -313,7 +486,7 @@ def valid_baseline_metrics(baseline: dict) -> bool:
                 or not all(value is None or (isinstance(value, (int, float))
                                               and not isinstance(value, bool)
                                               and math.isfinite(value) and value >= 0)
-                           for value in latencies)
+                           for value in latencies + live_latencies)
                 or not isinstance(categories, dict)):
             return False
         for values in categories.values():
@@ -331,6 +504,7 @@ def valid_baseline_metrics(baseline: dict) -> bool:
 
 def markdown_report(report: dict) -> str:
     summary = report["summary"]
+    live = summary["polished_live"]
     def percent(value):
         return "—" if value is None else f"{value * 100:.2f}%"
     lines = ["# SayAll transformation benchmark", "",
@@ -342,7 +516,15 @@ def markdown_report(report: dict) -> str:
              f"| Safety pass rate | {percent(summary['safety_pass_rate'])} |",
              f"| Negative preservation | {summary['negative_preservation']['passed']}/{summary['negative_preservation']['total']} ({percent(summary['negative_preservation']['rate'])}) |",
              f"| Positive transformations | {summary['positive_transformations']['passed']}/{summary['positive_transformations']['total']} ({percent(summary['positive_transformations']['rate'])}) |",
-             f"| Latency p50 / p95 / p99 | {summary['latency_ms']['p50']} / {summary['latency_ms']['p95']} / {summary['latency_ms']['p99']} ms |",
+             f"| Adapter latency p50 / p95 / p99 | {summary['latency_ms']['p50']} / {summary['latency_ms']['p95']} / {summary['latency_ms']['p99']} ms |",
+             f"| Polished live attempts | {live['live_attempted']}/{live['cases']} |",
+             f"| Polished not attempted (no credential) | {live['not_attempted_no_credential']} |",
+             f"| Polished live applied / fallback / hard error | {live['applied']} / {live['safe_fallback']} / {live['hard_errors']} |",
+             f"| Polished live latency p50 / p95 / p99 | {live['latency_ms']['p50']} / {live['latency_ms']['p95']} / {live['latency_ms']['p99']} ms |",
+             f"| Fallback reasons | `{json.dumps(summary['fallback_reasons'], sort_keys=True)}` |",
+             f"| Deterministic qualification | {'PASS' if report['deterministic_qualification']['passed'] else 'FAIL'} |",
+             f"| Initial hard-gate qualification | {'PASS' if report['qualification']['passed'] else 'FAIL'} |",
+             "", "> Positive Polished quality and latency thresholds are not yet ratified and are reported as evidence only. Releases currently block on adapter integrity, hard safety, exact negative preservation, and deterministic Clean transformations.",
              "", "## Categories", "", "| Category | Cases | Safety | Expected match |",
              "| --- | ---: | ---: | ---: |"]
     for name, values in report["categories"].items():
@@ -352,10 +534,11 @@ def markdown_report(report: dict) -> str:
     if not failures:
         lines.append("None.")
     else:
-        lines.extend(["| Case | Outcome | Safety violations | Expected match |", "| --- | --- | --- | --- |"])
+        lines.extend(["| Case | Outcome | Fallback reason | Safety violations | Expected match |",
+                      "| --- | --- | --- | --- | --- |"])
         for case in failures:
             violations = ", ".join(case["hard_violations"]) or "none"
-            lines.append(f"| {case['case_id']} | {case['outcome']} | {violations} | {case['expected_match']} |")
+            lines.append(f"| {case['case_id']} | {case['outcome']} | {case['fallback_reason'] or '—'} | {violations} | {case['expected_match']} |")
         lines.extend(["", "Full synthetic source, expected/actual output, provider/model, and plan evidence is retained in the machine JSON report."])
     comparison = report["baseline"]
     lines.extend(["", "## Baseline", ""])
@@ -377,6 +560,7 @@ def main(argv=None) -> int:
     parser.add_argument("--baseline", type=pathlib.Path)
     parser.add_argument("--json", type=pathlib.Path, required=True)
     parser.add_argument("--markdown", type=pathlib.Path, required=True)
+    parser.add_argument("--enforce-hard", action="store_true")
     args = parser.parse_args(argv)
     cases, corpus_sha = read_jsonl(args.corpus)
     results, _ = read_jsonl(args.results)
@@ -384,7 +568,7 @@ def main(argv=None) -> int:
     report = score(cases, results, corpus_sha, baseline)
     args.json.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     args.markdown.write_text(markdown_report(report))
-    return 0
+    return 1 if args.enforce_hard and not report["qualification"]["passed"] else 0
 
 
 if __name__ == "__main__":

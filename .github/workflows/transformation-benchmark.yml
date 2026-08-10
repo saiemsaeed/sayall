@@ -1,0 +1,132 @@
+name: Production transformation benchmark
+
+on:
+  workflow_call:
+    inputs:
+      benchmark_sha:
+        description: Exact commit to benchmark
+        required: true
+        type: string
+      enforce:
+        description: Enforce initial hard safety, preservation, and deterministic gates
+        type: boolean
+        default: true
+  workflow_dispatch:
+    inputs:
+      enforce:
+        description: Enforce initial hard safety, preservation, and deterministic gates
+        type: boolean
+        default: true
+
+concurrency:
+  group: transformation-benchmark-${{ inputs.benchmark_sha || github.sha }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      BENCHMARK_SHA: ${{ inputs.benchmark_sha || github.sha }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ env.BENCHMARK_SHA }}
+          persist-credentials: false
+      - name: Bind qualification to the checked-out source
+        run: |
+          set -euo pipefail
+          actual_sha=$(git rev-parse HEAD)
+          test "$actual_sha" = "$BENCHMARK_SHA"
+          echo "ADAPTER_VERSION=$actual_sha" >> "$GITHUB_ENV"
+      - name: Install Zig 0.16.0
+        uses: mlugg/setup-zig@8d6198c65fb0feaa111df26e6b467fea8345e46f # v2.0.5
+        with:
+          version: 0.16.0
+      - name: Test scorer, adapter, and production case runner
+        run: |
+          python3 -m unittest discover -s tests/transformation_benchmark -p 'test_*.py'
+          zig build transformation-benchmark-case -Doptimize=ReleaseSafe
+      - name: Run synthetic corpus through production APIs
+        run: |
+          python3 tests/transformation_benchmark/adapter.py \
+            --adapter-version "$ADAPTER_VERSION" \
+            --no-live-provider \
+            --concurrency 4 --timeout 45 \
+            --output transformation-results.jsonl
+      - name: Download latest compatible prior report when available
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          mkdir -p transformation-history
+          echo 'BASELINE_REPORT=' >> "$GITHUB_ENV"
+          artifacts=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" 2>/dev/null |
+            jq -sr '[.[].artifacts[] | select(.expired == false and (.name | startswith("transformation-benchmark-")))] | sort_by(.created_at) | reverse | .[] | [.workflow_run.id, .name] | @tsv') || {
+              echo '::warning::Could not query prior transformation reports.'
+              exit 0
+            }
+          count=0
+          while IFS=$'\t' read -r run_id artifact_name; do
+            [[ -n "${run_id:-}" ]] || continue
+            [[ $run_id != "$GITHUB_RUN_ID" ]] || continue
+            run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" 2>/dev/null) || continue
+            workflow_path=$(jq -r .path <<<"$run")
+            [[ $workflow_path == '.github/workflows/transformation-benchmark.yml' || \
+               $workflow_path == '.github/workflows/release.yml' ]] || continue
+            conclusion=$(jq -r .conclusion <<<"$run")
+            [[ $conclusion == success ]] || continue
+            ((count += 1))
+            candidate="transformation-history/candidate-$count-$run_id"
+            gh run download "$run_id" --name "$artifact_name" --dir "$candidate" >/dev/null 2>&1 || continue
+            report=$(find "$candidate" -name transformation-report.json -type f -size +0c -print -quit)
+            [[ -n "$report" ]] || continue
+            if python3 - "$report" tests/transformation_benchmark/corpus-v1.jsonl transformation-results.jsonl <<'PY'
+          import hashlib, json, pathlib, sys
+          report = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          corpus = pathlib.Path(sys.argv[2]).read_bytes()
+          results = [json.loads(line) for line in pathlib.Path(sys.argv[3]).read_text().splitlines() if line]
+          first = json.loads(next(line for line in corpus.splitlines() if line.strip()))
+          identity = report.get("corpus", {})
+          polished = [result["provider"] for result in results if result["provider"]["invocation_mode"] != "not_applicable"]
+          provider = {"invocation_modes": sorted({item["invocation_mode"] for item in polished}),
+                      "models": sorted({item["model"] for item in polished})}
+          valid = (report.get("report_schema_version") == 2
+                   and identity.get("schema_version") == first["schema_version"]
+                   and identity.get("id") == first["corpus_id"]
+                   and identity.get("sha256") == hashlib.sha256(corpus).hexdigest()
+                   and report.get("polished_provider") == provider)
+          raise SystemExit(0 if valid else 1)
+          PY
+            then
+              echo "BASELINE_REPORT=$report" >> "$GITHUB_ENV"
+              break
+            fi
+          done <<< "$artifacts"
+      - name: Score and enforce initial qualification policy
+        id: score
+        run: |
+          args=(
+            --results transformation-results.jsonl
+            --json transformation-report.json
+            --markdown transformation-report.md
+          )
+          if [[ -n "${BASELINE_REPORT:-}" ]]; then args+=(--baseline "$BASELINE_REPORT"); fi
+          if [[ '${{ inputs.enforce }}' == 'true' ]]; then args+=(--enforce-hard); fi
+          python3 tests/transformation_benchmark/scorer.py "${args[@]}"
+          cat transformation-report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload privacy-safe transformation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: transformation-benchmark-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            transformation-results.jsonl
+            transformation-report.json
+            transformation-report.md
+          if-no-files-found: error
+          retention-days: 30
