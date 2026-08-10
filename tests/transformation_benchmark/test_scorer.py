@@ -3,7 +3,8 @@ import pathlib
 import tempfile
 import unittest
 
-from scorer import ContractError, main, markdown_report, percentile, read_jsonl, score
+from scorer import (ContractError, main, markdown_report, percentile,
+                    polished_semantic_invariant, read_jsonl, score)
 
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -15,7 +16,10 @@ def load_cases():
     return read_jsonl(CORPUS)
 
 
-def result(case, latency=10, output=DEFAULT_OUTPUT, outcome="applied", fallback_reason=None):
+def result(case, latency=10, output=DEFAULT_OUTPUT, outcome="applied", fallback_reason=None,
+           invocation_mode=None, model=None):
+    invocation_mode = invocation_mode or ("live_attempted" if case["mode"] == "polished"
+                                           else "not_applicable")
     record = {
         "schema_version": 1,
         "case_id": case["id"],
@@ -23,7 +27,12 @@ def result(case, latency=10, output=DEFAULT_OUTPUT, outcome="applied", fallback_
         "output": case["expected_output"] if output is DEFAULT_OUTPUT else output,
         "latency_ms": latency,
         "adapter": {"name": "unit-fixture", "version": "1"},
-        "provider": {"name": "none", "model": "deterministic-fixture"},
+        "provider": {
+            "name": "groq" if case["mode"] == "polished" else "none",
+            "model": model or ("polished-fixture" if case["mode"] == "polished"
+                               else "deterministic-fixture"),
+            "invocation_mode": invocation_mode,
+        },
         "plan": None,
     }
     if fallback_reason:
@@ -53,6 +62,7 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(report["summary"]["results"], len(results))
         self.assertTrue(report["qualification"]["adapter_integrity"])
         self.assertTrue(report["qualification"]["passed"])
+        self.assertTrue(report["deterministic_qualification"]["passed"])
         self.assertFalse(report["qualification"]["quality_thresholds_ratified"])
 
     def test_negative_preservation_is_exact(self):
@@ -94,8 +104,60 @@ class ScoringTests(unittest.TestCase):
         report = score(cases, results, digest)
         for case_id in (values["id"], punctuation["id"]):
             scored = next(item for item in report["cases"] if item["case_id"] == case_id)
-            self.assertIn("unsafe_output", scored["hard_violations"])
+            self.assertIn("semantic_units_changed", scored["hard_violations"])
             self.assertIsNone(scored["actual_output"])
+
+    def test_polished_formatting_variant_is_safe_but_an_exact_quality_miss(self):
+        cases, digest = load_cases()
+        results = [result(case) for case in cases]
+        target = next(case for case in cases if case["id"] == "polished-punctuation")
+        variant = "The fixture is synthetic; it contains no user data!"
+        results[cases.index(target)] = result(target, output=variant)
+        report = score(cases, results, digest)
+        scored = next(item for item in report["cases"] if item["case_id"] == target["id"])
+        self.assertTrue(scored["safety_pass"])
+        self.assertFalse(scored["expected_match"])
+        self.assertEqual(scored["actual_output"], variant)
+
+    def test_list_invariant_accepts_production_markers_without_hiding_conjunctions(self):
+        self.assertTrue(polished_semantic_invariant(
+            "First validate second run third inspect",
+            "1. First validate\n2. second run\n3. third inspect",
+        ))
+        self.assertTrue(polished_semantic_invariant(
+            "Bring apples bananas and pears",
+            "Bring:\n- Apples\n- Bananas\n- Pears",
+        ))
+        self.assertFalse(polished_semantic_invariant(
+            "Alice Bob approved",
+            "- Alice and Bob approved",
+        ))
+        self.assertFalse(polished_semantic_invariant(
+            "Bring three items apples bananas and pears",
+            "- Bring three items apples bananas pears",
+        ))
+        self.assertFalse(polished_semantic_invariant(
+            "Alice and Bob approved apples bananas pears",
+            "Alice Bob approved:\n- Apples\n- Bananas\n- Pears",
+        ))
+        self.assertFalse(polished_semantic_invariant(
+            "Distance 14.2 kilometers",
+            "Distance -14.2 kilometers",
+        ))
+        self.assertFalse(polished_semantic_invariant(
+            "The release is pending",
+            "The release is pending ✅",
+        ))
+        self.assertFalse(polished_semantic_invariant("Compute 6 / 3", "Compute 6 3"))
+        self.assertFalse(polished_semantic_invariant("Compute 5 - 3", "Compute 5 3"))
+        self.assertFalse(polished_semantic_invariant("Use 50 %", "Use 50"))
+        self.assertFalse(polished_semantic_invariant("Press #️⃣", "Press"))
+        self.assertFalse(polished_semantic_invariant("Use snake_case", "Use snake case"))
+        self.assertFalse(polished_semantic_invariant(
+            "First alpha second beta apples and pears",
+            "1. First alpha\n2. second beta\nApples\n- Pears",
+        ))
+        self.assertTrue(polished_semantic_invariant("Fourth inspect", "4. Inspect"))
 
     def test_safe_fallback_is_safety_pass_and_positive_miss(self):
         cases, digest = load_cases()
@@ -167,13 +229,57 @@ class ScoringTests(unittest.TestCase):
         comparison = current["baseline"]
         self.assertTrue(comparison["comparable"])
         self.assertLess(comparison["deltas"]["positive_transformation_rate"], 0)
-        self.assertEqual(comparison["deltas"]["latency_p95_ms"], 10)
+        self.assertEqual(comparison["deltas"]["polished_live_latency_p95_ms"], 10)
         self.assertLess(
             comparison["deltas"]["category_positive_transformation_rates"]["fillers"], 0
         )
         incompatible = json.loads(json.dumps(baseline))
         incompatible["corpus"]["sha256"] = "different"
         self.assertFalse(score(cases, results, baseline["corpus"]["sha256"], incompatible)["baseline"]["comparable"])
+        incompatible_provider = json.loads(json.dumps(baseline))
+        incompatible_provider["polished_provider"]["models"] = ["other-model"]
+        compared = score(cases, results, baseline["corpus"]["sha256"], incompatible_provider)["baseline"]
+        self.assertFalse(compared["comparable"])
+        self.assertIn("Polished invocation mode or model differs", compared["reasons"])
+
+    def test_no_credential_reports_no_live_latency_and_retains_fallback_reason(self):
+        cases, digest = load_cases()
+        results = []
+        for case in cases:
+            if case["mode"] == "polished" and not case.get("scenario"):
+                results.append(result(case, output=case["input"], outcome="safe_fallback",
+                                      fallback_reason="missing_credential",
+                                      invocation_mode="not_attempted_no_credential"))
+            elif case.get("scenario"):
+                results.append(result(case, output=case["input"], outcome="safe_fallback",
+                                      fallback_reason=case["scenario"]["fault"],
+                                      invocation_mode=("not_attempted_no_credential"
+                                                       if case["mode"] == "polished" else "not_applicable")))
+            else:
+                results.append(result(case))
+        report = score(cases, results, digest)
+        live = report["summary"]["polished_live"]
+        self.assertEqual(live["live_attempted"], 0)
+        self.assertGreater(live["not_attempted_no_credential"], 0)
+        self.assertEqual(live["latency_ms"], {"p50": None, "p95": None, "p99": None})
+        target = next(item for item in report["cases"] if item["case_id"] == "polished-question")
+        self.assertEqual(target["fallback_reason"], "missing_credential")
+        self.assertGreater(report["summary"]["fallback_reasons"]["missing_credential"], 0)
+        self.assertIn("missing_credential", markdown_report(report))
+
+    def test_polished_provider_timeout_is_safe_and_nonblocking(self):
+        cases, results, baseline = perfect_report()
+        target = next(case for case in cases if case["id"] == "polished-question")
+        results[cases.index(target)] = result(
+            target, output=target["input"], outcome="safe_fallback",
+            fallback_reason="provider_timeout", invocation_mode="live_attempted"
+        )
+        report = score(cases, results, baseline["corpus"]["sha256"])
+        scored = next(item for item in report["cases"] if item["case_id"] == target["id"])
+        self.assertTrue(scored["safety_pass"])
+        self.assertFalse(scored["expected_match"])
+        self.assertEqual(scored["fallback_reason"], "provider_timeout")
+        self.assertTrue(report["qualification"]["passed"])
 
     def test_latency_percentiles_use_nearest_rank(self):
         self.assertEqual(percentile([1, 2, 3, 4, 100], 50), 3)
@@ -194,7 +300,9 @@ class ScoringTests(unittest.TestCase):
             markdown = markdown_path.read_text()
         self.assertEqual(machine["summary"]["cases"], len(cases))
         evidence = next(item for item in machine["cases"] if item["case_id"] == "clean-filler-um")
-        self.assertEqual(evidence["provider"], {"name": "none", "model": "deterministic-fixture"})
+        self.assertEqual(evidence["provider"], {
+            "name": "none", "model": "deterministic-fixture", "invocation_mode": "not_applicable"
+        })
         self.assertIn("source", evidence)
         self.assertIn("expected_output", evidence)
         self.assertIn("actual_output", evidence)
@@ -216,7 +324,8 @@ class ScoringTests(unittest.TestCase):
         cases, digest = load_cases()
         for field, value in (
             ("adapter", {"name": "fixture", "version": "1", "token": "secret"}),
-            ("provider", {"name": "none", "model": "fixture", "headers": "secret"}),
+            ("provider", {"name": "none", "model": "fixture",
+                          "invocation_mode": "not_applicable", "headers": "secret"}),
             ("plan", {"schema_version": 1, "operations": [], "raw_response": "secret"}),
         ):
             invalid = result(cases[0])
@@ -270,12 +379,14 @@ class ScoringTests(unittest.TestCase):
                                    "--json", str(root / "report.json"),
                                    "--markdown", str(root / "report.md")]), 1)
             report = json.loads((root / "report.json").read_text())
-        self.assertFalse(report["qualification"]["deterministic_transformations"])
+        self.assertFalse(report["deterministic_qualification"]["transformations"])
         self.assertFalse(report["qualification"]["passed"])
 
     def test_malformed_compatible_baseline_is_not_compared(self):
         cases, results, baseline = perfect_report()
-        malformed = {"report_schema_version": 1, "corpus": baseline["corpus"],
+        malformed = {"report_schema_version": baseline["report_schema_version"],
+                     "corpus": baseline["corpus"],
+                     "polished_provider": baseline["polished_provider"],
                      "summary": {}, "categories": {}}
         report = score(cases, results, baseline["corpus"]["sha256"], malformed)
         self.assertFalse(report["baseline"]["comparable"])

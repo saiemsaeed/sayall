@@ -59,7 +59,12 @@ fn run(init: std.process.Init) !void {
         else => .{
             .outcome = .safe_fallback,
             .output = request.input,
-            .fallback_reason = if (err == error.InvalidPlan) "adapter_rejection" else "provider_error",
+            .fallback_reason = if (err == error.InvalidPlan)
+                "adapter_rejection"
+            else if (err == error.MissingApiKey)
+                "missing_credential"
+            else
+                "provider_error",
         },
     };
     const json = try std.json.Stringify.valueAlloc(gpa, response, .{ .emit_null_optional_fields = true });

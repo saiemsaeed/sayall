@@ -12,7 +12,8 @@ import subprocess
 import sys
 import time
 
-from scorer import ContractError, read_jsonl, validate_corpus, validate_results
+from scorer import (ContractError, polished_semantic_invariant, read_jsonl,
+                    validate_corpus, validate_results)
 
 ADAPTER_NAME = "sayall-production-transformation"
 ADAPTER_SCHEMA_VERSION = 1
@@ -41,7 +42,7 @@ def runner_request(case: dict, api_key: str, model: str) -> dict:
         "input": case["input"],
         "groq_api_key": api_key if case["mode"] == "polished" else "",
         "model": model,
-        "fault": case.get("scenario", {}).get("fault"),
+        "fault": (case.get("scenario") or {}).get("fault"),
     }
 
 
@@ -55,7 +56,8 @@ def parse_runner_response(raw: bytes) -> dict:
             or value.get("outcome") not in {"applied", "safe_fallback", "adapter_error"}
             or (value.get("output") is not None and not isinstance(value["output"], str))
             or (value.get("fallback_reason") is not None
-                and value["fallback_reason"] not in {"malformed_plan", "unsafe_plan", "provider_error", "adapter_rejection"})):
+                and value["fallback_reason"] not in {"malformed_plan", "unsafe_plan", "provider_error",
+                                                     "adapter_rejection", "missing_credential"})):
         raise ContractError("case runner violated its closed response contract")
     if value["outcome"] == "safe_fallback" and value["fallback_reason"] is None:
         raise ContractError("case runner fallback omitted its reason")
@@ -67,24 +69,41 @@ def parse_runner_response(raw: bytes) -> dict:
 def run_case(case: dict, runner: pathlib.Path, api_key: str, model: str,
              adapter_version: str, timeout: float) -> dict:
     started = time.monotonic()
-    try:
-        completed = subprocess.run(
-            [str(runner)],
-            input=json.dumps(runner_request(case, api_key, model), separators=(",", ":")).encode(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            env={},
-            timeout=timeout,
-            check=False,
-        )
-        if completed.returncode:
-            raise ContractError("case runner exited unsuccessfully")
-        response = parse_runner_response(completed.stdout)
-    except (OSError, subprocess.SubprocessError, ContractError):
-        response = {"outcome": "adapter_error", "output": None, "fallback_reason": None}
+    invocation_mode = ("not_applicable" if case["mode"] != "polished" else
+                       "live_attempted" if api_key else "not_attempted_no_credential")
+    if case["mode"] == "polished" and not api_key and not case.get("scenario"):
+        response = {"outcome": "safe_fallback", "output": case["input"],
+                    "fallback_reason": "missing_credential"}
+    else:
+        try:
+            completed = subprocess.run(
+                [str(runner)],
+                input=json.dumps(runner_request(case, api_key, model), separators=(",", ":")).encode(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                env={},
+                timeout=timeout,
+                check=False,
+            )
+            if completed.returncode:
+                raise ContractError("case runner exited unsuccessfully")
+            response = parse_runner_response(completed.stdout)
+        except subprocess.TimeoutExpired:
+            if case["mode"] == "polished" and not case.get("scenario"):
+                response = {"outcome": "safe_fallback", "output": case["input"],
+                            "fallback_reason": "provider_timeout"}
+            else:
+                response = {"outcome": "adapter_error", "output": None, "fallback_reason": None}
+        except (OSError, subprocess.SubprocessError, ContractError):
+            response = {"outcome": "adapter_error", "output": None, "fallback_reason": None}
     safe_outputs = {case["input"], case["expected_output"],
                     *case["safety"].get("accepted_outputs", [])}
-    unsafe_output = ((response["outcome"] == "applied" and response["output"] not in safe_outputs)
+    applied_is_unsafe = (response["outcome"] == "applied" and
+                         (not isinstance(response["output"], str) or
+                          (case["mode"] == "polished"
+                           and not polished_semantic_invariant(case["input"], response["output"])) or
+                          (case["mode"] != "polished" and response["output"] not in safe_outputs)))
+    unsafe_output = (applied_is_unsafe
                      or (response["outcome"] == "safe_fallback"
                          and response["output"] != case["input"])
                      or (response["outcome"] == "adapter_error" and response["output"] is not None))
@@ -97,8 +116,10 @@ def run_case(case: dict, runner: pathlib.Path, api_key: str, model: str,
         "output": response["output"],
         "latency_ms": round((time.monotonic() - started) * 1000, 3),
         "adapter": {"name": ADAPTER_NAME, "version": adapter_version},
-        "provider": ({"name": "groq", "model": model} if case["mode"] == "polished"
-                     else {"name": "none", "model": "production-deterministic"}),
+        "provider": ({"name": "groq", "model": model, "invocation_mode": invocation_mode}
+                     if case["mode"] == "polished" else
+                     {"name": "none", "model": "production-deterministic",
+                      "invocation_mode": invocation_mode}),
         "plan": None,
     }
     if response["outcome"] == "safe_fallback":
@@ -133,7 +154,7 @@ def main(argv=None) -> int:
     api_key = os.environ.get(args.secret_env, "")
     results = run(cases, args.runner.resolve(), api_key, args.model,
                   args.adapter_version, args.timeout, args.concurrency)
-    validate_results(results, {case["id"] for case in cases})
+    validate_results(results, {case["id"]: case for case in cases})
     args.output.write_text("".join(json.dumps(result, sort_keys=True) + "\n" for result in results))
     polished = sum(case["mode"] == "polished" for case in cases)
     print(f"wrote {len(results)} synthetic results; polished live cases scheduled: {polished if api_key else 0}")

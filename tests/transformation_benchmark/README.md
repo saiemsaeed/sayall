@@ -37,18 +37,20 @@ credential is present.
 The production adapter writes one object per attempted corpus case:
 
 ```json
-{"schema_version":1,"case_id":"clean-filler-um","outcome":"applied","output":"please send the synthetic report.","latency_ms":18.4,"adapter":{"name":"sayall-production-transformation","version":"dev"},"provider":{"name":"none","model":"production-deterministic"},"plan":null}
+{"schema_version":1,"case_id":"clean-filler-um","outcome":"applied","output":"please send the synthetic report.","latency_ms":18.4,"adapter":{"name":"sayall-production-transformation","version":"dev"},"provider":{"name":"none","model":"production-deterministic","invocation_mode":"not_applicable"},"plan":null}
 ```
 
 Required fields are `schema_version`, `case_id`, `outcome`, `output`,
-`latency_ms`, and `adapter` (`name` and `version`). `provider` and `plan` are
-optional privacy-safe evidence objects. Adapter and provider identity objects
-are closed, and reports project only adapter `name`/`version` and provider
-`name`/`model`. The benchmark-owned plan evidence contract is deliberately not
+`latency_ms`, `adapter` (`name` and `version`), and `provider`; `plan` is
+optional. Adapter and provider identity objects are
+closed. Provider evidence contains `name`, `model`, and `invocation_mode`, one
+of `not_applicable`, `not_attempted_no_credential`, or `live_attempted`.
+Reports retain those fields and the closed fallback reason. The benchmark-owned
+plan evidence contract is deliberately not
 the production schema: it contains `schema_version: 1` and an `operations`
 array whose closed records contain `kind` (`delete`, `replace`, `insert`, or
 `format`) and integer `input_start`/`input_end`. Replacement text is omitted;
-the separately allowlisted actual output supplies the result evidence. Unknown
+the separately safety-validated actual output supplies the result evidence. Unknown
 evidence fields are rejected so credentials, raw provider bodies, and headers
 cannot flow into reports. `unsafe_plan` and `adapter_error` outcomes require a
 null output.
@@ -60,7 +62,8 @@ The top-level result object is closed to the documented required fields plus
 - `applied`: `output` is the accepted transformed text.
 - `safe_fallback`: validation/provider handling returned the original source;
   `fallback_reason` is required and is `malformed_plan`, `unsafe_plan`,
-  `provider_error`, or `adapter_rejection`.
+  `provider_error`, `adapter_rejection`, `missing_credential`, or
+  `provider_timeout`.
 - `unsafe_plan`: an unsafe plan escaped the adapter boundary; hard failure.
 - `adapter_error`: no safety-assured output; hard failure.
 
@@ -90,7 +93,7 @@ python3 tests/transformation_benchmark/scorer.py --enforce-hard \
   --markdown transformation-report.md
 ```
 
-Set `GROQ_API_KEY` to exercise Polished live. Every Polished corpus case invokes
+Set `GROQ_API_KEY` locally to exercise Polished live. Every Polished corpus case invokes
 exactly one `groq.polished` call. Verbatim and Clean always use their production
 deterministic paths and never receive the key. The adapter defaults to four
 case processes and a 45-second per-case deadline; `--concurrency` and
@@ -115,7 +118,9 @@ python3 tests/transformation_benchmark/scorer.py \
 ```
 
 Add `--baseline previous-report.json` to calculate deltas. Baselines are
-comparable only when corpus schema, ID, SHA-256, and report schema match.
+comparable only when corpus schema, ID, SHA-256, report schema, Polished
+invocation mode, and model match.
+The current machine report contract is `report_schema_version: 2`.
 Latency p50/p95/p99 use the deterministic nearest-rank definition. The machine
 JSON includes category rates and per-case synthetic source, reference, actual
 output, provider/model, adapter, and edit-plan evidence. Markdown summarizes the
@@ -124,13 +129,18 @@ same report and lists all safety failures and expected-output misses.
 ## Workflow and release qualification
 
 `transformation-benchmark.yml` is manually dispatchable against any selected
-ref and reusable by the release workflow. A release passes its exact
-`github.sha`, so checkout, adapter identity, tests, and evidence all bind to the
+ref, but manual runs are always deterministic and receive no Groq credential.
+The release workflow alone requests live-provider access, and the reusable job
+refuses that request unless the caller is an exact `release/*` push. A release
+passes its exact `github.sha`; the job asserts checked-out `HEAD` matches it and
+derives adapter identity from that `HEAD`, so tests and evidence bind to the
 release source. The workflow runs unit tests, downloads the newest retained
 compatible report when available, runs the adapter, renders JSON and Markdown,
 and uploads result JSONL plus both reports for 30 days. A missing live Groq
-secret produces source-exact Polished fallbacks while deterministic coverage
-still runs; add the `GROQ_API_KEY` repository secret for live Polished evidence.
+secret produces `missing_credential`, source-exact Polished fallbacks while
+deterministic coverage still runs. Polished provider timeouts similarly produce
+source-exact `provider_timeout` fallbacks and are quality misses, not hard
+failures; deterministic and fault-injection timeouts remain hard adapter errors.
 
 The initially enforced release policy is deliberately narrower than the
 proposed quality policy:
@@ -140,6 +150,12 @@ proposed quality policy:
 - exactly 100% negative preservation; and
 - exact accepted output for the deterministic Clean transformation gates
   (`clean-filler-um` and `clean-url-path`).
+
+Polished safety is independent of exact-reference quality. Exact preservation,
+fallback equality, protected literals, scenarios, adapter errors, and a
+conservative sequence of non-formatting semantic units remain hard. Safe
+punctuation, capitalization, list-marker, currency, and layout variants may
+therefore miss the exact reference without becoming hard failures.
 
 Polished uses exactly the live production source-anchored API when a secret is
 available, but provider quality and latency vary and have not been ratified.

@@ -11,6 +11,10 @@ on:
         description: Enforce initial hard safety, preservation, and deterministic gates
         type: boolean
         default: true
+      live_provider:
+        description: Expose Groq only for the exact release/* push source
+        type: boolean
+        default: false
     secrets:
       GROQ_API_KEY:
         required: false
@@ -40,6 +44,18 @@ jobs:
         with:
           ref: ${{ env.BENCHMARK_SHA }}
           persist-credentials: false
+      - name: Bind qualification to the checked-out source
+        env:
+          REQUEST_LIVE_PROVIDER: ${{ inputs.live_provider || false }}
+        run: |
+          set -euo pipefail
+          actual_sha=$(git rev-parse HEAD)
+          test "$actual_sha" = "$BENCHMARK_SHA"
+          if [[ $REQUEST_LIVE_PROVIDER == true ]]; then
+            test "$GITHUB_EVENT_NAME" = push
+            [[ $GITHUB_REF == refs/heads/release/* ]]
+          fi
+          echo "ADAPTER_VERSION=$actual_sha" >> "$GITHUB_ENV"
       - name: Install Zig 0.16.0
         uses: mlugg/setup-zig@8d6198c65fb0feaa111df26e6b467fea8345e46f # v2.0.5
         with:
@@ -48,6 +64,14 @@ jobs:
         run: |
           python3 -m unittest discover -s tests/transformation_benchmark -p 'test_*.py'
           zig build transformation-benchmark-case -Doptimize=ReleaseSafe
+      - name: Run synthetic corpus through production APIs
+        env:
+          GROQ_API_KEY: ${{ inputs.live_provider && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/') && secrets.GROQ_API_KEY || '' }}
+        run: |
+          python3 tests/transformation_benchmark/adapter.py \
+            --adapter-version "$ADAPTER_VERSION" \
+            --concurrency 4 --timeout 45 \
+            --output transformation-results.jsonl
       - name: Download latest compatible prior report when available
         env:
           GH_TOKEN: ${{ github.token }}
@@ -75,16 +99,21 @@ jobs:
             gh run download "$run_id" --name "$artifact_name" --dir "$candidate" >/dev/null 2>&1 || continue
             report=$(find "$candidate" -name transformation-report.json -type f -size +0c -print -quit)
             [[ -n "$report" ]] || continue
-            if python3 - "$report" tests/transformation_benchmark/corpus-v1.jsonl <<'PY'
+            if python3 - "$report" tests/transformation_benchmark/corpus-v1.jsonl transformation-results.jsonl <<'PY'
           import hashlib, json, pathlib, sys
           report = json.loads(pathlib.Path(sys.argv[1]).read_text())
           corpus = pathlib.Path(sys.argv[2]).read_bytes()
+          results = [json.loads(line) for line in pathlib.Path(sys.argv[3]).read_text().splitlines() if line]
           first = json.loads(next(line for line in corpus.splitlines() if line.strip()))
           identity = report.get("corpus", {})
-          valid = (report.get("report_schema_version") == 1
+          polished = [result["provider"] for result in results if result["provider"]["invocation_mode"] != "not_applicable"]
+          provider = {"invocation_modes": sorted({item["invocation_mode"] for item in polished}),
+                      "models": sorted({item["model"] for item in polished})}
+          valid = (report.get("report_schema_version") == 2
                    and identity.get("schema_version") == first["schema_version"]
                    and identity.get("id") == first["corpus_id"]
-                   and identity.get("sha256") == hashlib.sha256(corpus).hexdigest())
+                   and identity.get("sha256") == hashlib.sha256(corpus).hexdigest()
+                   and report.get("polished_provider") == provider)
           raise SystemExit(0 if valid else 1)
           PY
             then
@@ -92,14 +121,6 @@ jobs:
               break
             fi
           done <<< "$artifacts"
-      - name: Run synthetic corpus through production APIs
-        env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-        run: |
-          python3 tests/transformation_benchmark/adapter.py \
-            --adapter-version "$BENCHMARK_SHA" \
-            --concurrency 4 --timeout 45 \
-            --output transformation-results.jsonl
       - name: Score and enforce initial qualification policy
         id: score
         run: |

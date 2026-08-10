@@ -16,6 +16,7 @@ CASE = {
     "safety": {"accepted_outputs": []},
     "scenario": {"fault": "malformed_plan"},
 }
+POLISHED_CASE = {key: value for key, value in CASE.items() if key != "scenario"}
 
 
 class AdapterTests(unittest.TestCase):
@@ -36,7 +37,7 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaises(ContractError):
             parse_runner_response(b"not json")
 
-    def test_case_timeout_becomes_content_free_adapter_error(self):
+    def test_fault_injection_timeout_becomes_content_free_adapter_error(self):
         expired = subprocess.TimeoutExpired("runner", 1, output=b"provider body", stderr=b"private")
         with mock.patch("adapter.subprocess.run", side_effect=expired):
             result = run_case(CASE, pathlib.Path("runner"), "private-key", "model", "version", 1)
@@ -46,6 +47,34 @@ class AdapterTests(unittest.TestCase):
         self.assertNotIn("private-key", json.dumps(result))
         self.assertNotIn("provider body", json.dumps(result))
 
+    def test_polished_timeout_is_source_exact_nonblocking_fallback(self):
+        expired = subprocess.TimeoutExpired("runner", 1, output=b"provider body", stderr=b"private")
+        with mock.patch("adapter.subprocess.run", side_effect=expired):
+            result = run_case(POLISHED_CASE, pathlib.Path("runner"), "private-key",
+                              "model", "version", 1)
+        self.assertEqual(result["outcome"], "safe_fallback")
+        self.assertEqual(result["output"], POLISHED_CASE["input"])
+        self.assertEqual(result["fallback_reason"], "provider_timeout")
+        self.assertEqual(result["provider"]["invocation_mode"], "live_attempted")
+
+    def test_no_credential_skips_polished_runner(self):
+        with mock.patch("adapter.subprocess.run") as subprocess_run:
+            result = run_case(POLISHED_CASE, pathlib.Path("runner"), "", "model", "version", 1)
+        subprocess_run.assert_not_called()
+        self.assertEqual(result["outcome"], "safe_fallback")
+        self.assertEqual(result["fallback_reason"], "missing_credential")
+        self.assertEqual(result["provider"]["invocation_mode"], "not_attempted_no_credential")
+
+    def test_deterministic_timeouts_remain_hard_adapter_errors(self):
+        expired = subprocess.TimeoutExpired("runner", 1)
+        for mode in ("verbatim", "clean"):
+            deterministic = {**POLISHED_CASE, "mode": mode}
+            with self.subTest(mode=mode), mock.patch("adapter.subprocess.run", side_effect=expired):
+                result = run_case(deterministic, pathlib.Path("runner"), "", "model", "version", 1)
+                self.assertEqual(result["outcome"], "adapter_error")
+                self.assertIsNone(result["output"])
+                self.assertEqual(result["provider"]["invocation_mode"], "not_applicable")
+
     def test_runner_fault_fallback_is_projected_without_extra_fields(self):
         response = {"schema_version": 1, "outcome": "safe_fallback", "output": "Synthetic input",
                     "fallback_reason": "malformed_plan"}
@@ -54,7 +83,7 @@ class AdapterTests(unittest.TestCase):
             result = run_case(CASE, pathlib.Path("runner"), "private-key", "model", "version", 1)
         self.assertEqual(result["fallback_reason"], "malformed_plan")
         self.assertEqual(result["output"], CASE["input"])
-        self.assertEqual(set(result["provider"]), {"name", "model"})
+        self.assertEqual(set(result["provider"]), {"name", "model", "invocation_mode"})
         self.assertIsNone(result["plan"])
 
     def test_unallowlisted_runner_output_is_never_persisted(self):
@@ -68,6 +97,51 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "unsafe_plan")
         self.assertIsNone(result["output"])
         self.assertNotIn(private, serialized)
+
+    def test_polished_nonexact_formatting_variant_is_retained(self):
+        response = {"schema_version": 1, "outcome": "applied", "output": "Synthetic, input!",
+                    "fallback_reason": None}
+        completed = subprocess.CompletedProcess([], 0, stdout=json.dumps(response).encode())
+        with mock.patch("adapter.subprocess.run", return_value=completed):
+            result = run_case(POLISHED_CASE, pathlib.Path("runner"), "private-key",
+                              "model", "version", 1)
+        self.assertEqual(result["outcome"], "applied")
+        self.assertEqual(result["output"], "Synthetic, input!")
+
+    def test_production_numbered_list_marker_and_spoken_ordinal_are_retained(self):
+        case = {
+            **POLISHED_CASE,
+            "input": "First validate second run",
+            "expected_output": "1. Validate\n2. Run",
+        }
+        production_output = "1. First validate\n2. second run"
+        response = {"schema_version": 1, "outcome": "applied", "output": production_output,
+                    "fallback_reason": None}
+        completed = subprocess.CompletedProcess([], 0, stdout=json.dumps(response).encode())
+        with mock.patch("adapter.subprocess.run", return_value=completed):
+            result = run_case(case, pathlib.Path("runner"), "private-key", "model", "version", 1)
+        self.assertEqual(result["outcome"], "applied")
+        self.assertEqual(result["output"], production_output)
+
+    def test_introduced_numeric_sign_is_rejected_before_persistence(self):
+        case = {**POLISHED_CASE, "input": "Distance 14.2 kilometers"}
+        response = {"schema_version": 1, "outcome": "applied",
+                    "output": "Distance -14.2 kilometers", "fallback_reason": None}
+        completed = subprocess.CompletedProcess([], 0, stdout=json.dumps(response).encode())
+        with mock.patch("adapter.subprocess.run", return_value=completed):
+            result = run_case(case, pathlib.Path("runner"), "private-key", "model", "version", 1)
+        self.assertEqual(result["outcome"], "unsafe_plan")
+        self.assertIsNone(result["output"])
+
+    def test_lost_operator_is_rejected_before_persistence(self):
+        case = {**POLISHED_CASE, "input": "Compute 6 / 3"}
+        response = {"schema_version": 1, "outcome": "applied", "output": "Compute 6 3",
+                    "fallback_reason": None}
+        completed = subprocess.CompletedProcess([], 0, stdout=json.dumps(response).encode())
+        with mock.patch("adapter.subprocess.run", return_value=completed):
+            result = run_case(case, pathlib.Path("runner"), "private-key", "model", "version", 1)
+        self.assertEqual(result["outcome"], "unsafe_plan")
+        self.assertIsNone(result["output"])
 
     def test_limits_reject_nonpositive_and_nonfinite_values(self):
         for value in ("0", "-1", "nan", "inf"):
