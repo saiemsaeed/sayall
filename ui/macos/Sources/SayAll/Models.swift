@@ -20,6 +20,15 @@ enum ProcessingMode: String, Codable, CaseIterable, Equatable {
 enum ProcessingProfile: String, Codable, Equatable {
     case verbatim, clean, polished, legacyV1 = "legacy_v1"
 
+    var title: String {
+        switch self {
+        case .verbatim: return "Verbatim"
+        case .clean: return "Clean"
+        case .polished: return "Polished"
+        case .legacyV1: return "Legacy"
+        }
+    }
+
     var userMode: ProcessingMode {
         switch self {
         case .verbatim: return .verbatim
