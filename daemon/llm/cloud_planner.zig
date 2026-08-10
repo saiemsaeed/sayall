@@ -82,7 +82,7 @@ pub const polished_policy_prompt =
     \\items must be a JSON array of objects, each with one integer start_token field, never a
     \\string or concatenated value.
     \\Allowed corrections are one-token capitalization and exact glossary spelling. Deletions
-    \\must be empty; deterministic cleanup is performed locally before this plan. Orthographic
+    \\must be empty; never remove source words in this planning stage. Orthographic
     \\corrections are forbidden. All ranges are half-open token-id ranges: a correction of token
     \\4 always uses start_token 4 and end_token 5. All anchors are token ids, never byte offsets.
     \\Example tokens 0:Can 1:we 2:ship 3:tomorrow require punctuation
@@ -663,5 +663,5 @@ test "polished v2 schema is parseable strict and source anchored" {
     try std.testing.expect(std.mem.indexOf(u8, polished_schema_json, "orthographic") == null);
     try std.testing.expect(std.mem.indexOf(u8, polished_policy_prompt, "Emit every high-confidence formatting operation") != null);
     try std.testing.expect(std.mem.indexOf(u8, polished_policy_prompt, "Never emit") != null);
-    try std.testing.expect(std.mem.indexOf(u8, polished_policy_prompt, "deterministic cleanup is performed locally") != null);
+    try std.testing.expect(std.mem.indexOf(u8, polished_policy_prompt, "never remove source words") != null);
 }
