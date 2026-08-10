@@ -107,7 +107,7 @@ pub fn polishedBaseline(gpa: Allocator, transcript: []const u8, glossary: []cons
     // without supplying punctuation. Recover only the narrow, unambiguous
     // pronoun boundary; proper names and acronyms remain untouched.
     if (!decorated) for (tokens[1..], 1..) |token, i| {
-        if (!sentenceStarterPronoun(token.text) or hasFixedTrailingPunctuation(cleaned, tokens[i - 1])) continue;
+        if (i < 3 or dependentClauseStarter(tokens[0].text) or !sentenceStarterPronoun(token.text) or hasFixedTrailingPunctuation(cleaned, tokens[i - 1])) continue;
         try punctuation_ops.append(gpa, .{ .after_token = i - 1, .mark = .period });
     };
 
@@ -143,6 +143,11 @@ fn directQuestion(word: []const u8) bool {
 
 fn sentenceStarterPronoun(word: []const u8) bool {
     for ([_][]const u8{ "I", "It", "This", "That", "These", "Those", "We", "You", "He", "She", "They", "There" }) |candidate| if (std.mem.eql(u8, word, candidate)) return true;
+    return false;
+}
+
+fn dependentClauseStarter(word: []const u8) bool {
+    for ([_][]const u8{ "if", "when", "whenever", "while", "because", "although", "though", "unless", "until", "once", "before", "after", "since", "whether" }) |candidate| if (asciiEq(word, candidate)) return true;
     return false;
 }
 
@@ -874,6 +879,9 @@ test "polished baseline conservative formatting and coverage" {
         .{ .input = "can we ship tomorrow", .expected = "Can we ship tomorrow?", .sufficient = true },
         .{ .input = "ordinary sentence", .expected = "Ordinary sentence.", .sufficient = false },
         .{ .input = "This fixture is synthetic It contains no user data", .expected = "This fixture is synthetic. It contains no user data.", .sufficient = false },
+        .{ .input = "If I have a good salary", .expected = "If I have a good salary.", .sufficient = false },
+        .{ .input = "If the salary I receive is enough", .expected = "If the salary I receive is enough.", .sufficient = false },
+        .{ .input = "Okay It works", .expected = "Okay It works.", .sufficient = false },
         .{ .input = "um ordinary sentence", .expected = "Ordinary sentence.", .sufficient = false },
         .{ .input = "first validate corpus second run scorer third inspect report", .expected = "- First validate corpus\n- second run scorer\n- third inspect report.", .sufficient = true },
         .{ .input = "bring three items apples bananas and pears", .expected = "Bring three items:\n- apples\n- bananas\n- and pears.", .sufficient = true },
