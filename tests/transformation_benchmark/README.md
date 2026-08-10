@@ -62,8 +62,7 @@ The top-level result object is closed to the documented required fields plus
 - `applied`: `output` is the accepted transformed text.
 - `safe_fallback`: validation/provider handling returned the original source;
   `fallback_reason` is required and is `malformed_plan`, `unsafe_plan`,
-  `provider_error`, `adapter_rejection`, `missing_credential`, or
-  `provider_timeout`.
+  `provider_error`, `adapter_rejection`, or `missing_credential`.
 - `unsafe_plan`: an unsafe plan escaped the adapter boundary; hard failure.
 - `adapter_error`: no safety-assured output; hard failure.
 
@@ -97,7 +96,9 @@ Set `GROQ_API_KEY` locally to exercise Polished live. Every Polished corpus case
 exactly one `groq.polished` call. Verbatim and Clean always use their production
 deterministic paths and never receive the key. The adapter defaults to four
 case processes and a 45-second per-case deadline; `--concurrency` and
-`--timeout` may lower or raise those explicit bounds.
+`--timeout` may lower or raise those explicit bounds. Any outer case-process
+timeout is a content-free, hard `adapter_error` in every mode; the supervisor
+cannot safely infer that a generic process timeout came from the provider.
 
 The process supervisor discards stderr and accepts only a closed response from
 the case runner. It emits provider name/model, adapter name/version, synthetic
@@ -129,18 +130,19 @@ same report and lists all safety failures and expected-output misses.
 ## Workflow and release qualification
 
 `transformation-benchmark.yml` is manually dispatchable against any selected
-ref, but manual runs are always deterministic and receive no Groq credential.
-The release workflow alone requests live-provider access, and the reusable job
-refuses that request unless the caller is an exact `release/*` push. A release
-passes its exact `github.sha`; the job asserts checked-out `HEAD` matches it and
-derives adapter identity from that `HEAD`, so tests and evidence bind to the
-release source. The workflow runs unit tests, downloads the newest retained
-compatible report when available, runs the adapter, renders JSON and Markdown,
-and uploads result JSONL plus both reports for 30 days. A missing live Groq
-secret produces `missing_credential`, source-exact Polished fallbacks while
-deterministic coverage still runs. Polished provider timeouts similarly produce
-source-exact `provider_timeout` fallbacks and are quality misses, not hard
-failures; deterministic and fault-injection timeouts remain hard adapter errors.
+ref, and both manual and release qualification runs explicitly disable the live
+provider and receive no Groq credential. A release passes its exact
+`github.sha`; the job asserts checked-out `HEAD` matches it and derives adapter
+identity from that `HEAD`, so tests and evidence bind to the release source. The
+workflow runs unit tests, downloads the newest retained compatible deterministic
+report when available, runs the adapter, renders JSON and Markdown, and uploads
+result JSONL plus both reports for 30 days. Polished cases therefore produce
+`missing_credential`, source-exact fallbacks while deterministic coverage runs.
+
+Live Polished remains locally runnable with `GROQ_API_KEY`. CI live runs require
+a future protected GitHub environment restricted to trusted release branches;
+until that environment and its approvals are configured, workflows must not
+reference or receive the provider credential.
 
 The initially enforced release policy is deliberately narrower than the
 proposed quality policy:

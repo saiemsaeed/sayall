@@ -173,11 +173,10 @@ def polished_semantic_invariant(source: str, output: str) -> bool:
         # A contiguous rendered list may replace only the conjunction
         # immediately before its final item.
         final_item_start = item_group[-1]
-        for index, unit in enumerate(source_units):
-            if (unit == "and"
-                    and source_units[:index] == output_units[:final_item_start]
-                    and source_units[index + 1:] == output_units[final_item_start:]):
-                return True
+        with_source_conjunction = (output_units[:final_item_start] + ["and"]
+                                   + output_units[final_item_start:])
+        if source_units == with_source_conjunction:
+            return True
     return False
 
 
@@ -221,7 +220,7 @@ def validate_results(results: list[dict], cases_by_id: dict[str, dict]) -> dict[
             raise ContractError(f"provider invocation mode does not match case mode: {case_id}")
         if result["outcome"] == "safe_fallback" and result.get("fallback_reason") not in {
                 "malformed_plan", "unsafe_plan", "provider_error", "adapter_rejection",
-                "missing_credential", "provider_timeout"}:
+                "missing_credential"}:
             raise ContractError(f"safe fallback requires a closed fallback_reason: {case_id}")
         if result["outcome"] != "safe_fallback" and "fallback_reason" in result:
             raise ContractError(f"fallback_reason is only valid for safe fallback: {case_id}")
@@ -231,9 +230,6 @@ def validate_results(results: list[dict], cases_by_id: dict[str, dict]) -> dict[
         if (provider["invocation_mode"] == "not_attempted_no_credential" and not case.get("scenario")
                 and result.get("fallback_reason") != "missing_credential"):
             raise ContractError(f"uncredentialed Polished case has wrong fallback: {case_id}")
-        if (result.get("fallback_reason") == "provider_timeout"
-                and (provider["invocation_mode"] != "live_attempted" or case.get("scenario"))):
-            raise ContractError(f"provider timeout has invalid invocation evidence: {case_id}")
         indexed[case_id] = result
     return indexed
 

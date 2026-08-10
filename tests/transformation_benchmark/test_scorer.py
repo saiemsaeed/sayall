@@ -159,6 +159,23 @@ class ScoringTests(unittest.TestCase):
         ))
         self.assertTrue(polished_semantic_invariant("Fourth inspect", "4. Inspect"))
 
+    def test_list_conjunction_policy_is_exact_or_one_explicit_final_omission(self):
+        source = "Bring apples bananas and pears"
+        self.assertTrue(polished_semantic_invariant(source, source))
+        self.assertTrue(polished_semantic_invariant(
+            source, "Bring:\n- Apples\n- Bananas\n- Pears"
+        ))
+        self.assertFalse(polished_semantic_invariant(source, "Bring apples bananas pears"))
+        self.assertFalse(polished_semantic_invariant(
+            "Bring apples bananas pears", "Bring:\n- Apples\n- Bananas and Pears"
+        ))
+        self.assertFalse(polished_semantic_invariant(
+            "Bring apples and bananas and pears", "Bring:\n- Apples\n- Bananas\n- Pears"
+        ))
+        self.assertFalse(polished_semantic_invariant(
+            source, "Bring:\n- Apples and Bananas\n- Pears"
+        ))
+
     def test_safe_fallback_is_safety_pass_and_positive_miss(self):
         cases, digest = load_cases()
         results = [result(case) for case in cases]
@@ -266,20 +283,6 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(target["fallback_reason"], "missing_credential")
         self.assertGreater(report["summary"]["fallback_reasons"]["missing_credential"], 0)
         self.assertIn("missing_credential", markdown_report(report))
-
-    def test_polished_provider_timeout_is_safe_and_nonblocking(self):
-        cases, results, baseline = perfect_report()
-        target = next(case for case in cases if case["id"] == "polished-question")
-        results[cases.index(target)] = result(
-            target, output=target["input"], outcome="safe_fallback",
-            fallback_reason="provider_timeout", invocation_mode="live_attempted"
-        )
-        report = score(cases, results, baseline["corpus"]["sha256"])
-        scored = next(item for item in report["cases"] if item["case_id"] == target["id"])
-        self.assertTrue(scored["safety_pass"])
-        self.assertFalse(scored["expected_match"])
-        self.assertEqual(scored["fallback_reason"], "provider_timeout")
-        self.assertTrue(report["qualification"]["passed"])
 
     def test_latency_percentiles_use_nearest_rank(self):
         self.assertEqual(percentile([1, 2, 3, 4, 100], 50), 3)

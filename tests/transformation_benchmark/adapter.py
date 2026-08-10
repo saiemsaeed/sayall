@@ -88,12 +88,6 @@ def run_case(case: dict, runner: pathlib.Path, api_key: str, model: str,
             if completed.returncode:
                 raise ContractError("case runner exited unsuccessfully")
             response = parse_runner_response(completed.stdout)
-        except subprocess.TimeoutExpired:
-            if case["mode"] == "polished" and not case.get("scenario"):
-                response = {"outcome": "safe_fallback", "output": case["input"],
-                            "fallback_reason": "provider_timeout"}
-            else:
-                response = {"outcome": "adapter_error", "output": None, "fallback_reason": None}
         except (OSError, subprocess.SubprocessError, ContractError):
             response = {"outcome": "adapter_error", "output": None, "fallback_reason": None}
     safe_outputs = {case["input"], case["expected_output"],
@@ -144,6 +138,7 @@ def main(argv=None) -> int:
     parser.add_argument("--output", type=pathlib.Path, required=True)
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--secret-env", default="GROQ_API_KEY")
+    parser.add_argument("--no-live-provider", action="store_true")
     parser.add_argument("--adapter-version", default=os.environ.get("GITHUB_SHA", "dev"))
     parser.add_argument("--timeout", type=positive_finite, default=45.0)
     parser.add_argument("--concurrency", type=positive_integer, default=4)
@@ -151,7 +146,7 @@ def main(argv=None) -> int:
 
     cases, _ = read_jsonl(args.corpus)
     validate_corpus(cases)
-    api_key = os.environ.get(args.secret_env, "")
+    api_key = "" if args.no_live_provider else os.environ.get(args.secret_env, "")
     results = run(cases, args.runner.resolve(), api_key, args.model,
                   args.adapter_version, args.timeout, args.concurrency)
     validate_results(results, {case["id"]: case for case in cases})

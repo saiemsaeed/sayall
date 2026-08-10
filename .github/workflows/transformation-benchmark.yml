@@ -11,13 +11,6 @@ on:
         description: Enforce initial hard safety, preservation, and deterministic gates
         type: boolean
         default: true
-      live_provider:
-        description: Expose Groq only for the exact release/* push source
-        type: boolean
-        default: false
-    secrets:
-      GROQ_API_KEY:
-        required: false
   workflow_dispatch:
     inputs:
       enforce:
@@ -45,16 +38,10 @@ jobs:
           ref: ${{ env.BENCHMARK_SHA }}
           persist-credentials: false
       - name: Bind qualification to the checked-out source
-        env:
-          REQUEST_LIVE_PROVIDER: ${{ inputs.live_provider || false }}
         run: |
           set -euo pipefail
           actual_sha=$(git rev-parse HEAD)
           test "$actual_sha" = "$BENCHMARK_SHA"
-          if [[ $REQUEST_LIVE_PROVIDER == true ]]; then
-            test "$GITHUB_EVENT_NAME" = push
-            [[ $GITHUB_REF == refs/heads/release/* ]]
-          fi
           echo "ADAPTER_VERSION=$actual_sha" >> "$GITHUB_ENV"
       - name: Install Zig 0.16.0
         uses: mlugg/setup-zig@8d6198c65fb0feaa111df26e6b467fea8345e46f # v2.0.5
@@ -65,11 +52,10 @@ jobs:
           python3 -m unittest discover -s tests/transformation_benchmark -p 'test_*.py'
           zig build transformation-benchmark-case -Doptimize=ReleaseSafe
       - name: Run synthetic corpus through production APIs
-        env:
-          GROQ_API_KEY: ${{ inputs.live_provider && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/') && secrets.GROQ_API_KEY || '' }}
         run: |
           python3 tests/transformation_benchmark/adapter.py \
             --adapter-version "$ADAPTER_VERSION" \
+            --no-live-provider \
             --concurrency 4 --timeout 45 \
             --output transformation-results.jsonl
       - name: Download latest compatible prior report when available

@@ -1,10 +1,12 @@
 import json
+import os
 import pathlib
 import subprocess
+import tempfile
 import unittest
 from unittest import mock
 
-from adapter import parse_runner_response, positive_finite, positive_integer, run_case, runner_request
+from adapter import main, parse_runner_response, positive_finite, positive_integer, run_case, runner_request
 from scorer import ContractError
 
 
@@ -47,14 +49,15 @@ class AdapterTests(unittest.TestCase):
         self.assertNotIn("private-key", json.dumps(result))
         self.assertNotIn("provider body", json.dumps(result))
 
-    def test_polished_timeout_is_source_exact_nonblocking_fallback(self):
+    def test_polished_timeout_is_content_free_adapter_error(self):
         expired = subprocess.TimeoutExpired("runner", 1, output=b"provider body", stderr=b"private")
         with mock.patch("adapter.subprocess.run", side_effect=expired):
             result = run_case(POLISHED_CASE, pathlib.Path("runner"), "private-key",
                               "model", "version", 1)
-        self.assertEqual(result["outcome"], "safe_fallback")
-        self.assertEqual(result["output"], POLISHED_CASE["input"])
-        self.assertEqual(result["fallback_reason"], "provider_timeout")
+        self.assertEqual(result["outcome"], "adapter_error")
+        self.assertIsNone(result["output"])
+        self.assertNotIn("fallback_reason", result)
+        self.assertNotIn("provider body", json.dumps(result))
         self.assertEqual(result["provider"]["invocation_mode"], "live_attempted")
 
     def test_no_credential_skips_polished_runner(self):
@@ -65,7 +68,16 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(result["fallback_reason"], "missing_credential")
         self.assertEqual(result["provider"]["invocation_mode"], "not_attempted_no_credential")
 
-    def test_deterministic_timeouts_remain_hard_adapter_errors(self):
+    def test_no_live_provider_ignores_local_credential(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory) / "results.jsonl"
+            with (mock.patch.dict(os.environ, {"GROQ_API_KEY": "private-key"}),
+                  mock.patch("adapter.run", return_value=[]) as adapter_run,
+                  mock.patch("adapter.validate_results")):
+                self.assertEqual(main(["--no-live-provider", "--output", str(output)]), 0)
+        self.assertEqual(adapter_run.call_args.args[2], "")
+
+    def test_deterministic_timeouts_are_hard_adapter_errors(self):
         expired = subprocess.TimeoutExpired("runner", 1)
         for mode in ("verbatim", "clean"):
             deterministic = {**POLISHED_CASE, "mode": mode}

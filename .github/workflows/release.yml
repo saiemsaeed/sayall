@@ -33,9 +33,6 @@ jobs:
     with:
       benchmark_sha: ${{ github.sha }}
       enforce: true
-      live_provider: true
-    secrets:
-      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
 
   linux-assets:
     runs-on: ubuntu-latest
