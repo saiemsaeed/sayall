@@ -83,7 +83,7 @@ pub fn polishedBaseline(gpa: Allocator, transcript: []const u8, glossary: []cons
     } else if (!decorated) {
         var i: usize = 0;
         while (i + 2 < tokens.len) : (i += 1) if (numberWord(tokens[i].text)) |count| {
-            if (!asciiEq(tokens[i + 1].text, "items")) continue;
+            if (!countedListNoun(tokens[i + 1].text)) continue;
             const start = i + 2;
             const remaining = tokens.len - start;
             const has_and = remaining == count + 1 and count >= 2 and asciiEq(tokens[tokens.len - 2].text, "and");
@@ -182,6 +182,11 @@ fn reportedOrdinalPunctuation(gpa: Allocator, source: []const u8, tokens: []cons
 fn numberWord(word: []const u8) ?usize {
     for ([_][]const u8{ "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten" }, 2..) |candidate, value| if (asciiEq(word, candidate)) return value;
     return null;
+}
+
+fn countedListNoun(word: []const u8) bool {
+    for ([_][]const u8{ "items", "things", "fruits", "projects", "tasks", "points", "options", "steps", "reasons", "examples", "files", "changes", "questions", "ideas" }) |candidate| if (asciiEq(word, candidate)) return true;
+    return false;
 }
 
 /// Deterministic conservative cleanup. The returned slice is allocator-owned.
@@ -315,7 +320,7 @@ pub fn polished(gpa: Allocator, transcript: []const u8, glossary: []const []cons
     var item_total: usize = 0;
     for (plan.lists) |list| {
         item_total += list.items.len;
-        if (list.start_token >= list.end_token or list.end_token > tokens.len or list.start_token < list_end or list.items.len < 2 or item_total > max_list_items or list.items[0].start_token != list.start_token or !strictListItems(list.items, list.start_token, list.end_token, deleted, protected) or protectedLayoutBoundary(list.start_token, deleted, protected) or reportingListContext(transcript, tokens, list.start_token) or (list.end_token < tokens.len and protectedLayoutBoundary(list.end_token, deleted, protected))) return error.InvalidPlan;
+        if (list.start_token >= list.end_token or list.end_token > tokens.len or list.start_token < list_end or list.items.len < 2 or item_total > max_list_items or list.items[0].start_token != list.start_token or !strictListItems(list.items, list.start_token, list.end_token, deleted, protected) or !validListEvidence(tokens, list) or protectedLayoutBoundary(list.start_token, deleted, protected) or reportingListContext(transcript, tokens, list.start_token) or (list.end_token < tokens.len and protectedLayoutBoundary(list.end_token, deleted, protected))) return error.InvalidPlan;
         for (list.items) |item| if (hasLocalListMarker(transcript, tokens[item.start_token])) return error.InvalidPlan;
         list_end = list.end_token;
     }
@@ -799,6 +804,31 @@ fn strictListItems(v: []const ListAnchor, start: usize, end: usize, deleted: []c
     }
     return true;
 }
+
+fn validListEvidence(tokens: []const Token, list: List) bool {
+    var ordinal_expected: usize = 1;
+    var ordinal_proof = true;
+    for (list.items) |item| {
+        if (ordinal(tokens[item.start_token].text) != ordinal_expected) {
+            ordinal_proof = false;
+            break;
+        }
+        ordinal_expected += 1;
+    }
+    if (ordinal_proof) return true;
+
+    if (list.start_token < 2 or list.end_token != tokens.len) return false;
+    const count = numberWord(tokens[list.start_token - 2].text) orelse return false;
+    if (!countedListNoun(tokens[list.start_token - 1].text) or list.items.len != count) return false;
+    const remaining = list.end_token - list.start_token;
+    const has_and = count >= 2 and remaining == count + 1 and asciiEq(tokens[list.end_token - 2].text, "and");
+    if (remaining != count and !has_and) return false;
+    for (list.items, 0..) |item, i| {
+        const expected = if (has_and and i == count - 1) list.end_token - 2 else list.start_token + i;
+        if (item.start_token != expected) return false;
+    }
+    return true;
+}
 fn protectedLayoutBoundary(token: usize, deleted: []const bool, protected: []const bool) bool {
     if (deleted[token] or protected[token]) return true;
     var previous = token;
@@ -830,6 +860,9 @@ test "polished baseline conservative formatting and coverage" {
         .{ .input = "um ordinary sentence", .expected = "Ordinary sentence.", .sufficient = false },
         .{ .input = "first validate corpus second run scorer third inspect report", .expected = "- First validate corpus\n- second run scorer\n- third inspect report.", .sufficient = true },
         .{ .input = "bring three items apples bananas and pears", .expected = "Bring three items:\n- apples\n- bananas\n- and pears.", .sufficient = true },
+        .{ .input = "can you bring me three fruits apple bananas and pears", .expected = "Can you bring me three fruits:\n- apple\n- bananas\n- and pears?", .sufficient = true },
+        .{ .input = "can you work on these three projects education finance and upholding", .expected = "Can you work on these three projects:\n- education\n- finance\n- and upholding?", .sufficient = true },
+        .{ .input = "can you bring me these items apple bananas and pears", .expected = "Can you bring me these items apple bananas and pears?", .sufficient = true },
         .{ .input = "The button says first second third", .expected = "The button says first, second, third.", .sufficient = true },
         .{ .input = "The button says quotation mark start first second third quotation mark end", .expected = "The button says quotation mark start first, second, third quotation mark end.", .sufficient = true },
         .{ .input = "say \"hello world\"", .expected = "say \"hello world\"", .sufficient = false },
