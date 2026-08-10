@@ -100,6 +100,7 @@ pub fn polishedBaseline(gpa: Allocator, transcript: []const u8, glossary: []cons
         };
     }
     if (list_start) |start| try lists.append(gpa, .{ .start_token = start, .end_token = tokens.len, .items = anchors.items, .kind = .bullet });
+    if (!decorated and try reportedOrdinalPunctuation(gpa, cleaned, tokens, &punctuation_ops)) sufficient = true;
 
     // Deepgram can preserve the capital at an inferred sentence boundary
     // without supplying punctuation. Recover only the narrow, unambiguous
@@ -158,6 +159,24 @@ fn ordinalAnchors(gpa: Allocator, tokens: []const Token, anchors: *std.ArrayList
         expected += 1;
     };
     return expected >= 3;
+}
+
+fn reportedOrdinalPunctuation(gpa: Allocator, source: []const u8, tokens: []const Token, punctuation_ops: *std.ArrayList(Punctuation)) !bool {
+    var indexes: [10]usize = undefined;
+    var count: usize = 0;
+    var expected: usize = 1;
+    for (tokens, 0..) |token, i| if (ordinal(token.text)) |value| {
+        if (value != expected) return false;
+        indexes[count] = i;
+        count += 1;
+        expected += 1;
+    };
+    if (count < 3 or !reportingListContext(source, tokens, indexes[0])) return false;
+    for (indexes[1..count]) |next| {
+        const previous = next - 1;
+        if (!hasFixedTrailingPunctuation(source, tokens[previous])) try punctuation_ops.append(gpa, .{ .after_token = previous, .mark = .comma });
+    }
+    return true;
 }
 
 fn numberWord(word: []const u8) ?usize {
@@ -811,6 +830,8 @@ test "polished baseline conservative formatting and coverage" {
         .{ .input = "um ordinary sentence", .expected = "Ordinary sentence.", .sufficient = false },
         .{ .input = "first validate corpus second run scorer third inspect report", .expected = "- First validate corpus\n- second run scorer\n- third inspect report.", .sufficient = true },
         .{ .input = "bring three items apples bananas and pears", .expected = "Bring three items:\n- apples\n- bananas\n- and pears.", .sufficient = true },
+        .{ .input = "The button says first second third", .expected = "The button says first, second, third.", .sufficient = true },
+        .{ .input = "The button says quotation mark start first second third quotation mark end", .expected = "The button says quotation mark start first, second, third quotation mark end.", .sufficient = true },
         .{ .input = "say \"hello world\"", .expected = "say \"hello world\"", .sufficient = false },
         .{ .input = "visit https://example.com", .expected = "visit https://example.com", .sufficient = false },
         .{ .input = "email me@example.com", .expected = "email me@example.com", .sufficient = false },
