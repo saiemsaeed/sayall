@@ -17,7 +17,7 @@ from scorer import (ContractError, polished_semantic_invariant, read_jsonl,
 
 ADAPTER_NAME = "sayall-production-transformation"
 ADAPTER_SCHEMA_VERSION = 1
-DEFAULT_MODEL = "openai/gpt-oss-20b"
+DEFAULT_MODEL = "gpt-oss-120b"
 RUNNER_FIELDS = {"schema_version", "outcome", "output", "fallback_reason"}
 
 
@@ -40,7 +40,7 @@ def runner_request(case: dict, api_key: str, model: str) -> dict:
         "schema_version": ADAPTER_SCHEMA_VERSION,
         "mode": case["mode"],
         "input": case["input"],
-        "groq_api_key": api_key if case["mode"] == "polished" else "",
+        "llm_api_key": api_key if case["mode"] == "polished" else "",
         "model": model,
         "fault": (case.get("scenario") or {}).get("fault"),
     }
@@ -71,25 +71,21 @@ def run_case(case: dict, runner: pathlib.Path, api_key: str, model: str,
     started = time.monotonic()
     invocation_mode = ("not_applicable" if case["mode"] != "polished" else
                        "live_attempted" if api_key else "not_attempted_no_credential")
-    if case["mode"] == "polished" and not api_key and not case.get("scenario"):
-        response = {"outcome": "safe_fallback", "output": case["input"],
-                    "fallback_reason": "missing_credential"}
-    else:
-        try:
-            completed = subprocess.run(
-                [str(runner)],
-                input=json.dumps(runner_request(case, api_key, model), separators=(",", ":")).encode(),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                env={},
-                timeout=timeout,
-                check=False,
-            )
-            if completed.returncode:
-                raise ContractError("case runner exited unsuccessfully")
-            response = parse_runner_response(completed.stdout)
-        except (OSError, subprocess.SubprocessError, ContractError):
-            response = {"outcome": "adapter_error", "output": None, "fallback_reason": None}
+    try:
+        completed = subprocess.run(
+            [str(runner)],
+            input=json.dumps(runner_request(case, api_key, model), separators=(",", ":")).encode(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env={},
+            timeout=timeout,
+            check=False,
+        )
+        if completed.returncode:
+            raise ContractError("case runner exited unsuccessfully")
+        response = parse_runner_response(completed.stdout)
+    except (OSError, subprocess.SubprocessError, ContractError):
+        response = {"outcome": "adapter_error", "output": None, "fallback_reason": None}
     safe_outputs = {case["input"], case["expected_output"],
                     *case["safety"].get("accepted_outputs", [])}
     applied_is_unsafe = (response["outcome"] == "applied" and
@@ -97,9 +93,13 @@ def run_case(case: dict, runner: pathlib.Path, api_key: str, model: str,
                           (case["mode"] == "polished"
                            and not polished_semantic_invariant(case["input"], response["output"])) or
                           (case["mode"] != "polished" and response["output"] not in safe_outputs)))
+    fallback_is_unsafe = (response["outcome"] == "safe_fallback" and
+                          (not isinstance(response["output"], str) or
+                           (case["mode"] == "polished" and
+                            not polished_semantic_invariant(case["input"], response["output"])) or
+                           (case["mode"] != "polished" and response["output"] not in safe_outputs)))
     unsafe_output = (applied_is_unsafe
-                     or (response["outcome"] == "safe_fallback"
-                         and response["output"] != case["input"])
+                     or fallback_is_unsafe
                      or (response["outcome"] == "adapter_error" and response["output"] is not None))
     if unsafe_output:
         response = {"outcome": "unsafe_plan", "output": None, "fallback_reason": None}
@@ -110,7 +110,7 @@ def run_case(case: dict, runner: pathlib.Path, api_key: str, model: str,
         "output": response["output"],
         "latency_ms": round((time.monotonic() - started) * 1000, 3),
         "adapter": {"name": ADAPTER_NAME, "version": adapter_version},
-        "provider": ({"name": "groq", "model": model, "invocation_mode": invocation_mode}
+        "provider": ({"name": "cerebras", "model": model, "invocation_mode": invocation_mode}
                      if case["mode"] == "polished" else
                      {"name": "none", "model": "production-deterministic",
                       "invocation_mode": invocation_mode}),
@@ -137,7 +137,7 @@ def main(argv=None) -> int:
                         default=pathlib.Path("zig-out/bin/sayall-transformation-benchmark-case"))
     parser.add_argument("--output", type=pathlib.Path, required=True)
     parser.add_argument("--model", default=DEFAULT_MODEL)
-    parser.add_argument("--secret-env", default="GROQ_API_KEY")
+    parser.add_argument("--secret-env", default="CEREBRAS_API_KEY")
     parser.add_argument("--no-live-provider", action="store_true")
     parser.add_argument("--adapter-version", default=os.environ.get("GITHUB_SHA", "dev"))
     parser.add_argument("--timeout", type=positive_finite, default=45.0)

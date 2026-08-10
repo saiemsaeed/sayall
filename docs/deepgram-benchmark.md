@@ -20,7 +20,7 @@ python3 -m unittest discover -s tests/deepgram_benchmark -p 'test_*.py'
 
 The key is read only from the named environment variable and sent to the worker
 inside its stdin request. The worker receives an empty environment; keys are
-never argv, logs, or reports. Groq cleanup is disabled. Every operation is
+never argv, logs, or reports. Cerebras cleanup is disabled. Every operation is
 bounded and temporary canonical mono 16 kHz signed-16 WAV/PCM is deleted. Use
 `--dry-run` to validate the manifest and report schema without a key, worker,
 synthesis tools, or network. A live report records the generated audio hash and

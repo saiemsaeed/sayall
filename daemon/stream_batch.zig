@@ -22,9 +22,9 @@ pub const Request = struct {
     deepgram_numerals: bool = false,
     deepgram_measurements: bool = false,
     stream_finalize_timeout_ms: u32 = 2000,
-    groq_api_key: []const u8,
-    groq_model: []const u8 = "openai/gpt-oss-20b",
-    groq_base_url: []const u8 = "https://api.groq.com/openai/v1/chat/completions",
+    llm_api_key: []const u8,
+    llm_model: []const u8 = "gpt-oss-120b",
+    llm_base_url: []const u8 = "https://api.cerebras.ai/v1/chat/completions",
     processing_profile: processing.Profile,
 };
 
@@ -147,12 +147,12 @@ fn validateAndOpenAudio(io: std.Io, request: Request) !std.Io.File {
     if (request.deepgram_dictation and !request.deepgram_punctuate) return error.InvalidRequest;
     if (!std.fs.path.isAbsolute(request.wav_path) or !std.fs.path.isAbsolute(request.pcm_path)) return error.InvalidRequest;
     if (std.mem.eql(u8, request.wav_path, request.pcm_path)) return error.InvalidRequest;
-    if (!safeSecret(request.deepgram_api_key) or !safeSecret(request.groq_api_key)) return error.InvalidRequest;
+    if (!safeSecret(request.deepgram_api_key) or !safeSecret(request.llm_api_key)) return error.InvalidRequest;
     if (!safeProviderValue(request.deepgram_model) or !safeProviderValue(request.deepgram_language)) return error.InvalidRequest;
     if (!validRegion(request.deepgram_region)) return error.InvalidRequest;
     if (request.stream_finalize_timeout_ms < 250 or request.stream_finalize_timeout_ms > 10_000) return error.InvalidRequest;
-    if (!batch.safeLlmModel(request.groq_model) or
-        !std.mem.eql(u8, request.groq_base_url, "https://api.groq.com/openai/v1/chat/completions")) return error.InvalidRequest;
+    if (!batch.safeLlmModel(request.llm_model) or !std.mem.eql(u8, request.llm_model, "gpt-oss-120b") or
+        !std.mem.eql(u8, request.llm_base_url, "https://api.cerebras.ai/v1/chat/completions")) return error.InvalidRequest;
     keywords.validate(request.deepgram_keyterms) catch return error.InvalidRequest;
     if (request.deepgram_keyterms.len > 0 and !std.mem.eql(u8, request.deepgram_model, "nova-3") and
         !std.mem.startsWith(u8, request.deepgram_model, "nova-3-")) return error.InvalidRequest;
@@ -178,9 +178,9 @@ fn batchRequest(request: Request) batch.Request {
         .deepgram_dictation = request.deepgram_dictation,
         .deepgram_numerals = request.deepgram_numerals,
         .deepgram_measurements = request.deepgram_measurements,
-        .groq_api_key = request.groq_api_key,
-        .groq_model = request.groq_model,
-        .groq_base_url = request.groq_base_url,
+        .llm_api_key = request.llm_api_key,
+        .llm_model = request.llm_model,
+        .llm_base_url = request.llm_base_url,
         .processing_profile = request.processing_profile,
     };
 }
@@ -230,12 +230,12 @@ fn writeLine(io: std.Io, bytes: []const u8) !void {
 }
 
 test "stream request is strict and preserves regional provider settings" {
-    const json = "{\"version\":3,\"wav_path\":\"/tmp/a.wav\",\"pcm_path\":\"/tmp/a.pcm\",\"deepgram_api_key\":\"d\",\"deepgram_model\":\"nova-3\",\"deepgram_language\":\"en-GB\",\"deepgram_region\":\"eu\",\"groq_api_key\":\"\",\"processing_profile\":\"clean\"}";
+    const json = "{\"version\":3,\"wav_path\":\"/tmp/a.wav\",\"pcm_path\":\"/tmp/a.pcm\",\"deepgram_api_key\":\"d\",\"deepgram_model\":\"nova-3\",\"deepgram_language\":\"en-GB\",\"deepgram_region\":\"eu\",\"llm_api_key\":\"\",\"processing_profile\":\"clean\"}";
     const parsed = try parseRequest(std.testing.allocator, json);
     defer parsed.deinit();
     try std.testing.expectEqualStrings("eu", parsed.value.deepgram_region);
     try std.testing.expectEqualStrings("en-GB", batchRequest(parsed.value).deepgram_language);
     try std.testing.expectEqual(processing.Profile.clean, batchRequest(parsed.value).processing_profile);
     try std.testing.expectError(error.InvalidRequest, parseRequest(std.testing.allocator, json[0 .. json.len - 1]));
-    try std.testing.expectError(error.InvalidRequest, parseRequest(std.testing.allocator, "{\"version\":3,\"wav_path\":\"/tmp/a.wav\",\"pcm_path\":\"/tmp/a.pcm\",\"deepgram_api_key\":\"d\",\"groq_api_key\":\"\"}"));
+    try std.testing.expectError(error.InvalidRequest, parseRequest(std.testing.allocator, "{\"version\":3,\"wav_path\":\"/tmp/a.wav\",\"pcm_path\":\"/tmp/a.pcm\",\"deepgram_api_key\":\"d\",\"llm_api_key\":\"\"}"));
 }

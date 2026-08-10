@@ -173,11 +173,11 @@ final class CoordinatorControlTests: XCTestCase {
         let coordinator = Coordinator(configuration: loader) {}
 
         XCTAssertEqual(coordinator.selectProcessingMode(.polished),
-            "Polished mode requires llm.api_key or GROQ_API_KEY")
+            "Polished mode requires llm.api_key or CEREBRAS_API_KEY")
         try Data(#"{"stt":{"api_key":"key"},"processing":{"mode":"polished"}}"#.utf8).write(to: loader.url)
         let reload = coordinator.handleControl(.reload)
         XCTAssertFalse(reload.ok)
-        XCTAssertTrue(reload.error?.contains("Polished mode requires llm.api_key or GROQ_API_KEY") == true)
+        XCTAssertTrue(reload.error?.contains("Polished mode requires llm.api_key or CEREBRAS_API_KEY") == true)
     }
 }
 
@@ -810,8 +810,8 @@ final class HelperDecoderTests: XCTestCase {
         let request = HelperRequest(version: ProcessingProtocol.version, wavPath: "/tmp/audio.wav", deepgramAPIKey: "key",
             deepgramModel: "nova-3", deepgramLanguage: "en", deepgramRegion: "global", deepgramKeyterms: [],
             smartFormat: false, punctuate: false, dictation: false, numerals: false, measurements: false,
-            groqAPIKey: "", groqModel: "openai/gpt-oss-20b",
-            groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", processingProfile: .clean)
+            llmAPIKey: "", llmModel: "gpt-oss-120b",
+            llmBaseURL: "https://api.cerebras.ai/v1/chat/completions", processingProfile: .clean)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any])
         XCTAssertEqual(object["version"] as? Int, 3)
         XCTAssertEqual(object["processing_profile"] as? String, "clean")
@@ -1079,8 +1079,8 @@ int main(void) {
             deepgramModel: "nova-3", deepgramLanguage: "en", deepgramRegion: "eu",
             deepgramKeyterms: ["SayAll"], smartFormat: false, punctuate: false,
             dictation: false, numerals: false, measurements: false,
-            groqAPIKey: "", groqModel: "llama-3.1-8b-instant",
-            groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", processingProfile: .clean)
+            llmAPIKey: "", llmModel: "llama-3.1-8b-instant",
+            llmBaseURL: "https://api.cerebras.ai/v1/chat/completions", processingProfile: .clean)
     }
 
     private func streamRequest() -> StreamingHelperRequest {
@@ -1089,8 +1089,8 @@ int main(void) {
             deepgramRegion: "eu", deepgramKeyterms: ["SayAll"],
             smartFormat: false, punctuate: false, dictation: false, numerals: false, measurements: false,
             streamFinalizeTimeoutMs: 2_000,
-            groqAPIKey: "", groqModel: "llama-3.1-8b-instant",
-            groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", processingProfile: .clean)
+            llmAPIKey: "", llmModel: "llama-3.1-8b-instant",
+            llmBaseURL: "https://api.cerebras.ai/v1/chat/completions", processingProfile: .clean)
     }
 }
 
@@ -1115,7 +1115,7 @@ final class ProcessingOwnershipTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: home) }
         let loader = ConfigurationLoader(environment: [:], homeDirectory: home)
         try FileManager.default.createDirectory(at: loader.url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Data(#"{"stt":{"api_key":"key"},"llm":{"api_key":"groq"},"processing":{"mode":"polished"}}"#.utf8).write(to: loader.url)
+        try Data(#"{"stt":{"api_key":"key"},"llm":{"api_key":"cerebras"},"processing":{"mode":"polished"}}"#.utf8).write(to: loader.url)
         let snapshot = try loader.load()
 
         let stream = Coordinator.streamingRequest(config: snapshot, wavPath: "/tmp/audio.wav", pcmPath: "/tmp/audio.pcm")
@@ -1225,7 +1225,7 @@ final class ConfigurationLoaderTests: XCTestCase {
         let directory = home.appendingPathComponent(".config/sayall")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: home) }
-        try Data(#"{"stt":{"provider":"deepgram","api_key":"deepgram","model":"nova-3","language":"en-GB","region":"eu","smart_format":true,"punctuate":true,"dictation":true,"numerals":true,"measurements":true,"streaming":false,"stream_finalize_timeout_ms":3500},"llm":{"provider":"groq","api_key":"groq","model":"llama-3.1-8b-instant","base_url":"https://api.groq.com/openai/v1/chat/completions","enabled":true},"output":{"method":"paste","trailing_space":false},"metrics":{"enabled":false,"history_max_entries":12},"hud":{"show_timer":false}}"#.utf8)
+        try Data(#"{"stt":{"provider":"deepgram","api_key":"deepgram","model":"nova-3","language":"en-GB","region":"eu","smart_format":true,"punctuate":true,"dictation":true,"numerals":true,"measurements":true,"streaming":false,"stream_finalize_timeout_ms":3500},"llm":{"provider":"cerebras","api_key":"cerebras","model":"gpt-oss-120b","base_url":"https://api.cerebras.ai/v1/chat/completions","enabled":true},"output":{"method":"paste","trailing_space":false},"metrics":{"enabled":false,"history_max_entries":12},"hud":{"show_timer":false}}"#.utf8)
             .write(to: directory.appendingPathComponent("config.json"))
         try Data(#"{"version":1,"keywords":["SayAll","München"]}"#.utf8)
             .write(to: directory.appendingPathComponent("keywords.json"))
@@ -1234,8 +1234,8 @@ final class ConfigurationLoaderTests: XCTestCase {
                 deepgramRegion: "eu", deepgramKeyterms: ["SayAll", "München"],
                 smartFormat: true, punctuate: true, dictation: true, numerals: true, measurements: true,
                 streamingEnabled: false,
-                streamFinalizeTimeoutMs: 3_500, groqAPIKey: "groq", groqModel: "llama-3.1-8b-instant",
-                groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", processingProfile: .legacyV1,
+                streamFinalizeTimeoutMs: 3_500, llmAPIKey: "cerebras", llmModel: "gpt-oss-120b",
+                llmBaseURL: "https://api.cerebras.ai/v1/chat/completions", processingProfile: .legacyV1,
                 showTimer: false, outputMethod: .paste, trailingSpace: false,
                 metricsEnabled: false, metricsHistoryMaxEntries: 12))
     }
@@ -1248,14 +1248,14 @@ final class ConfigurationLoaderTests: XCTestCase {
         try Data(#"{"stt":{"api_key":"$FILE_DG"},"llm":{"api_key":"unused"}}"#.utf8)
             .write(to: directory.appendingPathComponent("config.json"))
         let environment = ["XDG_CONFIG_HOME": home.appendingPathComponent("config").path,
-            "FILE_DG": "resolved", "GROQ_API_KEY": "override"]
+            "FILE_DG": "resolved", "CEREBRAS_API_KEY": "override"]
         XCTAssertEqual(try ConfigurationLoader(environment: environment, homeDirectory: home).load(),
             ProviderSettings(deepgramAPIKey: "resolved", deepgramModel: "nova-3", deepgramLanguage: "en",
                 deepgramRegion: "global", deepgramKeyterms: [],
                 smartFormat: false, punctuate: false, dictation: false, numerals: false, measurements: false,
                 streamingEnabled: true,
-                streamFinalizeTimeoutMs: 2_000, groqAPIKey: "override", groqModel: "openai/gpt-oss-20b",
-                groqBaseURL: "https://api.groq.com/openai/v1/chat/completions", processingProfile: .verbatim,
+                streamFinalizeTimeoutMs: 2_000, llmAPIKey: "override", llmModel: "gpt-oss-120b",
+                llmBaseURL: "https://api.cerebras.ai/v1/chat/completions", processingProfile: .verbatim,
                 showTimer: true, outputMethod: .type, trailingSpace: true,
                 metricsEnabled: true, metricsHistoryMaxEntries: 1_000))
     }
@@ -1293,7 +1293,7 @@ final class ConfigurationLoaderTests: XCTestCase {
             (#"{"stt":{"api_key":"key"},"llm":{"enabled":true}}"#, .legacyV1),
             (#"{"stt":{"api_key":"key"},"llm":{"enabled":true},"processing":{"mode":"verbatim"}}"#, .verbatim),
             (#"{"stt":{"api_key":"key"},"llm":{"enabled":true},"processing":{"mode":"clean"}}"#, .clean),
-            (#"{"stt":{"api_key":"key"},"llm":{"api_key":"groq","enabled":false},"processing":{"mode":"polished"}}"#, .polished),
+            (#"{"stt":{"api_key":"key"},"llm":{"api_key":"cerebras","enabled":false},"processing":{"mode":"polished"}}"#, .polished),
         ] {
             try Data(json.utf8).write(to: loader.url)
             XCTAssertEqual(try loader.load().processingProfile, expected)
@@ -1418,38 +1418,41 @@ final class ConfigurationLoaderTests: XCTestCase {
 
         let missingKey = Data(#"{"stt":{"api_key":"key"},"processing":{"mode":"polished"}}"#.utf8)
         try missingKey.write(to: loader.url)
-        XCTAssertThrowsError(try loader.load()) { XCTAssertEqual($0 as? ConfigurationError, .missingGroqKey) }
+        XCTAssertThrowsError(try loader.load()) { XCTAssertEqual($0 as? ConfigurationError, .missingCerebrasKey) }
 
         let verbatim = Data(#"{"stt":{"api_key":"key"},"processing":{"mode":"verbatim"}}"#.utf8)
         try verbatim.write(to: loader.url)
         XCTAssertThrowsError(try loader.setProcessingMode(.polished)) {
-            XCTAssertEqual($0 as? ConfigurationError, .missingGroqKey)
+            XCTAssertEqual($0 as? ConfigurationError, .missingCerebrasKey)
         }
         XCTAssertEqual(try Data(contentsOf: loader.url), verbatim)
 
-        for model in ["other/model", "a/b/c"] {
-            let json = #"{"stt":{"api_key":"key"},"llm":{"api_key":"groq","model":"\#(model)"},"processing":{"mode":"polished"}}"#
-            try Data(json.utf8).write(to: loader.url)
-            XCTAssertThrowsError(try loader.load()) {
-                XCTAssertEqual($0 as? ConfigurationError, .unsupportedPlannerModel)
-            }
+        let unsupported = #"{"stt":{"api_key":"key"},"llm":{"api_key":"cerebras","model":"other/model"},"processing":{"mode":"polished"}}"#
+        try Data(unsupported.utf8).write(to: loader.url)
+        XCTAssertThrowsError(try loader.load()) {
+            XCTAssertEqual($0 as? ConfigurationError, .unsupportedPlannerModel)
         }
-        let unsupportedSelection = Data(#"{"stt":{"api_key":"key"},"llm":{"api_key":"groq","model":"other/model"},"processing":{"mode":"verbatim"}}"#.utf8)
+        let malformedModel = #"{"stt":{"api_key":"key"},"llm":{"api_key":"cerebras","model":"a/b/c"},"processing":{"mode":"polished"}}"#
+        try Data(malformedModel.utf8).write(to: loader.url)
+        XCTAssertThrowsError(try loader.load()) {
+            XCTAssertEqual($0 as? ConfigurationError, .invalidProvider)
+        }
+        let unsupportedSelection = Data(#"{"stt":{"api_key":"key"},"llm":{"api_key":"cerebras","model":"other/model"},"processing":{"mode":"verbatim"}}"#.utf8)
         try unsupportedSelection.write(to: loader.url)
         XCTAssertThrowsError(try loader.setProcessingMode(.polished)) {
             XCTAssertEqual($0 as? ConfigurationError, .unsupportedPlannerModel)
         }
         XCTAssertEqual(try Data(contentsOf: loader.url), unsupportedSelection)
 
-        for model in ["openai/gpt-oss-20b", "openai/gpt-oss-120b"] {
-            let json = #"{"stt":{"api_key":"key"},"llm":{"api_key":"groq","model":"\#(model)"},"processing":{"mode":"polished"}}"#
-            try Data(json.utf8).write(to: loader.url)
-            XCTAssertEqual(try loader.load().processingProfile, .polished)
-        }
+        let supported = #"{"stt":{"api_key":"key"},"llm":{"api_key":"cerebras","model":"gpt-oss-120b"},"processing":{"mode":"polished"}}"#
+        try Data(supported.utf8).write(to: loader.url)
+        XCTAssertEqual(try loader.load().processingProfile, .polished)
 
         try Data(#"{"stt":{"api_key":"key"},"llm":{"enabled":true,"model":"other/model"}}"#.utf8)
             .write(to: loader.url)
-        XCTAssertEqual(try loader.load().processingProfile, .legacyV1)
+        XCTAssertThrowsError(try loader.load()) {
+            XCTAssertEqual($0 as? ConfigurationError, .unsupportedPlannerModel)
+        }
     }
 
     func testLLMModelAcceptsOneOptionalNamespace() throws {
@@ -1457,8 +1460,8 @@ final class ConfigurationLoaderTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: home) }
         let loader = ConfigurationLoader(environment: [:], homeDirectory: home)
         try FileManager.default.createDirectory(at: loader.url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Data(#"{"stt":{"api_key":"key"},"llm":{"model":"openai/gpt-oss-20b"}}"#.utf8).write(to: loader.url)
-        XCTAssertEqual(try loader.load().groqModel, "openai/gpt-oss-20b")
+        try Data(#"{"stt":{"api_key":"key"},"llm":{"model":"gpt-oss-120b"}}"#.utf8).write(to: loader.url)
+        XCTAssertEqual(try loader.load().llmModel, "gpt-oss-120b")
         for model in ["/openai", "openai/", "a/b/c", String(repeating: "a", count: 65)] {
             let json = #"{"stt":{"api_key":"key"},"llm":{"model":"\#(model)"}}"#
             try Data(json.utf8).write(to: loader.url)
@@ -1478,6 +1481,18 @@ final class ConfigurationLoaderTests: XCTestCase {
         XCTAssertTrue(settings.metricsEnabled)
         XCTAssertEqual(settings.metricsHistoryMaxEntries, 1_000)
         XCTAssertEqual(settings.processingProfile, .verbatim)
+    }
+
+    func testLegacyCloudConfigDiscardsCredentialAndRequestsCerebrasKey() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let loader = ConfigurationLoader(environment: [:], homeDirectory: home)
+        try preparePrivateParent(for: loader)
+        let legacy = #"{"stt":{"api_key":"deepgram"},"llm":{"provider":"groq","api_key":"legacy-secret","model":"openai/gpt-oss-20b","base_url":"https://api.groq.com/openai/v1/chat/completions"},"processing":{"mode":"polished"}}"#
+        try Data(legacy.utf8).write(to: loader.url)
+        XCTAssertThrowsError(try loader.load()) {
+            XCTAssertEqual($0 as? ConfigurationError, .missingCerebrasKey)
+        }
     }
 }
 

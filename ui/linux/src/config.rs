@@ -93,9 +93,9 @@ pub struct ProviderConfig {
     pub measurements: bool,
     pub streaming: bool,
     pub finalize_ms: u32,
-    pub groq_api_key: String,
-    pub groq_model: String,
-    pub groq_base_url: String,
+    pub llm_api_key: String,
+    pub llm_model: String,
+    pub llm_base_url: String,
     pub processing_profile: ProcessingProfile,
 }
 #[derive(Clone, Debug)]
@@ -165,10 +165,10 @@ struct Llm {
 impl Default for Llm {
     fn default() -> Self {
         Self {
-            provider: "groq".into(),
+            provider: "cerebras".into(),
             api_key: String::new(),
-            model: "openai/gpt-oss-20b".into(),
-            base_url: "https://api.groq.com/openai/v1/chat/completions".into(),
+            model: "gpt-oss-120b".into(),
+            base_url: "https://api.cerebras.ai/v1/chat/completions".into(),
             enabled: Some(false),
         }
     }
@@ -281,20 +281,21 @@ where
 }
 
 fn encode_processing_mode(bytes: &[u8], mode: ProcessingMode) -> io::Result<Vec<u8>> {
-    let cfg: Config =
+    let mut cfg: Config =
         serde_json::from_slice(&bytes).map_err(|e| invalid(&format!("invalid config: {e}")))?;
-    let groq_api_key = resolve_secret(cfg.llm.api_key, "GROQ_API_KEY");
+    migrate_legacy_llm(&mut cfg.llm);
+    let llm_api_key = resolve_secret(cfg.llm.api_key, "CEREBRAS_API_KEY");
     if !valid_processing_credentials(
         match mode {
             ProcessingMode::Verbatim => ProcessingProfile::Verbatim,
             ProcessingMode::Clean => ProcessingProfile::Clean,
             ProcessingMode::Polished => ProcessingProfile::Polished,
         },
-        &groq_api_key,
+        &llm_api_key,
         &cfg.llm.model,
     ) {
         return Err(invalid(
-            "polished mode requires Groq credentials and a supported planner model",
+            "polished mode requires Cerebras credentials and a supported planner model",
         ));
     }
     let mut value: serde_json::Value =
@@ -326,31 +327,32 @@ pub fn load() -> io::Result<SessionConfig> {
 }
 
 fn project_session_config(bytes: &[u8], parent: &Path) -> io::Result<SessionConfig> {
-    let cfg: Config =
+    let mut cfg: Config =
         serde_json::from_slice(bytes).map_err(|e| invalid(&format!("invalid config: {e}")))?;
+    migrate_legacy_llm(&mut cfg.llm);
     validate(&cfg.recording)?;
     let processing_profile =
         effective_processing_profile(cfg.processing.mode, cfg.llm.enabled.unwrap_or(false));
     let deepgram_api_key = resolve_secret(cfg.stt.api_key, "DEEPGRAM_API_KEY");
-    let groq_api_key = resolve_secret(cfg.llm.api_key, "GROQ_API_KEY");
+    let llm_api_key = resolve_secret(cfg.llm.api_key, "CEREBRAS_API_KEY");
     let model = cfg.stt.model;
     let language = cfg.stt.language;
     let region = cfg.stt.region;
-    let groq_model = cfg.llm.model;
+    let llm_model = cfg.llm.model;
     let base = cfg.llm.base_url;
     let keyterms = load_keywords(parent, cfg.stt.keyterms)?;
     let method = parse_output_method(&cfg.output.method)?;
     if deepgram_api_key.is_empty()
         || !safe_secret(&deepgram_api_key)
-        || !safe_secret(&groq_api_key)
+        || !safe_secret(&llm_api_key)
         || cfg.stt.provider != "deepgram"
-        || cfg.llm.provider != "groq"
+        || cfg.llm.provider != "cerebras"
         || !safe_value(&model)
         || !safe_value(&language)
-        || !safe_llm_model(&groq_model)
-        || !valid_processing_credentials(processing_profile, &groq_api_key, &groq_model)
+        || !safe_llm_model(&llm_model)
+        || !valid_processing_credentials(processing_profile, &llm_api_key, &llm_model)
         || !["global", "eu", "au"].contains(&region.as_str())
-        || base != "https://api.groq.com/openai/v1/chat/completions"
+        || base != "https://api.cerebras.ai/v1/chat/completions"
         || cfg.stt.dictation && !cfg.stt.punctuate
         || keyterms.len() > 0 && model != "nova-3" && !model.starts_with("nova-3-")
     {
@@ -381,9 +383,9 @@ fn project_session_config(bytes: &[u8], parent: &Path) -> io::Result<SessionConf
             measurements: cfg.stt.measurements,
             streaming: cfg.stt.streaming.unwrap_or(true),
             finalize_ms: finalize,
-            groq_api_key,
-            groq_model,
-            groq_base_url: base,
+            llm_api_key,
+            llm_model,
+            llm_base_url: base,
             processing_profile,
         },
     })
@@ -391,12 +393,20 @@ fn project_session_config(bytes: &[u8], parent: &Path) -> io::Result<SessionConf
 
 fn valid_processing_credentials(
     profile: ProcessingProfile,
-    groq_api_key: &str,
-    groq_model: &str,
+    llm_api_key: &str,
+    llm_model: &str,
 ) -> bool {
-    profile != ProcessingProfile::Polished
-        || (!groq_api_key.is_empty()
-            && matches!(groq_model, "openai/gpt-oss-20b" | "openai/gpt-oss-120b"))
+    llm_model == "gpt-oss-120b"
+        && (profile != ProcessingProfile::Polished || !llm_api_key.is_empty())
+}
+
+fn migrate_legacy_llm(llm: &mut Llm) {
+    if llm.provider == "groq" || llm.base_url == "https://api.groq.com/openai/v1/chat/completions" {
+        llm.provider = "cerebras".into();
+        llm.api_key = "$CEREBRAS_API_KEY".into();
+        llm.model = "gpt-oss-120b".into();
+        llm.base_url = "https://api.cerebras.ai/v1/chat/completions".into();
+    }
 }
 
 fn open_secure_parent() -> io::Result<(File, PathBuf)> {
@@ -785,29 +795,48 @@ mod tests {
     }
 
     #[test]
-    fn explicit_polished_requires_supported_planner_credentials_but_legacy_is_exempt() {
-        for model in ["openai/gpt-oss-20b", "openai/gpt-oss-120b"] {
-            assert!(valid_processing_credentials(
-                ProcessingProfile::Polished,
-                "secret",
-                model
-            ));
-        }
+    fn planner_profiles_require_the_supported_model_and_polished_requires_credentials() {
+        assert!(valid_processing_credentials(
+            ProcessingProfile::Polished,
+            "secret",
+            "gpt-oss-120b"
+        ));
         assert!(!valid_processing_credentials(
             ProcessingProfile::Polished,
             "",
-            "openai/gpt-oss-20b"
+            "gpt-oss-120b"
         ));
         assert!(!valid_processing_credentials(
             ProcessingProfile::Polished,
             "secret",
             "other/model"
         ));
-        assert!(valid_processing_credentials(
+        assert!(!valid_processing_credentials(
             ProcessingProfile::LegacyV1,
             "",
             "other/model"
         ));
+        assert!(valid_processing_credentials(
+            ProcessingProfile::LegacyV1,
+            "",
+            "gpt-oss-120b"
+        ));
+    }
+
+    #[test]
+    fn legacy_cloud_metadata_migrates_without_reusing_its_credential() {
+        let mut llm = Llm {
+            provider: "groq".into(),
+            api_key: "legacy-secret".into(),
+            model: "openai/gpt-oss-20b".into(),
+            base_url: "https://api.groq.com/openai/v1/chat/completions".into(),
+            enabled: Some(true),
+        };
+        migrate_legacy_llm(&mut llm);
+        assert_eq!(llm.provider, "cerebras");
+        assert_eq!(llm.api_key, "$CEREBRAS_API_KEY");
+        assert_eq!(llm.model, "gpt-oss-120b");
+        assert_eq!(llm.base_url, "https://api.cerebras.ai/v1/chat/completions");
     }
 
     #[test]
@@ -919,7 +948,7 @@ mod tests {
         assert!(!omitted.stt.dictation);
         assert!(!omitted.stt.numerals);
         assert!(!omitted.stt.measurements);
-        assert_eq!(omitted.llm.provider, "groq");
+        assert_eq!(omitted.llm.provider, "cerebras");
         assert_eq!(omitted.llm.enabled, Some(false));
         assert!(omitted.hud.show_timer);
         let explicit: Config = serde_json::from_str(
@@ -934,7 +963,7 @@ mod tests {
 
     #[test]
     fn llm_model_accepts_one_optional_namespace() {
-        assert!(safe_llm_model("openai/gpt-oss-20b"));
+        assert!(safe_llm_model("gpt-oss-120b"));
         for invalid in ["/openai", "openai/", "a/b/c"] {
             assert!(!safe_llm_model(invalid));
         }

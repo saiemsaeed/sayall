@@ -100,9 +100,9 @@ pub fn run(
         .deepgram_dictation = cfg.stt.dictation,
         .deepgram_numerals = cfg.stt.numerals,
         .deepgram_measurements = cfg.stt.measurements,
-        .groq_api_key = cfg.llm.api_key,
-        .groq_model = cfg.llm.model,
-        .groq_base_url = cfg.llm.base_url,
+        .llm_api_key = cfg.llm.api_key,
+        .llm_model = cfg.llm.model,
+        .llm_base_url = cfg.llm.base_url,
         .processing_profile = if (options.raw) .verbatim else config.effectiveProcessingProfile(&cfg),
     };
     const request_json = try std.json.Stringify.valueAlloc(arena, request, .{});

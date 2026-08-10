@@ -179,10 +179,21 @@ fn readOnlyDefaults(gpa: Allocator, env: *const std.process.Environ.Map) !ReadOn
 }
 
 fn applyEnvironment(cfg: *Config, env: *const std.process.Environ.Map) void {
+    // One-cycle upgrade bridge: never reinterpret the legacy credential as a
+    // Cerebras key. Only migrate provider metadata in memory so Polished can
+    // surface the normal missing-Cerebras-key guidance.
+    if (std.mem.eql(u8, cfg.llm.provider, "groq") or
+        std.mem.eql(u8, cfg.llm.base_url, "https://api.groq.com/openai/v1/chat/completions"))
+    {
+        cfg.llm.provider = "cerebras";
+        cfg.llm.api_key = "";
+        cfg.llm.model = "gpt-oss-120b";
+        cfg.llm.base_url = "https://api.cerebras.ai/v1/chat/completions";
+    }
     cfg.stt.api_key = resolveEnvRef(env, cfg.stt.api_key);
     cfg.llm.api_key = resolveEnvRef(env, cfg.llm.api_key);
     if (env.get("DEEPGRAM_API_KEY")) |key| cfg.stt.api_key = key;
-    if (env.get("GROQ_API_KEY")) |key| cfg.llm.api_key = key;
+    if (env.get("CEREBRAS_API_KEY")) |key| cfg.llm.api_key = key;
     if (env.get("SAYALL_STT_MODEL")) |model| cfg.stt.model = model;
     if (env.get("SAYALL_LLM_MODEL")) |model| cfg.llm.model = model;
     if (env.get("SAYALL_VERBOSE")) |value|
@@ -273,7 +284,7 @@ pub fn loadLegacyKeyterms(gpa: Allocator, io: Io, env: *const std.process.Enviro
 
 pub fn validate(cfg: *const Config) ValidationError!void {
     if (!std.mem.eql(u8, cfg.stt.provider, "deepgram")) return invalid("stt.provider must be 'deepgram'");
-    if (!std.mem.eql(u8, cfg.llm.provider, "groq")) return invalid("llm.provider must be 'groq'");
+    if (!std.mem.eql(u8, cfg.llm.provider, "cerebras")) return invalid("llm.provider must be 'cerebras'");
     if (!std.mem.eql(u8, cfg.stt.region, "global") and !std.mem.eql(u8, cfg.stt.region, "eu") and
         !std.mem.eql(u8, cfg.stt.region, "au"))
         return invalid("stt.region must be 'global', 'eu', or 'au'");
@@ -281,12 +292,14 @@ pub fn validate(cfg: *const Config) ValidationError!void {
         return invalid("stt.stream_finalize_timeout_ms must be between 250 and 10000");
     if (cfg.stt.dictation and !cfg.stt.punctuate)
         return invalid("stt.dictation requires stt.punctuate");
-    if (!std.mem.eql(u8, cfg.llm.base_url, "https://api.groq.com/openai/v1/chat/completions"))
-        return invalid("llm.base_url must be the Groq HTTPS endpoint");
+    if (!std.mem.eql(u8, cfg.llm.base_url, "https://api.cerebras.ai/v1/chat/completions"))
+        return invalid("llm.base_url must be the Cerebras HTTPS endpoint");
     if (!safeToken(cfg.stt.model) or !safeToken(cfg.stt.language))
         return invalid("STT model and language values may contain only letters, digits, '.', '-', and '_'");
     if (!safeLlmModel(cfg.llm.model))
         return invalid("llm.model must be one or two '/'-separated segments containing only letters, digits, '.', '-', and '_'");
+    if (!std.mem.eql(u8, cfg.llm.model, "gpt-oss-120b"))
+        return invalid("llm.model must be 'gpt-oss-120b'");
     if (!safeSecret(cfg.stt.api_key) or !safeSecret(cfg.llm.api_key))
         return invalid("API keys may not contain whitespace or control characters");
     if (cfg.stt.keyterms.len > 0 and !std.mem.eql(u8, cfg.stt.model, "nova-3") and
@@ -492,7 +505,7 @@ test "provider tokens are bounded consistently with worker protocol" {
 
 test "LLM model accepts one optional namespace and conservative length" {
     var cfg: Config = .{};
-    cfg.llm.model = "openai/gpt-oss-20b";
+    cfg.llm.model = "gpt-oss-120b";
     try validate(&cfg);
     for ([_][]const u8{ "/openai", "openai/", "a/b/c" }) |model| {
         cfg.llm.model = model;
@@ -501,6 +514,21 @@ test "LLM model accepts one optional namespace and conservative length" {
     var overlong: [65]u8 = @splat('a');
     cfg.llm.model = &overlong;
     try std.testing.expectError(error.InvalidConfig, validate(&cfg));
+}
+
+test "legacy cloud provider metadata migrates without reusing its credential" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    var cfg: Config = .{};
+    cfg.llm.provider = "groq";
+    cfg.llm.api_key = "legacy-secret";
+    cfg.llm.model = "openai/gpt-oss-20b";
+    cfg.llm.base_url = "https://api.groq.com/openai/v1/chat/completions";
+    applyEnvironment(&cfg, &env);
+    try std.testing.expectEqualStrings("cerebras", cfg.llm.provider);
+    try std.testing.expectEqualStrings("", cfg.llm.api_key);
+    try std.testing.expectEqualStrings("gpt-oss-120b", cfg.llm.model);
+    try std.testing.expectEqualStrings("https://api.cerebras.ai/v1/chat/completions", cfg.llm.base_url);
 }
 
 test "validation accepts phrases and rejects invalid keyterms" {

@@ -100,7 +100,7 @@ def request(clip, wav_path, pcm_path, key, args):
     return {"version": 3, "wav_path": str(wav_path), "pcm_path": str(pcm_path),
             "deepgram_api_key": key, "deepgram_model": args.model, "deepgram_language": clip["language"],
             "deepgram_region": args.region, "deepgram_keyterms": [], "stream_finalize_timeout_ms": 5000,
-            "groq_api_key": "", "processing_profile": "verbatim"}
+            "llm_api_key": "", "processing_profile": "verbatim"}
 
 def read_line(proc, timeout):
     deadline, frame = time.monotonic() + timeout, bytearray()

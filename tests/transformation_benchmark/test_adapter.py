@@ -24,10 +24,10 @@ POLISHED_CASE = {key: value for key, value in CASE.items() if key != "scenario"}
 class AdapterTests(unittest.TestCase):
     def test_request_passes_only_synthetic_case_and_required_provider_inputs(self):
         request = runner_request(CASE, "private-key", "model")
-        self.assertEqual(set(request), {"schema_version", "mode", "input", "groq_api_key", "model", "fault"})
-        self.assertEqual(request["groq_api_key"], "private-key")
+        self.assertEqual(set(request), {"schema_version", "mode", "input", "llm_api_key", "model", "fault"})
+        self.assertEqual(request["llm_api_key"], "private-key")
         clean = runner_request(dict(CASE, mode="clean"), "private-key", "model")
-        self.assertEqual(clean["groq_api_key"], "")
+        self.assertEqual(clean["llm_api_key"], "")
 
     def test_runner_response_is_closed_and_never_accepts_raw_provider_data(self):
         valid = {"schema_version": 1, "outcome": "applied", "output": "Synthetic output",
@@ -60,18 +60,22 @@ class AdapterTests(unittest.TestCase):
         self.assertNotIn("provider body", json.dumps(result))
         self.assertEqual(result["provider"]["invocation_mode"], "live_attempted")
 
-    def test_no_credential_skips_polished_runner(self):
-        with mock.patch("adapter.subprocess.run") as subprocess_run:
+    def test_no_credential_runs_production_fallback_without_live_provider(self):
+        response = {"schema_version": 1, "outcome": "safe_fallback",
+                    "output": "Synthetic input.", "fallback_reason": "missing_credential"}
+        completed = subprocess.CompletedProcess([], 0, stdout=json.dumps(response).encode())
+        with mock.patch("adapter.subprocess.run", return_value=completed) as subprocess_run:
             result = run_case(POLISHED_CASE, pathlib.Path("runner"), "", "model", "version", 1)
-        subprocess_run.assert_not_called()
+        subprocess_run.assert_called_once()
         self.assertEqual(result["outcome"], "safe_fallback")
         self.assertEqual(result["fallback_reason"], "missing_credential")
+        self.assertEqual(result["output"], "Synthetic input.")
         self.assertEqual(result["provider"]["invocation_mode"], "not_attempted_no_credential")
 
     def test_no_live_provider_ignores_local_credential(self):
         with tempfile.TemporaryDirectory() as directory:
             output = pathlib.Path(directory) / "results.jsonl"
-            with (mock.patch.dict(os.environ, {"GROQ_API_KEY": "private-key"}),
+            with (mock.patch.dict(os.environ, {"CEREBRAS_API_KEY": "private-key"}),
                   mock.patch("adapter.run", return_value=[]) as adapter_run,
                   mock.patch("adapter.validate_results")):
                 self.assertEqual(main(["--no-live-provider", "--output", str(output)]), 0)

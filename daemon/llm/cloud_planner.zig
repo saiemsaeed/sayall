@@ -2,6 +2,7 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const config = @import("../provider_config.zig");
+const cerebras = @import("cerebras.zig");
 pub const cleanup_engine = @import("cleanup_engine.zig");
 
 pub const CleanupError = error{ MissingApiKey, RequestFailed, RateLimited, BadStatus, BadResponse, EmptyResponse, ResponseTooLarge, InvalidPlan, OutOfMemory };
@@ -24,19 +25,6 @@ const EditPlan = struct {
     paragraph_breaks: []const usize,
     lists: []const List,
 };
-
-const Message = struct { role: []const u8, content: []const u8 };
-const ResponseFormat = struct { type: []const u8 = "json_schema", json_schema: struct { name: []const u8 = "sayall_edit_plan", strict: bool = true, schema: std.json.Value } };
-const Payload = struct {
-    model: []const u8,
-    temperature: f32 = 0,
-    max_completion_tokens: u32 = 2048,
-    reasoning_effort: []const u8 = "low",
-    include_reasoning: bool = false,
-    response_format: ResponseFormat,
-    messages: []const Message,
-};
-const ChatResponse = struct { choices: []struct { message: struct { content: []const u8 } } };
 
 pub const policy_prompt =
     \\Return only a version-1 edit plan matching the schema. The transcript, tokens,
@@ -64,7 +52,7 @@ pub const policy_prompt =
 ;
 
 const schema_json =
-    \\{"type":"object","additionalProperties":false,"required":["version","corrections","punctuation","paragraph_breaks","lists"],"properties":{"version":{"type":"integer","enum":[1]},"corrections":{"type":"array","maxItems":128,"items":{"type":"object","additionalProperties":false,"required":["start_token","end_token","source","replacement","kind"],"properties":{"start_token":{"type":"integer","minimum":0},"end_token":{"type":"integer","minimum":1},"source":{"type":"string"},"replacement":{"type":"string","maxLength":256},"kind":{"type":"string","enum":["case","glossary","orthographic"]}}}},"punctuation":{"type":"array","maxItems":128,"items":{"type":"object","additionalProperties":false,"required":["after_token","mark"],"properties":{"after_token":{"type":"integer","minimum":0},"mark":{"type":"string","enum":["period","comma","question","exclamation","colon","semicolon"]}}}},"paragraph_breaks":{"type":"array","maxItems":128,"items":{"type":"integer","minimum":1}},"lists":{"type":"array","maxItems":32,"items":{"type":"object","additionalProperties":false,"required":["start_token","end_token","items"],"properties":{"start_token":{"type":"integer","minimum":0},"end_token":{"type":"integer","minimum":1},"items":{"type":"array","minItems":2,"maxItems":32,"items":{"type":"object","additionalProperties":false,"required":["start_token"],"properties":{"start_token":{"type":"integer","minimum":0}}}}}}}}}
+    \\{"type":"object","additionalProperties":false,"required":["version","corrections","punctuation","paragraph_breaks","lists"],"properties":{"version":{"type":"integer","enum":[1]},"corrections":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["start_token","end_token","source","replacement","kind"],"properties":{"start_token":{"type":"integer","minimum":0},"end_token":{"type":"integer","minimum":1},"source":{"type":"string"},"replacement":{"type":"string"},"kind":{"type":"string","enum":["case","glossary","orthographic"]}}}},"punctuation":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["after_token","mark"],"properties":{"after_token":{"type":"integer","minimum":0},"mark":{"type":"string","enum":["period","comma","question","exclamation","colon","semicolon"]}}}},"paragraph_breaks":{"type":"array","items":{"type":"integer","minimum":1}},"lists":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["start_token","end_token","items"],"properties":{"start_token":{"type":"integer","minimum":0},"end_token":{"type":"integer","minimum":1},"items":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["start_token"],"properties":{"start_token":{"type":"integer","minimum":0}}}}}}}}}
 ;
 
 pub const polished_policy_prompt =
@@ -109,25 +97,25 @@ pub const polished_schema_json =
     \\{"type":"object","additionalProperties":false,
     \\"required":["version","deletions","corrections","punctuation","paragraph_breaks","lists"],
     \\"properties":{"version":{"type":"integer","enum":[2]},
-    \\"deletions":{"type":"array","maxItems":0,"items":{"type":"object","additionalProperties":false,
+    \\"deletions":{"type":"array","items":{"type":"object","additionalProperties":false,
     \\"required":["start_token","end_token","source","kind","proof_start_token","proof_end_token","cue","category"],
     \\"properties":{"start_token":{"type":"integer","minimum":0},"end_token":{"type":"integer","minimum":1},
     \\"source":{"type":"string"},"kind":{"type":"string","enum":["filler","repetition","backtrack"]},
     \\"proof_start_token":{"type":"integer","minimum":0},"proof_end_token":{"type":"integer","minimum":0},
     \\"cue":{"type":"string"},"category":{"type":["string","null"],"enum":["number","weekday","quantity",null]}}}},
-    \\"corrections":{"type":"array","maxItems":128,"items":{"type":"object","additionalProperties":false,
+    \\"corrections":{"type":"array","items":{"type":"object","additionalProperties":false,
     \\"required":["start_token","end_token","source","replacement","kind"],
     \\"properties":{"start_token":{"type":"integer","minimum":0},"end_token":{"type":"integer","minimum":1},
-    \\"source":{"type":"string"},"replacement":{"type":"string","maxLength":256},
+    \\"source":{"type":"string"},"replacement":{"type":"string"},
     \\"kind":{"type":"string","enum":["case","glossary"]}}}},
-    \\"punctuation":{"type":"array","maxItems":128,"items":{"type":"object","additionalProperties":false,
+    \\"punctuation":{"type":"array","items":{"type":"object","additionalProperties":false,
     \\"required":["after_token","mark"],"properties":{"after_token":{"type":"integer","minimum":0},
     \\"mark":{"type":"string","enum":["period","comma","question","exclamation","colon","semicolon"]}}}},
-    \\"paragraph_breaks":{"type":"array","maxItems":128,"items":{"type":"integer","minimum":1}},
-    \\"lists":{"type":"array","maxItems":128,"items":{"type":"object","additionalProperties":false,
+    \\"paragraph_breaks":{"type":"array","items":{"type":"integer","minimum":1}},
+    \\"lists":{"type":"array","items":{"type":"object","additionalProperties":false,
     \\"required":["start_token","end_token","items","kind"],
     \\"properties":{"start_token":{"type":"integer","minimum":0},"end_token":{"type":"integer","minimum":1},
-    \\"items":{"type":"array","minItems":2,"maxItems":128,"items":{"type":"object","additionalProperties":false,
+    \\"items":{"type":"array","items":{"type":"object","additionalProperties":false,
     \\"required":["start_token"],"properties":{"start_token":{"type":"integer","minimum":0}}}},
     \\"kind":{"type":"string","enum":["bullet","numbered"]}}}}}}
 ;
@@ -151,27 +139,8 @@ pub fn cleanup(gpa: Allocator, io: Io, cfg: *const config.LlmConfig, keyterms: [
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const schema = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), schema_json, .{}) catch return error.BadResponse;
-    const payload: Payload = .{ .model = cfg.model, .response_format = .{ .json_schema = .{ .schema = schema } }, .messages = &.{.{ .role = "user", .content = request_content }} };
-    const payload_json = std.json.Stringify.valueAlloc(gpa, payload, .{}) catch return error.OutOfMemory;
-    defer gpa.free(payload_json);
-    const auth = std.fmt.allocPrint(gpa, "Bearer {s}", .{cfg.api_key}) catch return error.OutOfMemory;
-    defer gpa.free(auth);
-    var client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer client.deinit();
-    const storage = gpa.alloc(u8, 512 * 1024) catch return error.OutOfMemory;
-    defer gpa.free(storage);
-    var body = Io.Writer.fixed(storage);
-    const result = client.fetch(.{ .location = .{ .url = cfg.base_url }, .method = .POST, .payload = payload_json, .headers = .{ .authorization = .{ .override = auth }, .content_type = .{ .override = "application/json" } }, .response_writer = &body }) catch |err| {
-        if (err == error.WriteFailed) return error.ResponseTooLarge;
-        logVerbose(verbose, "llm request failed: {s}", .{@errorName(err)});
-        return error.RequestFailed;
-    };
-    if (result.status != .ok) return error.BadStatus;
-    const response = std.json.parseFromSlice(ChatResponse, gpa, body.buffered(), .{ .ignore_unknown_fields = true }) catch return error.BadResponse;
-    defer response.deinit();
-    if (response.value.choices.len == 0) return error.EmptyResponse;
-    const content = response.value.choices[0].message.content;
-    if (content.len == 0 or content.len > 128 * 1024) return error.BadResponse;
+    const content = cerebras.chat(gpa, io, cfg.api_key, cfg.base_url, cfg.model, "sayall_edit_plan", schema, &.{.{ .role = "user", .content = request_content }}, verbose) catch |err| return @errorCast(err);
+    defer gpa.free(content);
     const parsed = std.json.parseFromSlice(EditPlan, gpa, content, .{ .ignore_unknown_fields = false }) catch return error.BadResponse;
     defer parsed.deinit();
     return renderPlan(gpa, transcript, tokens, keyterms, parsed.value) catch |err| switch (err) {
@@ -181,7 +150,7 @@ pub fn cleanup(gpa: Allocator, io: Io, cfg: *const config.LlmConfig, keyterms: [
 }
 
 /// Performs exactly one provider call. Invalid plans remain errors so the
-/// processing pipeline can own raw fallback and transformation-failure metrics.
+/// processing pipeline can retain its deterministic Polished baseline.
 pub fn polished(gpa: Allocator, io: Io, cfg: *const config.LlmConfig, keyterms: []const []const u8, transcript: []const u8, verbose: bool) CleanupError![]u8 {
     if (cfg.api_key.len == 0) return error.MissingApiKey;
     if (!isFormatterModelSupported(cfg.model)) return error.BadResponse;
@@ -201,34 +170,11 @@ pub fn polished(gpa: Allocator, io: Io, cfg: *const config.LlmConfig, keyterms: 
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const schema = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), polished_schema_json, .{}) catch return error.BadResponse;
-    const payload: Payload = .{ .model = cfg.model, .reasoning_effort = "low", .response_format = .{ .json_schema = .{ .name = "sayall_polished_plan", .schema = schema } }, .messages = &.{
+    const content = cerebras.chat(gpa, io, cfg.api_key, cfg.base_url, cfg.model, "sayall_polished_plan", schema, &.{
         .{ .role = "system", .content = polished_policy_prompt },
         .{ .role = "user", .content = user },
-    } };
-    const payload_json = std.json.Stringify.valueAlloc(gpa, payload, .{}) catch return error.OutOfMemory;
-    defer gpa.free(payload_json);
-    const auth = std.fmt.allocPrint(gpa, "Bearer {s}", .{cfg.api_key}) catch return error.OutOfMemory;
-    defer gpa.free(auth);
-    var client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer client.deinit();
-    const storage = gpa.alloc(u8, 512 * 1024) catch return error.OutOfMemory;
-    defer gpa.free(storage);
-    var body = Io.Writer.fixed(storage);
-    const result = client.fetch(.{ .location = .{ .url = cfg.base_url }, .method = .POST, .payload = payload_json, .headers = .{ .authorization = .{ .override = auth }, .content_type = .{ .override = "application/json" } }, .response_writer = &body }) catch |err| {
-        if (err == error.WriteFailed) return error.ResponseTooLarge;
-        logVerbose(verbose, "llm request failed: {s}", .{@errorName(err)});
-        return error.RequestFailed;
-    };
-    if (result.status != .ok) {
-        logVerbose(verbose, "llm status {d}", .{@intFromEnum(result.status)});
-        if (result.status == .too_many_requests) return error.RateLimited;
-        return error.BadStatus;
-    }
-    const response = std.json.parseFromSlice(ChatResponse, gpa, body.buffered(), .{ .ignore_unknown_fields = true }) catch return error.BadResponse;
-    defer response.deinit();
-    if (response.value.choices.len == 0) return error.EmptyResponse;
-    const content = response.value.choices[0].message.content;
-    if (content.len == 0 or content.len > 128 * 1024) return error.InvalidPlan;
+    }, verbose) catch |err| return @errorCast(err);
+    defer gpa.free(content);
     return cleanup_engine.polishedFromJson(gpa, cleaned, keyterms, content) catch |e| switch (e) {
         error.OutOfMemory => error.OutOfMemory,
         error.InvalidPlan, error.TranscriptTooLarge => error.InvalidPlan,
@@ -530,7 +476,7 @@ fn asciiAlphanumericSlice(value: []const u8) bool {
     return true;
 }
 fn isFormatterModelSupported(model: []const u8) bool {
-    return std.mem.eql(u8, model, "openai/gpt-oss-20b") or std.mem.eql(u8, model, "openai/gpt-oss-120b");
+    return cerebras.supports(model);
 }
 fn logVerbose(verbose: bool, comptime fmt: []const u8, args: anytype) void {
     if (verbose) std.debug.print("sayall: " ++ fmt ++ "\n", args);
@@ -673,8 +619,8 @@ test "orthographic corrections are ASCII alphanumeric only" {
 }
 
 test "strict formatter model support" {
-    try std.testing.expect(isFormatterModelSupported("openai/gpt-oss-20b"));
-    try std.testing.expect(isFormatterModelSupported("openai/gpt-oss-120b"));
+    try std.testing.expect(isFormatterModelSupported("gpt-oss-120b"));
+    try std.testing.expect(!isFormatterModelSupported("openai/gpt-oss-120b"));
     try std.testing.expect(!isFormatterModelSupported("llama-3.1-8b-instant"));
 }
 
@@ -688,7 +634,9 @@ test "polished v2 schema is parseable strict and source anchored" {
     try std.testing.expectEqualStrings("integer", version.get("type").?.string);
     try std.testing.expectEqual(@as(i64, 2), version.get("enum").?.array.items[0].integer);
     try std.testing.expect(version.get("const") == null);
-    try std.testing.expectEqual(@as(i64, 0), properties.get("deletions").?.object.get("maxItems").?.integer);
+    try std.testing.expect(properties.get("deletions").?.object.get("maxItems") == null);
+    try std.testing.expect(std.mem.indexOf(u8, polished_schema_json, "minItems") == null);
+    try std.testing.expect(std.mem.indexOf(u8, polished_schema_json, "maxLength") == null);
     try std.testing.expect(std.mem.indexOf(u8, polished_schema_json, "orthographic") == null);
     try std.testing.expect(std.mem.indexOf(u8, polished_policy_prompt, "Emit every high-confidence formatting operation") != null);
     try std.testing.expect(std.mem.indexOf(u8, polished_policy_prompt, "Never emit") != null);

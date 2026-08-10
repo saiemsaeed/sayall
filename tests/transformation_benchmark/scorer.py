@@ -184,9 +184,12 @@ def validate_results(results: list[dict], cases_by_id: dict[str, dict]) -> dict[
         if (result.get("fallback_reason") == "missing_credential"
                 and provider["invocation_mode"] != "not_attempted_no_credential"):
             raise ContractError(f"missing credential fallback has wrong invocation mode: {case_id}")
-        if (provider["invocation_mode"] == "not_attempted_no_credential" and not case.get("scenario")
-                and result.get("fallback_reason") != "missing_credential"):
-            raise ContractError(f"uncredentialed Polished case has wrong fallback: {case_id}")
+        if provider["invocation_mode"] == "not_attempted_no_credential" and not case.get("scenario"):
+            deterministic_applied = result["outcome"] == "applied" and "fallback_reason" not in result
+            missing_key_fallback = (result["outcome"] == "safe_fallback"
+                                    and result.get("fallback_reason") == "missing_credential")
+            if not deterministic_applied and not missing_key_fallback:
+                raise ContractError(f"uncredentialed Polished case has wrong fallback: {case_id}")
         indexed[case_id] = result
     return indexed
 
@@ -248,8 +251,12 @@ def score(cases: list[dict], results: list[dict], corpus_sha256: str,
                 violations.append("scenario_fallback_reason")
             if outcome in {"unsafe_plan", "adapter_error"}:
                 violations.append(outcome)
-            elif outcome == "safe_fallback" and output != case["input"]:
-                violations.append("fallback_changed_source")
+            elif outcome == "safe_fallback":
+                if case["mode"] == "polished":
+                    if output is None or not polished_semantic_invariant(case["input"], output):
+                        violations.append("fallback_changed_source")
+                elif output != case["input"]:
+                    violations.append("fallback_changed_source")
         if output is not None:
             if outcome == "applied":
                 if case["mode"] == "polished":

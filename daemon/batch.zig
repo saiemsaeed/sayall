@@ -2,7 +2,7 @@ const std = @import("std");
 const recorder = @import("recorder.zig");
 const provider = @import("provider_config.zig");
 const deepgram = @import("stt/deepgram.zig");
-const groq = @import("llm/groq.zig");
+const cloud_planner = @import("llm/cloud_planner.zig");
 const keywords = @import("keywords.zig");
 const processing = @import("processing.zig");
 const provider_processing = @import("provider_processing.zig");
@@ -25,9 +25,9 @@ pub const Request = struct {
     deepgram_dictation: bool = false,
     deepgram_numerals: bool = false,
     deepgram_measurements: bool = false,
-    groq_api_key: []const u8,
-    groq_model: []const u8 = "openai/gpt-oss-20b",
-    groq_base_url: []const u8 = "https://api.groq.com/openai/v1/chat/completions",
+    llm_api_key: []const u8,
+    llm_model: []const u8 = "gpt-oss-120b",
+    llm_base_url: []const u8 = "https://api.cerebras.ai/v1/chat/completions",
     processing_profile: processing.Profile,
 };
 pub const ErrorCode = enum {
@@ -69,7 +69,7 @@ pub const Seam = struct {
     context: ?*anyopaque = null,
     transcribe: *const fn (?*anyopaque, std.mem.Allocator, std.Io, *const provider.SttConfig, []const u8) anyerror![]u8 = liveTranscribe,
     clean: *const fn (?*anyopaque, std.mem.Allocator, []const []const u8, []const u8) anyerror![]u8 = liveClean,
-    baseline: *const fn (?*anyopaque, std.mem.Allocator, []const []const u8, []const u8) anyerror!groq.cleanup_engine.PolishedBaseline = liveBaseline,
+    baseline: *const fn (?*anyopaque, std.mem.Allocator, []const []const u8, []const u8) anyerror!cloud_planner.cleanup_engine.PolishedBaseline = liveBaseline,
     planner: *const fn (?*anyopaque, std.mem.Allocator, std.Io, *const provider.LlmConfig, []const []const u8, processing.Profile, []const u8) anyerror![]u8 = livePlanner,
 };
 
@@ -87,10 +87,10 @@ pub fn processWithTranscript(gpa: std.mem.Allocator, io: std.Io, r: Request, sea
     if (r.version != worker_protocol.version) return fail(.incompatible_version, r.processing_profile, transport);
     if (r.deepgram_api_key.len == 0) return fail(.missing_deepgram_key, r.processing_profile, transport);
     if (r.deepgram_dictation and !r.deepgram_punctuate) return fail(.invalid_request, r.processing_profile, transport);
-    if (!safeSecret(r.deepgram_api_key) or !safeSecret(r.groq_api_key)) return fail(.invalid_request, r.processing_profile, transport);
+    if (!safeSecret(r.deepgram_api_key) or !safeSecret(r.llm_api_key)) return fail(.invalid_request, r.processing_profile, transport);
     if (!safeProviderValue(r.deepgram_model) or !safeProviderValue(r.deepgram_language) or
-        !safeLlmModel(r.groq_model) or !validRegion(r.deepgram_region) or
-        !std.mem.eql(u8, r.groq_base_url, "https://api.groq.com/openai/v1/chat/completions")) return fail(.invalid_request, r.processing_profile, transport);
+        !safeLlmModel(r.llm_model) or !std.mem.eql(u8, r.llm_model, "gpt-oss-120b") or !validRegion(r.deepgram_region) or
+        !std.mem.eql(u8, r.llm_base_url, "https://api.cerebras.ai/v1/chat/completions")) return fail(.invalid_request, r.processing_profile, transport);
     keywords.validate(r.deepgram_keyterms) catch return fail(.invalid_request, r.processing_profile, transport);
     if (r.deepgram_keyterms.len > 0 and !std.mem.eql(u8, r.deepgram_model, "nova-3") and
         !std.mem.startsWith(u8, r.deepgram_model, "nova-3-")) return fail(.invalid_request, r.processing_profile, transport);
@@ -165,7 +165,7 @@ fn coreClean(context_ptr: ?*anyopaque, gpa: std.mem.Allocator, raw: []const u8) 
     return context.seam.clean(context.seam.context, gpa, context.request.deepgram_keyterms, raw);
 }
 
-fn coreBaseline(context_ptr: ?*anyopaque, gpa: std.mem.Allocator, raw: []const u8) !groq.cleanup_engine.PolishedBaseline {
+fn coreBaseline(context_ptr: ?*anyopaque, gpa: std.mem.Allocator, raw: []const u8) !cloud_planner.cleanup_engine.PolishedBaseline {
     const context: *CoreContext = @ptrCast(@alignCast(context_ptr.?));
     return context.seam.baseline(context.seam.context, gpa, context.request.deepgram_keyterms, raw);
 }
@@ -174,9 +174,9 @@ fn corePlanner(context_ptr: ?*anyopaque, gpa: std.mem.Allocator, profile: proces
     const context: *CoreContext = @ptrCast(@alignCast(context_ptr.?));
     if (profile != context.request.processing_profile) return error.InvalidProfile;
     const llm: provider.LlmConfig = .{
-        .api_key = context.request.groq_api_key,
-        .model = context.request.groq_model,
-        .base_url = context.request.groq_base_url,
+        .api_key = context.request.llm_api_key,
+        .model = context.request.llm_model,
+        .base_url = context.request.llm_base_url,
     };
     return context.seam.planner(context.seam.context, gpa, context.io, &llm, context.request.deepgram_keyterms, profile, raw);
 }
@@ -213,7 +213,7 @@ fn validRegion(region: []const u8) bool {
 }
 
 test "batch LLM model validation accepts one optional namespace" {
-    try std.testing.expect(safeLlmModel("openai/gpt-oss-20b"));
+    try std.testing.expect(safeLlmModel("gpt-oss-120b"));
     try std.testing.expect(!safeLlmModel("/openai"));
     try std.testing.expect(!safeLlmModel("openai/"));
     try std.testing.expect(!safeLlmModel("a/b/c"));
@@ -266,17 +266,17 @@ fn liveTranscribe(_: ?*anyopaque, gpa: std.mem.Allocator, io: std.Io, cfg: *cons
 }
 
 fn liveClean(_: ?*anyopaque, gpa: std.mem.Allocator, keyterms: []const []const u8, raw: []const u8) ![]u8 {
-    return groq.clean(gpa, raw, keyterms);
+    return cloud_planner.clean(gpa, raw, keyterms);
 }
 
-fn liveBaseline(_: ?*anyopaque, gpa: std.mem.Allocator, keyterms: []const []const u8, raw: []const u8) !groq.cleanup_engine.PolishedBaseline {
-    return groq.cleanup_engine.polishedBaseline(gpa, raw, keyterms);
+fn liveBaseline(_: ?*anyopaque, gpa: std.mem.Allocator, keyterms: []const []const u8, raw: []const u8) !cloud_planner.cleanup_engine.PolishedBaseline {
+    return cloud_planner.cleanup_engine.polishedBaseline(gpa, raw, keyterms);
 }
 
 fn livePlanner(_: ?*anyopaque, gpa: std.mem.Allocator, io: std.Io, cfg: *const provider.LlmConfig, keyterms: []const []const u8, profile: processing.Profile, raw: []const u8) ![]u8 {
     return switch (profile) {
-        .polished => groq.polished(gpa, io, cfg, keyterms, raw, false),
-        .legacy_v1 => groq.cleanup(gpa, io, cfg, keyterms, raw, false),
+        .polished => cloud_planner.polished(gpa, io, cfg, keyterms, raw, false),
+        .legacy_v1 => cloud_planner.cleanup(gpa, io, cfg, keyterms, raw, false),
         else => error.InvalidProfile,
     };
 }
@@ -320,13 +320,13 @@ const FakeProvider = struct {
             else => return error.InvalidProfile,
         }
         if (self.cleanup_fails) return error.RequestFailed;
-        if (self.invalid_polished_plan and profile == .polished) return groq.cleanup_engine.polishedFromJson(gpa, raw, keyterms, "{}");
-        if (self.valid_no_change_plan and profile == .polished) return groq.cleanup_engine.polished(gpa, raw, keyterms, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
+        if (self.invalid_polished_plan and profile == .polished) return cloud_planner.cleanup_engine.polishedFromJson(gpa, raw, keyterms, "{}");
+        if (self.valid_no_change_plan and profile == .polished) return cloud_planner.cleanup_engine.polished(gpa, raw, keyterms, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
         return std.fmt.allocPrint(gpa, "{s}: {s}", .{ @tagName(profile), raw });
     }
 
-    fn baseline(_: ?*anyopaque, gpa: std.mem.Allocator, keyterms: []const []const u8, raw: []const u8) !groq.cleanup_engine.PolishedBaseline {
-        return groq.cleanup_engine.polishedBaseline(gpa, raw, keyterms);
+    fn baseline(_: ?*anyopaque, gpa: std.mem.Allocator, keyterms: []const []const u8, raw: []const u8) !cloud_planner.cleanup_engine.PolishedBaseline {
+        return cloud_planner.cleanup_engine.polishedBaseline(gpa, raw, keyterms);
     }
 
     fn seam(self: *FakeProvider) Seam {
@@ -353,12 +353,12 @@ fn writeTestWav(tmp: *std.testing.TmpDir, sample_bytes: usize) ![]u8 {
 }
 
 test "strict bounded request and result JSON" {
-    const json = "{\"version\":3,\"wav_path\":\"/a\",\"deepgram_api_key\":\"d\",\"groq_api_key\":\"g\",\"processing_profile\":\"polished\"}";
+    const json = "{\"version\":3,\"wav_path\":\"/a\",\"deepgram_api_key\":\"d\",\"llm_api_key\":\"g\",\"processing_profile\":\"polished\"}";
     const parsed = try parseRequest(std.testing.allocator, json);
     defer parsed.deinit();
     try std.testing.expectError(error.InvalidRequest, parseRequest(std.testing.allocator, json ++ "x"));
-    try std.testing.expectError(error.InvalidRequest, parseRequest(std.testing.allocator, "{\"version\":3,\"wav_path\":\"/a\",\"deepgram_api_key\":\"d\",\"groq_api_key\":\"g\"}"));
-    try std.testing.expectError(error.InvalidRequest, parseRequest(std.testing.allocator, "{\"version\":3,\"wav_path\":\"/a\",\"deepgram_api_key\":\"d\",\"groq_api_key\":\"g\",\"cleanup_enabled\":true}"));
+    try std.testing.expectError(error.InvalidRequest, parseRequest(std.testing.allocator, "{\"version\":3,\"wav_path\":\"/a\",\"deepgram_api_key\":\"d\",\"llm_api_key\":\"g\"}"));
+    try std.testing.expectError(error.InvalidRequest, parseRequest(std.testing.allocator, "{\"version\":3,\"wav_path\":\"/a\",\"deepgram_api_key\":\"d\",\"llm_api_key\":\"g\",\"cleanup_enabled\":true}"));
     const out = try stringifyResult(std.testing.allocator, .{
         .status = .success,
         .text = "München",
@@ -404,7 +404,7 @@ test "REST fallback preserves polished profile with degraded baseline" {
         .deepgram_dictation = true,
         .deepgram_numerals = true,
         .deepgram_measurements = true,
-        .groq_api_key = "groq",
+        .llm_api_key = "cerebras",
         .processing_profile = .polished,
     };
     var fake: FakeProvider = .{ .cleanup_fails = true, .expected_region = "eu", .expected_formatting = true };
@@ -437,7 +437,7 @@ test "protocol v3 routes clean polished and legacy engines by profile" {
         .version = worker_protocol.version,
         .wav_path = path,
         .deepgram_api_key = "deepgram",
-        .groq_api_key = "groq",
+        .llm_api_key = "cerebras",
         .processing_profile = .verbatim,
     };
 
@@ -501,7 +501,7 @@ test "process distinguishes short and invalid audio without calling providers" {
         .version = worker_protocol.version,
         .wav_path = path,
         .deepgram_api_key = "deepgram",
-        .groq_api_key = "",
+        .llm_api_key = "",
         .processing_profile = .verbatim,
     };
     var fake: FakeProvider = .{};
@@ -519,7 +519,7 @@ test "process rejects incompatible requests and oversized provider output" {
         .version = worker_protocol.version - 1,
         .wav_path = "/unused",
         .deepgram_api_key = "deepgram",
-        .groq_api_key = "",
+        .llm_api_key = "",
         .processing_profile = .verbatim,
     }, fake.seam());
     try std.testing.expectEqual(ErrorCode.incompatible_version, incompatible.@"error".?);
@@ -536,7 +536,7 @@ test "process rejects incompatible requests and oversized provider output" {
         .version = worker_protocol.version,
         .wav_path = path,
         .deepgram_api_key = "deepgram",
-        .groq_api_key = "",
+        .llm_api_key = "",
         .processing_profile = .verbatim,
     }, fake.seam());
     try std.testing.expectEqual(ErrorCode.response_too_large, result.@"error".?);

@@ -30,7 +30,7 @@ microphone capture and TCC permission, the fixed global Control+/ Carbon
 hotkey and menu fallback, Accessibility-authorized Command+V with clipboard
 fallback, temporary audio, and packaging. The app bundles and runs
 `sayall-process` for each recording. The Zig helper owns the recording-lifetime
-Deepgram stream, strict WAV validation, REST fallback, and optional Groq cleanup.
+Deepgram stream, strict WAV validation, REST fallback, and optional Cerebras cleanup.
 
 ```text
 Control+/ or menu
@@ -46,7 +46,7 @@ Swift/AppKit state machine ──AVFoundation──▶ private WAV + raw S16 sid
                                       │ raw transcript
                          optional HTTPS transcript
                                       ▼
-                                    Groq
+                                    Cerebras
                                       │ bounded JSON response on stdout
                                       ▼
                  Command+V request with clipboard fallback
@@ -66,7 +66,7 @@ success/warning/error states; one recording and one helper invocation may be
 active. Recordings below 300 ms are rejected and recording ends at 300 seconds.
 The helper accepts only canonical PCM S16LE mono 16 kHz WAV input. Capture,
 permission, validation, provider, malformed/oversized response, timeout, and
-insertion failures return to idle with user-visible status. If optional Groq
+insertion failures return to idle with user-visible status. If optional Cerebras
 cleanup fails after Deepgram succeeds, the raw transcript is delivered with a
 warning rather than discarded. If synthetic paste is unavailable or rejected,
 the transcript remains on the clipboard for manual paste. Hotkey registration
@@ -74,13 +74,13 @@ conflicts retain the menu action.
 
 ### Security and privacy
 
-Deepgram and Groq credentials use the existing Linux-compatible
+Deepgram and Cerebras credentials use the existing Linux-compatible
 `$XDG_CONFIG_HOME/sayall/config.json` or `~/.config/sayall/config.json` schema.
 Environment overrides and `$VARIABLE` references are supported when present in
 the app process; Finder does not read interactive shell startup files. Users
 must protect the plaintext config with mode `0600`. Audio is streamed to Deepgram
 during recording; the completed private WAV is sent only for REST fallback. The
-transcript is sent to Groq only when `llm.enabled` is true and a Groq key
+transcript is sent to Cerebras only when `llm.enabled` is true and a Cerebras key
 is present. Raw WAV/PCM files have private access and are deleted after every
 terminal path. Startup scavenging removes remnants from interrupted prior runs.
 Logs omit keys, audio, transcript, and sensitive request content. There is no

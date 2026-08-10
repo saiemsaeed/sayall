@@ -487,8 +487,8 @@ final class Coordinator {
             deepgramRegion: config.deepgramRegion, deepgramKeyterms: config.deepgramKeyterms,
             smartFormat: config.smartFormat, punctuate: config.punctuate,
             dictation: config.dictation, numerals: config.numerals, measurements: config.measurements,
-            groqAPIKey: config.groqAPIKey, groqModel: config.groqModel,
-            groqBaseURL: config.groqBaseURL, processingProfile: config.processingProfile)
+            llmAPIKey: config.llmAPIKey, llmModel: config.llmModel,
+            llmBaseURL: config.llmBaseURL, processingProfile: config.processingProfile)
     }
 
     nonisolated static func streamingRequest(config: ProviderSettings, wavPath: String,
@@ -500,8 +500,8 @@ final class Coordinator {
             smartFormat: config.smartFormat, punctuate: config.punctuate,
             dictation: config.dictation, numerals: config.numerals, measurements: config.measurements,
             streamFinalizeTimeoutMs: config.streamFinalizeTimeoutMs,
-            groqAPIKey: config.groqAPIKey, groqModel: config.groqModel,
-            groqBaseURL: config.groqBaseURL, processingProfile: config.processingProfile)
+            llmAPIKey: config.llmAPIKey, llmModel: config.llmModel,
+            llmBaseURL: config.llmBaseURL, processingProfile: config.processingProfile)
     }
 
     private static func message(for error: Error, path: String) -> String {
@@ -512,9 +512,9 @@ final class Coordinator {
         case .missingDeepgramKey: return "Set stt.api_key or DEEPGRAM_API_KEY in \(path)"
         case .invalidProvider: return "Use a valid stt.model, stt.language, and global/eu/au region"
         case .invalidProcessingMode: return "Set processing.mode to verbatim, clean, or polished"
-        case .missingGroqKey: return "Polished mode requires llm.api_key or GROQ_API_KEY"
+        case .missingCerebrasKey: return "Polished mode requires llm.api_key or CEREBRAS_API_KEY"
         case .unsupportedPlannerModel:
-            return "Polished mode requires llm.model openai/gpt-oss-20b or openai/gpt-oss-120b"
+            return "Polished mode requires llm.model gpt-oss-120b or gpt-oss-120b"
         case .invalidOutputMethod: return "Set output.method to type, paste, or clipboard"
         case .invalidMetrics: return "Set metrics.history_max_entries between 0 and 100000"
         case .invalidSecret: return "Provider API keys cannot contain whitespace"

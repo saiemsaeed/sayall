@@ -28,7 +28,7 @@ def result(case, latency=10, output=DEFAULT_OUTPUT, outcome="applied", fallback_
         "latency_ms": latency,
         "adapter": {"name": "unit-fixture", "version": "1"},
         "provider": {
-            "name": "groq" if case["mode"] == "polished" else "none",
+            "name": "cerebras" if case["mode"] == "polished" else "none",
             "model": model or ("polished-fixture" if case["mode"] == "polished"
                                else "deterministic-fixture"),
             "invocation_mode": invocation_mode,
