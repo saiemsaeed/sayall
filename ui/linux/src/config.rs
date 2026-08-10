@@ -396,8 +396,11 @@ fn valid_processing_credentials(
     llm_api_key: &str,
     llm_model: &str,
 ) -> bool {
-    llm_model == "gpt-oss-120b"
-        && (profile != ProcessingProfile::Polished || !llm_api_key.is_empty())
+    match profile {
+        ProcessingProfile::Polished => llm_model == "gpt-oss-120b" && !llm_api_key.is_empty(),
+        ProcessingProfile::LegacyV1 => llm_model == "gpt-oss-120b",
+        ProcessingProfile::Verbatim | ProcessingProfile::Clean => true,
+    }
 }
 
 fn migrate_legacy_llm(llm: &mut Llm) {
