@@ -103,7 +103,11 @@ pub fn polishedBaseline(gpa: Allocator, transcript: []const u8, glossary: []cons
     if (list_start) |start| try lists.append(gpa, .{ .start_token = start, .end_token = tokens.len, .items = anchors.items, .kind = .bullet });
     if (!decorated and try reportedOrdinalPunctuation(gpa, cleaned, tokens, &punctuation_ops)) sufficient = true;
 
-    const question = directQuestion(tokens[0].text);
+    const conditional_question = if (decorated) null else conditionalQuestionBoundary(tokens);
+    if (conditional_question) |boundary| {
+        if (!hasFixedTrailingPunctuation(cleaned, tokens[boundary - 1])) try punctuation_ops.append(gpa, .{ .after_token = boundary - 1, .mark = .comma });
+    }
+    const question = directQuestion(tokens[0].text) or conditional_question != null;
     if (question) sufficient = true;
     if (!decorated and !hasTerminalPunctuation(cleaned, tokens[tokens.len - 1]) and safeOrdinary(cleaned, tokens[tokens.len - 1])) {
         try punctuation_ops.append(gpa, .{ .after_token = tokens.len - 1, .mark = if (question) .question else .period });
@@ -130,6 +134,25 @@ fn hasTerminalPunctuation(source: []const u8, token: Token) bool {
 
 fn directQuestion(word: []const u8) bool {
     for ([_][]const u8{ "can", "could", "would", "should", "will", "do", "does", "did", "is", "are", "was", "were", "have", "has", "had", "who", "what", "where", "when", "why", "how" }) |candidate| if (asciiEq(word, candidate)) return true;
+    return false;
+}
+
+fn conditionalQuestionBoundary(tokens: []const Token) ?usize {
+    if (tokens.len < 5 or !asciiEq(tokens[0].text, "if")) return null;
+    var i: usize = 3;
+    while (i + 1 < tokens.len) : (i += 1) {
+        if (questionAuxiliary(tokens[i].text) and questionSubject(tokens[i + 1].text) and !questionSubject(tokens[i - 1].text)) return i;
+    }
+    return null;
+}
+
+fn questionAuxiliary(word: []const u8) bool {
+    for ([_][]const u8{ "can", "could", "would", "should", "will", "do", "does", "did", "is", "are", "was", "were", "have", "has", "had", "am", "may", "might" }) |candidate| if (asciiEq(word, candidate)) return true;
+    return false;
+}
+
+fn questionSubject(word: []const u8) bool {
+    for ([_][]const u8{ "i", "you", "we", "he", "she", "they", "it", "there" }) |candidate| if (asciiEq(word, candidate)) return true;
     return false;
 }
 
@@ -310,7 +333,7 @@ pub fn polished(gpa: Allocator, transcript: []const u8, glossary: []const []cons
     // must be sorted, in range, and point at a surviving source token.
     var last: ?usize = null;
     for (plan.punctuation) |p| {
-        if (p.after_token >= tokens.len or deleted[p.after_token] or tokens[p.after_token].protected or hasUnsafeDecoration(transcript, tokens, p.after_token) or (technical(tokens[p.after_token].text) and hasFixedTrailingPunctuation(transcript, tokens[p.after_token])) or (last != null and p.after_token <= last.?)) return error.InvalidPlan;
+        if (p.after_token >= tokens.len or deleted[p.after_token] or tokens[p.after_token].protected or hasUnsafeDecoration(transcript, tokens, p.after_token) or punctuationSplitsClause(tokens, p.after_token) or (technical(tokens[p.after_token].text) and hasFixedTrailingPunctuation(transcript, tokens[p.after_token])) or (last != null and p.after_token <= last.?)) return error.InvalidPlan;
         for (plan.corrections) |c| if (p.after_token >= c.start_token and p.after_token + 1 < c.end_token) return error.InvalidPlan;
         last = p.after_token;
     }
@@ -361,6 +384,11 @@ pub fn polished(gpa: Allocator, transcript: []const u8, glossary: []const []cons
 fn punctuationAfter(punctuation_ops: []const Punctuation, token: usize) bool {
     for (punctuation_ops) |operation| if (operation.after_token == token) return true;
     return false;
+}
+
+fn punctuationSplitsClause(tokens: []const Token, after: usize) bool {
+    if (after + 1 >= tokens.len or !questionSubject(tokens[after + 1].text)) return false;
+    return asciiEq(tokens[after].text, "if") or questionAuxiliary(tokens[after].text);
 }
 
 pub fn tokenize(gpa: Allocator, text: []const u8) Error![]Token {
@@ -868,6 +896,9 @@ test "polished baseline conservative formatting and coverage" {
         .{ .input = "This fixture is synthetic It contains no user data", .expected = "This fixture is synthetic It contains no user data.", .sufficient = false },
         .{ .input = "If I have a good salary", .expected = "If I have a good salary.", .sufficient = false },
         .{ .input = "If the salary I receive is enough", .expected = "If the salary I receive is enough.", .sufficient = false },
+        .{ .input = "If I have a good salary of like seven thousand euros can I avail wbs in germany", .expected = "If I have a good salary of like seven thousand euros, can I avail wbs in germany?", .sufficient = true },
+        .{ .input = "If it rains could we work from home", .expected = "If it rains, could we work from home?", .sufficient = true },
+        .{ .input = "If we can I think we should go", .expected = "If we can I think we should go.", .sufficient = false },
         .{ .input = "Okay It works", .expected = "Okay It works.", .sufficient = false },
         .{ .input = "I have around six one four one gross salary do you think I can avail wbs", .expected = "I have around six one four one gross salary do you think I can avail wbs.", .sufficient = false },
         .{ .input = "um ordinary sentence", .expected = "Ordinary sentence.", .sufficient = false },
@@ -1030,6 +1061,14 @@ test "polished accepts a counted list after an explicit bridge" {
     const out = try polished(std.testing.allocator, source, &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &punctuation_marks, .paragraph_breaks = &.{}, .lists = &lists });
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("I have three rules in my life:\n- commitment\n- focus\n- and passion.", out);
+}
+
+test "polished rejects punctuation that splits a conditional question" {
+    const source = "If I have income can I qualify";
+    const after_if = [_]Punctuation{.{ .after_token = 0, .mark = .period }};
+    try expectInvalidPlan(source, &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &after_if, .paragraph_breaks = &.{}, .lists = &.{} });
+    const after_auxiliary = [_]Punctuation{.{ .after_token = 4, .mark = .period }};
+    try expectInvalidPlan(source, &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &after_auxiliary, .paragraph_breaks = &.{}, .lists = &.{} });
 }
 
 test "polished rejects provider deletion plans" {
