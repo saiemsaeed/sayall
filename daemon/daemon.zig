@@ -126,6 +126,12 @@ fn providerClean(context_ptr: ?*anyopaque, gpa: Allocator, raw: []const u8) ![]u
     return groq.clean(gpa, raw, context.daemon.cfg.stt.keyterms);
 }
 
+fn providerBaseline(context_ptr: ?*anyopaque, gpa: Allocator, raw: []const u8) !groq.cleanup_engine.PolishedBaseline {
+    const context: *ProviderContext = @ptrCast(@alignCast(context_ptr.?));
+    context.daemon.setStage(.cleaning);
+    return groq.cleanup_engine.polishedBaseline(gpa, raw, context.daemon.cfg.stt.keyterms);
+}
+
 fn annotateProcessingMetrics(context: *ProviderContext, profile: config.processing.Profile, outcome: config.processing.TransformationOutcome) void {
     const attempt_id = context.metrics_attempt_id orelse return;
     const store = context.daemon.metrics_store orelse return;
@@ -824,6 +830,7 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
         .context = &provider_context,
         .rest = providerRest,
         .clean = providerClean,
+        .baseline = providerBaseline,
         .planner = providerPlanner,
     }) catch |err| {
         completion_reason = "transcription_failed";

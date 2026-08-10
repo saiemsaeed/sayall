@@ -30,6 +30,7 @@ pub const TransformationOutcome = enum {
     not_requested,
     changed,
     no_change,
+    degraded,
     failed,
 };
 

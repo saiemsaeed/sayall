@@ -1,5 +1,6 @@
 const std = @import("std");
 const processing = @import("processing.zig");
+const cleanup_engine = @import("llm/cleanup_engine.zig");
 
 pub const Warning = enum { transformation_failed };
 
@@ -23,6 +24,7 @@ pub const Seam = struct {
     context: ?*anyopaque = null,
     rest: *const fn (?*anyopaque, std.mem.Allocator) anyerror![]u8,
     clean: *const fn (?*anyopaque, std.mem.Allocator, []const u8) anyerror![]u8,
+    baseline: *const fn (?*anyopaque, std.mem.Allocator, []const u8) anyerror!cleanup_engine.PolishedBaseline,
     planner: *const fn (?*anyopaque, std.mem.Allocator, processing.Profile, []const u8) anyerror![]u8,
 };
 
@@ -46,10 +48,38 @@ pub fn process(
         return .no_speech;
     }
 
+    if (profile == .polished) {
+        const baseline = seam.baseline(seam.context, allocator, raw) catch {
+            return .{ .success = .{ .text = raw, .warning = .transformation_failed, .transformation_outcome = .failed } };
+        };
+        validate(baseline.text, output_policy) catch {
+            allocator.free(baseline.text);
+            return .{ .success = .{ .text = raw, .warning = .transformation_failed, .transformation_outcome = .failed } };
+        };
+        if (baseline.sufficient) {
+            const outcome: processing.TransformationOutcome = if (std.mem.eql(u8, raw, baseline.text)) .no_change else .changed;
+            allocator.free(raw);
+            return .{ .success = .{ .text = baseline.text, .transformation_outcome = outcome } };
+        }
+        const planned = seam.planner(seam.context, allocator, profile, baseline.text) catch {
+            allocator.free(raw);
+            return .{ .success = .{ .text = baseline.text, .transformation_outcome = .degraded } };
+        };
+        validate(planned, output_policy) catch {
+            allocator.free(planned);
+            allocator.free(raw);
+            return .{ .success = .{ .text = baseline.text, .transformation_outcome = .degraded } };
+        };
+        allocator.free(baseline.text);
+        const outcome: processing.TransformationOutcome = if (std.mem.eql(u8, raw, planned)) .no_change else .changed;
+        allocator.free(raw);
+        return .{ .success = .{ .text = planned, .transformation_outcome = outcome } };
+    }
     const transformed_result = switch (profile) {
         .verbatim => return .{ .success = .{ .text = raw, .transformation_outcome = .not_requested } },
         .clean => seam.clean(seam.context, allocator, raw),
-        .polished, .legacy_v1 => seam.planner(seam.context, allocator, profile, raw),
+        .legacy_v1 => seam.planner(seam.context, allocator, profile, raw),
+        .polished => unreachable,
     };
     if (transformed_result) |transformed| {
         validate(transformed, output_policy) catch {
@@ -74,8 +104,11 @@ fn validate(text: []const u8, policy: OutputPolicy) !void {
 const Fake = struct {
     rest_text: []const u8 = "raw",
     clean_text: []const u8 = "clean",
+    baseline_text: []const u8 = "baseline",
+    baseline_sufficient: bool = false,
     rest_error: ?anyerror = null,
     cleanup_error: ?anyerror = null,
+    planner_error: ?anyerror = null,
     rest_calls: usize = 0,
     clean_calls: usize = 0,
     planner_calls: usize = 0,
@@ -104,12 +137,20 @@ const Fake = struct {
             .legacy_v1 => self.legacy_calls += 1,
             else => return error.InvalidProfile,
         }
+        if (self.planner_error) |err| return err;
         if (self.cleanup_error) |err| return err;
         return allocator.dupe(u8, self.clean_text);
     }
 
+    fn baseline(context: ?*anyopaque, allocator: std.mem.Allocator, raw: []const u8) !cleanup_engine.PolishedBaseline {
+        const self: *Fake = @ptrCast(@alignCast(context.?));
+        if (self.cleanup_error) |err| return err;
+        _ = raw;
+        return .{ .text = try allocator.dupe(u8, self.baseline_text), .sufficient = self.baseline_sufficient };
+    }
+
     fn seam(self: *Fake) Seam {
-        return .{ .context = self, .rest = rest, .clean = clean, .planner = planner };
+        return .{ .context = self, .rest = rest, .clean = clean, .baseline = baseline, .planner = planner };
     }
 };
 
@@ -234,4 +275,30 @@ test "worker rejects invalid bytes while daemon accepts them" {
     const daemon = try process(std.testing.allocator, null, .verbatim, .{ .max_bytes = null, .require_utf8 = false }, fake.seam());
     defer freeOutcome(daemon);
     try std.testing.expectEqualSlices(u8, "\xff", daemon.success.text);
+}
+
+test "polished baseline bypass degradation and planner ownership" {
+    var sufficient: Fake = .{ .baseline_text = "Can we ship?", .baseline_sufficient = true };
+    const bypass = try process(std.testing.allocator, try owned("can we ship"), .polished, worker_policy, sufficient.seam());
+    defer freeOutcome(bypass);
+    try std.testing.expectEqualStrings("Can we ship?", bypass.success.text);
+    try std.testing.expectEqual(@as(usize, 0), sufficient.planner_calls);
+    try std.testing.expectEqual(processing.TransformationOutcome.changed, bypass.success.transformation_outcome);
+
+    var failed: Fake = .{ .baseline_text = "Ordinary sentence.", .planner_error = error.RateLimited };
+    const degraded = try process(std.testing.allocator, try owned("ordinary sentence"), .polished, worker_policy, failed.seam());
+    defer freeOutcome(degraded);
+    try std.testing.expectEqualStrings("Ordinary sentence.", degraded.success.text);
+    try std.testing.expectEqual(@as(?Warning, null), degraded.success.warning);
+    try std.testing.expectEqual(processing.TransformationOutcome.degraded, degraded.success.transformation_outcome);
+
+    var valid: Fake = .{ .baseline_text = "Baseline.", .clean_text = "Planner wins." };
+    const planned = try process(std.testing.allocator, try owned("baseline"), .polished, worker_policy, valid.seam());
+    defer freeOutcome(planned);
+    try std.testing.expectEqualStrings("Planner wins.", planned.success.text);
+
+    var legacy: Fake = .{ .baseline_text = "must not appear", .clean_text = "legacy" };
+    const old = try process(std.testing.allocator, try owned("raw"), .legacy_v1, worker_policy, legacy.seam());
+    defer freeOutcome(old);
+    try std.testing.expectEqualStrings("legacy", old.success.text);
 }

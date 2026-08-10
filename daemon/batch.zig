@@ -69,6 +69,7 @@ pub const Seam = struct {
     context: ?*anyopaque = null,
     transcribe: *const fn (?*anyopaque, std.mem.Allocator, std.Io, *const provider.SttConfig, []const u8) anyerror![]u8 = liveTranscribe,
     clean: *const fn (?*anyopaque, std.mem.Allocator, []const []const u8, []const u8) anyerror![]u8 = liveClean,
+    baseline: *const fn (?*anyopaque, std.mem.Allocator, []const []const u8, []const u8) anyerror!groq.cleanup_engine.PolishedBaseline = liveBaseline,
     planner: *const fn (?*anyopaque, std.mem.Allocator, std.Io, *const provider.LlmConfig, []const []const u8, processing.Profile, []const u8) anyerror![]u8 = livePlanner,
 };
 
@@ -127,6 +128,7 @@ pub fn processWithTranscript(gpa: std.mem.Allocator, io: std.Io, r: Request, sea
         .context = &context,
         .rest = coreRest,
         .clean = coreClean,
+        .baseline = coreBaseline,
         .planner = corePlanner,
     }) catch |err| return fail(
         if (err == error.ResponseTooLarge) .response_too_large else mapDeepgramError(err),
@@ -161,6 +163,11 @@ fn coreRest(context_ptr: ?*anyopaque, gpa: std.mem.Allocator) ![]u8 {
 fn coreClean(context_ptr: ?*anyopaque, gpa: std.mem.Allocator, raw: []const u8) ![]u8 {
     const context: *CoreContext = @ptrCast(@alignCast(context_ptr.?));
     return context.seam.clean(context.seam.context, gpa, context.request.deepgram_keyterms, raw);
+}
+
+fn coreBaseline(context_ptr: ?*anyopaque, gpa: std.mem.Allocator, raw: []const u8) !groq.cleanup_engine.PolishedBaseline {
+    const context: *CoreContext = @ptrCast(@alignCast(context_ptr.?));
+    return context.seam.baseline(context.seam.context, gpa, context.request.deepgram_keyterms, raw);
 }
 
 fn corePlanner(context_ptr: ?*anyopaque, gpa: std.mem.Allocator, profile: processing.Profile, raw: []const u8) ![]u8 {
@@ -262,6 +269,10 @@ fn liveClean(_: ?*anyopaque, gpa: std.mem.Allocator, keyterms: []const []const u
     return groq.clean(gpa, raw, keyterms);
 }
 
+fn liveBaseline(_: ?*anyopaque, gpa: std.mem.Allocator, keyterms: []const []const u8, raw: []const u8) !groq.cleanup_engine.PolishedBaseline {
+    return groq.cleanup_engine.polishedBaseline(gpa, raw, keyterms);
+}
+
 fn livePlanner(_: ?*anyopaque, gpa: std.mem.Allocator, io: std.Io, cfg: *const provider.LlmConfig, keyterms: []const []const u8, profile: processing.Profile, raw: []const u8) ![]u8 {
     return switch (profile) {
         .polished => groq.polished(gpa, io, cfg, keyterms, raw, false),
@@ -314,8 +325,12 @@ const FakeProvider = struct {
         return std.fmt.allocPrint(gpa, "{s}: {s}", .{ @tagName(profile), raw });
     }
 
+    fn baseline(_: ?*anyopaque, gpa: std.mem.Allocator, keyterms: []const []const u8, raw: []const u8) !groq.cleanup_engine.PolishedBaseline {
+        return groq.cleanup_engine.polishedBaseline(gpa, raw, keyterms);
+    }
+
     fn seam(self: *FakeProvider) Seam {
-        return .{ .context = self, .transcribe = transcribe, .clean = clean, .planner = planner };
+        return .{ .context = self, .transcribe = transcribe, .clean = clean, .baseline = baseline, .planner = planner };
     }
 };
 
@@ -374,7 +389,7 @@ test "provider mapping is deterministic" {
     try std.testing.expectEqual(ErrorCode.deepgram_server, mapDeepgramError(error.ServerError));
 }
 
-test "REST fallback preserves polished profile when transformation fails" {
+test "REST fallback preserves polished profile with degraded baseline" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     const path = try writeTestWav(&tmp, 16_000);
@@ -401,7 +416,7 @@ test "REST fallback preserves polished profile when transformation fails" {
     try std.testing.expectEqual(@as(usize, 1), fake.transcribe_calls);
     try std.testing.expectEqual(@as(usize, 1), fake.polished_calls);
     try std.testing.expectEqual(@as(usize, 0), fake.legacy_calls);
-    try std.testing.expectEqual(Warning.transformation_failed, result.warning.?);
+    try std.testing.expectEqual(@as(?Warning, null), result.warning);
     try std.testing.expectEqualStrings("München", result.text.?);
 
     const streamed = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "streamed");
@@ -409,7 +424,7 @@ test "REST fallback preserves polished profile when transformation fails" {
     try std.testing.expectEqual(.success, streamed.status);
     try std.testing.expectEqual(Transport.stream, streamed.transport);
     try std.testing.expectEqual(processing.Profile.polished, streamed.processing_profile);
-    try std.testing.expectEqualStrings("streamed", streamed.text.?);
+    try std.testing.expectEqualStrings("Streamed.", streamed.text.?);
 }
 
 test "protocol v3 routes clean polished and legacy engines by profile" {
@@ -443,7 +458,7 @@ test "protocol v3 routes clean polished and legacy engines by profile" {
     request.processing_profile = .polished;
     const polished = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "raw");
     defer if (polished.text) |text| std.testing.allocator.free(text);
-    try std.testing.expectEqualStrings("polished: raw", polished.text.?);
+    try std.testing.expectEqualStrings("polished: Raw.", polished.text.?);
     try std.testing.expectEqual(@as(usize, 1), fake.polished_calls);
     try std.testing.expectEqual(@as(usize, 0), fake.legacy_calls);
 
@@ -456,10 +471,10 @@ test "protocol v3 routes clean polished and legacy engines by profile" {
 
     fake.invalid_polished_plan = true;
     request.processing_profile = .polished;
-    const invalid_plan = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "do not change");
+    const invalid_plan = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "please do not change");
     defer if (invalid_plan.text) |text| std.testing.allocator.free(text);
-    try std.testing.expectEqualStrings("do not change", invalid_plan.text.?);
-    try std.testing.expectEqual(Warning.transformation_failed, invalid_plan.warning.?);
+    try std.testing.expectEqualStrings("Please do not change.", invalid_plan.text.?);
+    try std.testing.expectEqual(@as(?Warning, null), invalid_plan.warning);
     try std.testing.expectEqual(@as(usize, 2), fake.polished_calls);
     try std.testing.expectEqual(@as(usize, 0), fake.transcribe_calls);
 
@@ -467,7 +482,7 @@ test "protocol v3 routes clean polished and legacy engines by profile" {
     fake.valid_no_change_plan = true;
     const no_change = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "keep  exactly\nthis");
     defer if (no_change.text) |text| std.testing.allocator.free(text);
-    try std.testing.expectEqualStrings("keep  exactly\nthis", no_change.text.?);
+    try std.testing.expectEqualStrings("Keep  exactly\nthis.", no_change.text.?);
     try std.testing.expectEqual(@as(?Warning, null), no_change.warning);
 }
 

@@ -39,6 +39,114 @@ pub const PolishedPlan = struct {
     lists: []const List,
 };
 
+pub const PolishedBaseline = struct {
+    text: []u8,
+    sufficient: bool,
+};
+
+/// A provider-free, conservative Polished pass. Clean is deliberately run
+/// first and every subsequent byte is produced by the normal validated plan
+/// renderer, keeping this fallback subject to exactly the same safety rules as
+/// provider plans.
+pub fn polishedBaseline(gpa: Allocator, transcript: []const u8, glossary: []const []const u8) Error!PolishedBaseline {
+    const cleaned = try clean(gpa, transcript, glossary);
+    defer gpa.free(cleaned);
+    const tokens = try tokenize(gpa, cleaned);
+    defer gpa.free(tokens);
+    if (tokens.len == 0) return .{ .text = try gpa.dupe(u8, cleaned), .sufficient = false };
+
+    var corrections: std.ArrayList(Correction) = .empty;
+    defer corrections.deinit(gpa);
+    var punctuation_ops: std.ArrayList(Punctuation) = .empty;
+    defer punctuation_ops.deinit(gpa);
+    var anchors: std.ArrayList(ListAnchor) = .empty;
+    defer anchors.deinit(gpa);
+    var lists: std.ArrayList(List) = .empty;
+    defer lists.deinit(gpa);
+    var capitalization: ?[]u8 = null;
+    defer if (capitalization) |replacement| gpa.free(replacement);
+
+    var decorated = hasDecorationOnlyChunk(cleaned, tokens);
+    for (tokens) |token| decorated = decorated or token.protected or technical(token.text) or hasLocalListMarker(cleaned, token);
+    if (!decorated and safeOrdinary(cleaned, tokens[0]) and std.ascii.isLower(tokens[0].text[0])) {
+        const replacement = try gpa.dupe(u8, tokens[0].text);
+        capitalization = replacement;
+        replacement[0] = std.ascii.toUpper(replacement[0]);
+        try corrections.append(gpa, .{ .start_token = 0, .end_token = 1, .source = tokens[0].text, .replacement = replacement, .kind = .case });
+    }
+
+    var sufficient = false;
+    var list_start: ?usize = null;
+    if (!decorated and ordinalAnchors(gpa, tokens, &anchors)) {
+        list_start = 0;
+        sufficient = true;
+    } else if (!decorated) {
+        var i: usize = 0;
+        while (i + 2 < tokens.len) : (i += 1) if (numberWord(tokens[i].text)) |count| {
+            if (!asciiEq(tokens[i + 1].text, "items")) continue;
+            const start = i + 2;
+            const remaining = tokens.len - start;
+            const has_and = remaining == count + 1 and count >= 2 and asciiEq(tokens[tokens.len - 2].text, "and");
+            if (remaining != count and !has_and) continue;
+            var item: usize = start;
+            while (item < tokens.len) : (item += 1) {
+                if (has_and and item == tokens.len - 1) continue;
+                try anchors.append(gpa, .{ .start_token = item });
+            }
+            list_start = start;
+            try punctuation_ops.append(gpa, .{ .after_token = i + 1, .mark = .colon });
+            sufficient = true;
+            break;
+        };
+    }
+    if (list_start) |start| try lists.append(gpa, .{ .start_token = start, .end_token = tokens.len, .items = anchors.items, .kind = .bullet });
+
+    const question = directQuestion(tokens[0].text);
+    if (question) sufficient = true;
+    if (!decorated and !hasTerminalPunctuation(cleaned, tokens[tokens.len - 1]) and safeOrdinary(cleaned, tokens[tokens.len - 1])) {
+        try punctuation_ops.append(gpa, .{ .after_token = tokens.len - 1, .mark = if (question) .question else .period });
+    }
+    const text = try polished(gpa, cleaned, glossary, .{ .version = 2, .deletions = &.{}, .corrections = corrections.items, .punctuation = punctuation_ops.items, .paragraph_breaks = &.{}, .lists = lists.items });
+    return .{ .text = text, .sufficient = sufficient };
+}
+
+fn safeOrdinary(source: []const u8, token: Token) bool {
+    if (token.protected or token.text.len == 0 or !std.ascii.isAlphabetic(token.text[0]) or technical(token.text)) return false;
+    for (token.text) |c| if (!std.ascii.isAlphabetic(c)) return false;
+    return !hasUnsafeDecoration(source, &.{token}, 0);
+}
+
+fn hasTerminalPunctuation(source: []const u8, token: Token) bool {
+    for (source[token.end..tokenChunkEnd(source, token)]) |c| if (std.mem.indexOfScalar(u8, ".?!", c) != null) return true;
+    return false;
+}
+
+fn directQuestion(word: []const u8) bool {
+    for ([_][]const u8{ "can", "could", "would", "should", "will", "do", "does", "did", "is", "are", "was", "were", "have", "has", "had", "who", "what", "where", "when", "why", "how" }) |candidate| if (asciiEq(word, candidate)) return true;
+    return false;
+}
+
+fn ordinal(word: []const u8) ?usize {
+    for ([_][]const u8{ "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth" }, 1..) |candidate, value| if (asciiEq(word, candidate)) return value;
+    return null;
+}
+
+fn ordinalAnchors(gpa: Allocator, tokens: []const Token, anchors: *std.ArrayList(ListAnchor)) bool {
+    if (ordinal(tokens[0].text) != 1) return false;
+    var expected: usize = 1;
+    for (tokens, 0..) |token, i| if (ordinal(token.text)) |value| {
+        if (value != expected) return false;
+        anchors.append(gpa, .{ .start_token = i }) catch return false;
+        expected += 1;
+    };
+    return expected >= 3;
+}
+
+fn numberWord(word: []const u8) ?usize {
+    for ([_][]const u8{ "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten" }, 2..) |candidate, value| if (asciiEq(word, candidate)) return value;
+    return null;
+}
+
 /// Deterministic conservative cleanup. The returned slice is allocator-owned.
 pub fn clean(gpa: Allocator, transcript: []const u8, glossary: []const []const u8) Error![]u8 {
     const tokens = tokenize(gpa, transcript) catch |err| switch (err) {
@@ -630,6 +738,32 @@ fn protectedLayoutBoundary(token: usize, deleted: []const bool, protected: []con
         if (!deleted[previous]) return protected[previous];
     }
     return false;
+}
+
+test "polished baseline conservative formatting and coverage" {
+    const a = std.testing.allocator;
+    const Case = struct { input: []const u8, expected: []const u8, sufficient: bool };
+    const cases = [_]Case{
+        .{ .input = "can we ship tomorrow", .expected = "Can we ship tomorrow?", .sufficient = true },
+        .{ .input = "ordinary sentence", .expected = "Ordinary sentence.", .sufficient = false },
+        .{ .input = "um ordinary sentence", .expected = "Ordinary sentence.", .sufficient = false },
+        .{ .input = "first validate corpus second run scorer third inspect report", .expected = "- First validate corpus\n- second run scorer\n- third inspect report.", .sufficient = true },
+        .{ .input = "bring three items apples bananas and pears", .expected = "Bring three items:\n- apples\n- bananas\n- and pears.", .sufficient = true },
+        .{ .input = "say \"hello world\"", .expected = "say \"hello world\"", .sufficient = false },
+        .{ .input = "visit https://example.com", .expected = "visit https://example.com", .sufficient = false },
+        .{ .input = "email me@example.com", .expected = "email me@example.com", .sufficient = false },
+        .{ .input = "open /tmp/file", .expected = "open /tmp/file", .sufficient = false },
+        .{ .input = "- existing list", .expected = "- existing list", .sufficient = false },
+    };
+    for (cases) |case| {
+        const result = try polishedBaseline(a, case.input, &.{});
+        defer a.free(result.text);
+        try std.testing.expectEqualStrings(case.expected, result.text);
+        try std.testing.expectEqual(case.sufficient, result.sufficient);
+        const again = try polishedBaseline(a, result.text, &.{});
+        defer a.free(again.text);
+        try std.testing.expectEqualStrings(result.text, again.text);
+    }
 }
 
 test "clean filler repetition scalar correction and protections" {

@@ -201,7 +201,7 @@ pub fn polished(gpa: Allocator, io: Io, cfg: *const config.LlmConfig, keyterms: 
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const schema = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), polished_schema_json, .{}) catch return error.BadResponse;
-    const payload: Payload = .{ .model = cfg.model, .reasoning_effort = "medium", .response_format = .{ .json_schema = .{ .name = "sayall_polished_plan", .schema = schema } }, .messages = &.{
+    const payload: Payload = .{ .model = cfg.model, .reasoning_effort = "low", .response_format = .{ .json_schema = .{ .name = "sayall_polished_plan", .schema = schema } }, .messages = &.{
         .{ .role = "system", .content = polished_policy_prompt },
         .{ .role = "user", .content = user },
     } };
