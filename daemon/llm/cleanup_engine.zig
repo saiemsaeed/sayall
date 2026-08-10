@@ -101,11 +101,24 @@ pub fn polishedBaseline(gpa: Allocator, transcript: []const u8, glossary: []cons
     }
     if (list_start) |start| try lists.append(gpa, .{ .start_token = start, .end_token = tokens.len, .items = anchors.items, .kind = .bullet });
 
+    // Deepgram can preserve the capital at an inferred sentence boundary
+    // without supplying punctuation. Recover only the narrow, unambiguous
+    // pronoun boundary; proper names and acronyms remain untouched.
+    if (!decorated) for (tokens[1..], 1..) |token, i| {
+        if (!sentenceStarterPronoun(token.text) or hasFixedTrailingPunctuation(cleaned, tokens[i - 1])) continue;
+        try punctuation_ops.append(gpa, .{ .after_token = i - 1, .mark = .period });
+    };
+
     const question = directQuestion(tokens[0].text);
     if (question) sufficient = true;
     if (!decorated and !hasTerminalPunctuation(cleaned, tokens[tokens.len - 1]) and safeOrdinary(cleaned, tokens[tokens.len - 1])) {
         try punctuation_ops.append(gpa, .{ .after_token = tokens.len - 1, .mark = if (question) .question else .period });
     }
+    std.mem.sort(Punctuation, punctuation_ops.items, {}, struct {
+        fn lessThan(_: void, a: Punctuation, b: Punctuation) bool {
+            return a.after_token < b.after_token;
+        }
+    }.lessThan);
     const text = try polished(gpa, cleaned, glossary, .{ .version = 2, .deletions = &.{}, .corrections = corrections.items, .punctuation = punctuation_ops.items, .paragraph_breaks = &.{}, .lists = lists.items });
     return .{ .text = text, .sufficient = sufficient };
 }
@@ -123,6 +136,11 @@ fn hasTerminalPunctuation(source: []const u8, token: Token) bool {
 
 fn directQuestion(word: []const u8) bool {
     for ([_][]const u8{ "can", "could", "would", "should", "will", "do", "does", "did", "is", "are", "was", "were", "have", "has", "had", "who", "what", "where", "when", "why", "how" }) |candidate| if (asciiEq(word, candidate)) return true;
+    return false;
+}
+
+fn sentenceStarterPronoun(word: []const u8) bool {
+    for ([_][]const u8{ "I", "It", "This", "That", "These", "Those", "We", "You", "He", "She", "They", "There" }) |candidate| if (std.mem.eql(u8, word, candidate)) return true;
     return false;
 }
 
@@ -278,7 +296,7 @@ pub fn polished(gpa: Allocator, transcript: []const u8, glossary: []const []cons
     var item_total: usize = 0;
     for (plan.lists) |list| {
         item_total += list.items.len;
-        if (list.start_token >= list.end_token or list.end_token > tokens.len or list.start_token < list_end or list.items.len < 2 or item_total > max_list_items or list.items[0].start_token != list.start_token or !strictListItems(list.items, list.start_token, list.end_token, deleted, protected) or protectedLayoutBoundary(list.start_token, deleted, protected) or (list.end_token < tokens.len and protectedLayoutBoundary(list.end_token, deleted, protected))) return error.InvalidPlan;
+        if (list.start_token >= list.end_token or list.end_token > tokens.len or list.start_token < list_end or list.items.len < 2 or item_total > max_list_items or list.items[0].start_token != list.start_token or !strictListItems(list.items, list.start_token, list.end_token, deleted, protected) or protectedLayoutBoundary(list.start_token, deleted, protected) or reportingListContext(transcript, tokens, list.start_token) or (list.end_token < tokens.len and protectedLayoutBoundary(list.end_token, deleted, protected))) return error.InvalidPlan;
         for (list.items) |item| if (hasLocalListMarker(transcript, tokens[item.start_token])) return error.InvalidPlan;
         list_end = list.end_token;
     }
@@ -740,12 +758,24 @@ fn protectedLayoutBoundary(token: usize, deleted: []const bool, protected: []con
     return false;
 }
 
+fn reportingListContext(source: []const u8, tokens: []const Token, start: usize) bool {
+    if (start == 0) return false;
+    var i = start;
+    while (i > 0) {
+        i -= 1;
+        if (hasFixedTrailingPunctuation(source, tokens[i])) break;
+        for ([_][]const u8{ "say", "says", "said", "read", "reads", "quote", "quoted", "quotation" }) |word| if (asciiEq(tokens[i].text, word)) return true;
+    }
+    return false;
+}
+
 test "polished baseline conservative formatting and coverage" {
     const a = std.testing.allocator;
     const Case = struct { input: []const u8, expected: []const u8, sufficient: bool };
     const cases = [_]Case{
         .{ .input = "can we ship tomorrow", .expected = "Can we ship tomorrow?", .sufficient = true },
         .{ .input = "ordinary sentence", .expected = "Ordinary sentence.", .sufficient = false },
+        .{ .input = "This fixture is synthetic It contains no user data", .expected = "This fixture is synthetic. It contains no user data.", .sufficient = false },
         .{ .input = "um ordinary sentence", .expected = "Ordinary sentence.", .sufficient = false },
         .{ .input = "first validate corpus second run scorer third inspect report", .expected = "- First validate corpus\n- second run scorer\n- third inspect report.", .sufficient = true },
         .{ .input = "bring three items apples bananas and pears", .expected = "Bring three items:\n- apples\n- bananas\n- and pears.", .sufficient = true },
@@ -857,6 +887,13 @@ test "polished compiles corrections punctuation paragraphs and numbered lists" {
     });
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("Hello world.\n\n1. first tea\n2. second coffee\nend", out);
+}
+
+test "polished rejects lists introduced as reported or quoted content" {
+    const source = "The button says quotation marks start first second third quotation mark end";
+    const items = [_]ListAnchor{ .{ .start_token = 6 }, .{ .start_token = 7 }, .{ .start_token = 8 } };
+    const lists = [_]List{.{ .start_token = 6, .end_token = 9, .items = &items, .kind = .bullet }};
+    try expectInvalidPlan(source, &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &lists });
 }
 
 test "polished rejects provider deletion plans" {

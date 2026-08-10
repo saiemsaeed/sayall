@@ -68,9 +68,13 @@ pub const polished_policy_prompt =
     \\or section transition. Use lists only when at least two item boundaries are explicit from
     \\first/second/third-style enumerators or an explicit item-count/list introduction. Preserve
     \\spoken enumerators and conjunctions; generated list markers never replace source tokens.
+    \\Never turn reported or quoted content into a list: an ordinal sequence after say/says/said,
+    \\read/reads, quote/quoted, or literal quotation-mark cues stays inline and may use commas.
     \\Use bullet lists when spoken ordinal enumerators are present to avoid duplicate numbering.
     \\Capitalize the first ordinary source token of each sentence and list item with a one-token
     \\case correction; do not case-change acronyms, technical tokens, quotes, or glossary values.
+    \\Every non-list mid-transcript case correction that capitalizes a new sentence must be paired
+    \\with sentence-ending punctuation on the preceding token; never capitalize without its boundary.
     \\items must be a JSON array of objects, each with one integer start_token field, never a
     \\string or concatenated value.
     \\Allowed corrections are one-token capitalization and exact glossary spelling. Deletions
@@ -91,6 +95,8 @@ pub const polished_policy_prompt =
     \\[{"start_token":3,"end_token":7,"items":[{"start_token":3},{"start_token":4},{"start_token":5}],"kind":"bullet"}].
     \\A conjunction introducing the final item belongs at that item's start; never attach it
     \\to the previous item and never delete it.
+    \\Negative list example: tokens 0:The 1:button 2:says 3:first 4:second 5:third
+    \\must keep lists empty and should use comma punctuation after tokens 3 and 4.
 ;
 
 pub const polished_schema_json =
