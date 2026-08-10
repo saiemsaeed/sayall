@@ -69,12 +69,12 @@ pub fn process(
         };
         const planned = seam.planner(seam.context, allocator, profile, cleaned) catch {
             allocator.free(raw);
-            return .{ .success = .{ .text = cleaned, .warning = .transformation_failed, .transformation_outcome = .degraded } };
+            return .{ .success = .{ .text = cleaned, .transformation_outcome = .degraded } };
         };
         validate(planned, output_policy) catch {
             allocator.free(planned);
             allocator.free(raw);
-            return .{ .success = .{ .text = cleaned, .warning = .transformation_failed, .transformation_outcome = .degraded } };
+            return .{ .success = .{ .text = cleaned, .transformation_outcome = .degraded } };
         };
         allocator.free(cleaned);
         const outcome: processing.TransformationOutcome = if (std.mem.eql(u8, raw, planned)) .no_change else .changed;
@@ -290,7 +290,7 @@ test "polished cleans once then always plans and degrades to clean" {
     const degraded = try process(std.testing.allocator, try owned("ordinary sentence"), .polished, worker_policy, failed.seam());
     defer freeOutcome(degraded);
     try std.testing.expectEqualStrings("clean fallback", degraded.success.text);
-    try std.testing.expectEqual(Warning.transformation_failed, degraded.success.warning.?);
+    try std.testing.expectEqual(@as(?Warning, null), degraded.success.warning);
     try std.testing.expectEqual(processing.TransformationOutcome.degraded, degraded.success.transformation_outcome);
     try std.testing.expectEqual(@as(usize, 1), failed.clean_calls);
     try std.testing.expectEqual(@as(usize, 1), failed.planner_calls);

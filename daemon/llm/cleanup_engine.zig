@@ -703,15 +703,21 @@ fn validListEvidence(tokens: []const Token, list: List) bool {
 
     if (list.end_token != tokens.len) return false;
     var count: ?usize = null;
+    var demonstrative = false;
     var i: usize = 0;
     while (i + 1 < list.start_token) : (i += 1) {
-        const candidate = numberWord(tokens[i].text) orelse continue;
-        if (countedListNoun(tokens[i + 1].text) and countedListStart(tokens, i + 1) == list.start_token) {
-            count = candidate;
+        if (numberWord(tokens[i].text)) |candidate| {
+            if (countedListNoun(tokens[i + 1].text) and countedListStart(tokens, i + 1) == list.start_token) {
+                count = candidate;
+                break;
+            }
+        }
+        if (asciiEq(tokens[i].text, "these") and countedListNoun(tokens[i + 1].text) and countedListStart(tokens, i + 1) == list.start_token) {
+            demonstrative = true;
             break;
         }
     }
-    const expected_count = count orelse return false;
+    const expected_count = count orelse if (demonstrative and list.items.len >= 3) list.items.len else return false;
     if (list.items.len != expected_count) return false;
     const remaining = list.end_token - list.start_token;
     const has_and = remaining >= 3 and asciiEq(tokens[list.end_token - 2].text, "and");
@@ -902,6 +908,24 @@ test "polished accepts a counted list after an explicit bridge" {
     const out = try polished(std.testing.allocator, source, &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &punctuation_marks, .paragraph_breaks = &.{}, .lists = &lists });
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("I have three rules in my life:\n- commitment\n- focus\n- and passion.", out);
+}
+
+test "polished accepts a demonstrative list without a spoken count" {
+    const source = "Can you bring me these things apple banana and pears";
+    const punctuation_marks = [_]Punctuation{ .{ .after_token = 5, .mark = .colon }, .{ .after_token = 9, .mark = .question } };
+    const items = [_]ListAnchor{ .{ .start_token = 6 }, .{ .start_token = 7 }, .{ .start_token = 8 } };
+    const lists = [_]List{.{ .start_token = 6, .end_token = 10, .items = &items, .kind = .bullet }};
+    const out = try polished(std.testing.allocator, source, &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &punctuation_marks, .paragraph_breaks = &.{}, .lists = &lists });
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("Can you bring me these things:\n- apple\n- banana\n- and pears?", out);
+
+    const bridged_source = "I have these rules in my life commitment focus and passion";
+    const bridged_punctuation = [_]Punctuation{ .{ .after_token = 6, .mark = .colon }, .{ .after_token = 10, .mark = .period } };
+    const bridged_items = [_]ListAnchor{ .{ .start_token = 7 }, .{ .start_token = 8 }, .{ .start_token = 9 } };
+    const bridged_lists = [_]List{.{ .start_token = 7, .end_token = 11, .items = &bridged_items, .kind = .bullet }};
+    const bridged = try polished(std.testing.allocator, bridged_source, &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &bridged_punctuation, .paragraph_breaks = &.{}, .lists = &bridged_lists });
+    defer std.testing.allocator.free(bridged);
+    try std.testing.expectEqualStrings("I have these rules in my life:\n- commitment\n- focus\n- and passion.", bridged);
 }
 
 test "polished rejects punctuation that splits a conditional question" {

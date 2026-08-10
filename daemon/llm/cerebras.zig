@@ -11,6 +11,7 @@ const Payload = struct {
     model: []const u8,
     max_completion_tokens: u32 = 2048,
     reasoning_effort: []const u8 = "low",
+    temperature: u8 = 0,
     response_format: ResponseFormat,
     messages: []const Message,
 };
@@ -47,5 +48,6 @@ test "payload bounds completion and requests strict structured output" {
     defer decoded.deinit();
     const object = decoded.value.object;
     try std.testing.expectEqual(@as(i64, 2048), object.get("max_completion_tokens").?.integer);
+    try std.testing.expectEqual(@as(i64, 0), object.get("temperature").?.integer);
     try std.testing.expect(object.get("response_format").?.object.get("json_schema").?.object.get("strict").?.bool);
 }

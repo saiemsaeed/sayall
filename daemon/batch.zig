@@ -466,7 +466,7 @@ test "REST and stream planner failure preserve polished profile with Clean fallb
     try std.testing.expectEqual(@as(usize, 1), fake.transcribe_calls);
     try std.testing.expectEqual(@as(usize, 1), fake.polished_calls);
     try std.testing.expectEqual(@as(usize, 0), fake.legacy_calls);
-    try std.testing.expectEqual(Warning.transformation_failed, result.warning.?);
+    try std.testing.expectEqual(@as(?Warning, null), result.warning);
     try std.testing.expectEqualStrings("clean: München", result.text.?);
 
     const streamed = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "streamed");
@@ -474,7 +474,7 @@ test "REST and stream planner failure preserve polished profile with Clean fallb
     try std.testing.expectEqual(.success, streamed.status);
     try std.testing.expectEqual(Transport.stream, streamed.transport);
     try std.testing.expectEqual(processing.Profile.polished, streamed.processing_profile);
-    try std.testing.expectEqual(Warning.transformation_failed, streamed.warning.?);
+    try std.testing.expectEqual(@as(?Warning, null), streamed.warning);
     try std.testing.expectEqualStrings("clean: streamed", streamed.text.?);
 }
 
@@ -532,7 +532,7 @@ test "protocol v3 routes clean polished AI-only and legacy engines by profile" {
     const invalid_plan = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "please do not change");
     defer if (invalid_plan.text) |text| std.testing.allocator.free(text);
     try std.testing.expectEqualStrings("clean: please do not change", invalid_plan.text.?);
-    try std.testing.expectEqual(Warning.transformation_failed, invalid_plan.warning.?);
+    try std.testing.expectEqual(@as(?Warning, null), invalid_plan.warning);
     try std.testing.expectEqual(@as(usize, 2), fake.polished_calls);
     try std.testing.expectEqual(@as(usize, 0), fake.transcribe_calls);
 

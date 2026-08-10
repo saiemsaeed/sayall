@@ -68,9 +68,11 @@ pub const polished_policy_prompt =
     \\or section transition. Use lists only when at least two item boundaries are explicit from
     \\first/second/third-style enumerators or an explicit item-count/list introduction. Preserve
     \\spoken enumerators and conjunctions; generated list markers never replace source tokens.
-    \\Counted introductions include nouns such as items, fruits, projects, tasks, options, steps,
-    \\points, and rules, but the spoken count must exactly match the item anchors. Without a count or
-    \\ordinal enumerators, keep a conjunction-separated sequence inline rather than guessing a list.
+    \\Counted introductions include nouns such as items, things, fruits, projects, tasks, options,
+    \\steps, points, and rules, but the spoken count must exactly match the item anchors. An explicit
+    \\"these" plus one of those plural list nouns also introduces a list without a count only when
+    \\followed by at least three clear single-token items, with "and" introducing the final item.
+    \\Other uncounted conjunction-separated sequences must remain inline rather than guessed as lists.
     \\Never turn reported or quoted content into a list: an ordinal sequence after say/says/said,
     \\read/reads, quote/quoted, or singular/plural literal quotation-mark cues stays inline and
     \\should use comma punctuation between its ordinal tokens.
@@ -103,6 +105,12 @@ pub const polished_policy_prompt =
     \\Example tokens 0:Bring 1:three 2:items 3:apples 4:bananas 5:and 6:pears
     \\require a colon after token 2, a period after token 6, and lists exactly
     \\[{"start_token":3,"end_token":7,"items":[{"start_token":3},{"start_token":4},{"start_token":5}],"kind":"bullet"}].
+    \\Example tokens 0:Can 1:you 2:bring 3:me 4:these 5:things 6:apple 7:banana
+    \\8:and 9:pears require a colon after token 5, a question after token 9, and lists exactly
+    \\[{"start_token":6,"end_token":10,"items":[{"start_token":6},{"start_token":7},{"start_token":8}],"kind":"bullet"}].
+    \\Example tokens 0:I 1:have 2:these 3:three 4:rules 5:in 6:my 7:life
+    \\8:commitment 9:focus 10:and 11:passion require a colon after token 7, a period
+    \\after token 11, and the same three-item bullet structure beginning at token 8.
     \\A conjunction introducing the final item belongs at that item's start; never attach it
     \\to the previous item and never delete it.
     \\Negative list example: tokens 0:The 1:button 2:says 3:first 4:second 5:third
