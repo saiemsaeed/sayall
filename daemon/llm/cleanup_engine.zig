@@ -89,7 +89,7 @@ fn numberWord(word: []const u8) ?usize {
 }
 
 fn countedListNoun(word: []const u8) bool {
-    for ([_][]const u8{ "items", "things", "fruits", "projects", "tasks", "points", "options", "steps", "reasons", "rules", "examples", "files", "changes", "questions", "ideas" }) |candidate| if (asciiEq(word, candidate)) return true;
+    for ([_][]const u8{ "items", "things", "fruits", "projects", "tasks", "points", "options", "steps", "reasons", "rules", "problems", "examples", "files", "changes", "questions", "ideas" }) |candidate| if (asciiEq(word, candidate)) return true;
     return false;
 }
 
@@ -722,10 +722,17 @@ fn validListEvidence(tokens: []const Token, list: List) bool {
     const remaining = list.end_token - list.start_token;
     const has_and = remaining >= 3 and asciiEq(tokens[list.end_token - 2].text, "and");
     const item_count = remaining - @intFromBool(has_and);
-    if (item_count != expected_count) return false;
+    if (item_count == expected_count) {
+        for (list.items, 0..) |item, item_index| {
+            const expected = if (has_and and item_index == expected_count - 1) list.end_token - 2 else list.start_token + item_index;
+            if (item.start_token != expected) return false;
+        }
+        return true;
+    }
+    if (has_and or remaining != expected_count * 2) return false;
     for (list.items, 0..) |item, item_index| {
-        const expected = if (has_and and item_index == expected_count - 1) list.end_token - 2 else list.start_token + item_index;
-        if (item.start_token != expected) return false;
+        const expected = list.start_token + item_index * 2;
+        if (item.start_token != expected or !asciiEq(tokens[item.start_token].text, tokens[list.start_token].text)) return false;
     }
     return true;
 }
@@ -926,6 +933,16 @@ test "polished accepts a demonstrative list without a spoken count" {
     const bridged = try polished(std.testing.allocator, bridged_source, &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &bridged_punctuation, .paragraph_breaks = &.{}, .lists = &bridged_lists });
     defer std.testing.allocator.free(bridged);
     try std.testing.expectEqualStrings("I have these rules in my life:\n- commitment\n- focus\n- and passion.", bridged);
+}
+
+test "polished accepts counted repeated-label multi-token items" {
+    const source = "We have four problems problem one problem two problem three problem four";
+    const punctuation_marks = [_]Punctuation{ .{ .after_token = 3, .mark = .colon }, .{ .after_token = 11, .mark = .period } };
+    const items = [_]ListAnchor{ .{ .start_token = 4 }, .{ .start_token = 6 }, .{ .start_token = 8 }, .{ .start_token = 10 } };
+    const lists = [_]List{.{ .start_token = 4, .end_token = 12, .items = &items, .kind = .bullet }};
+    const out = try polished(std.testing.allocator, source, &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &punctuation_marks, .paragraph_breaks = &.{}, .lists = &lists });
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("We have four problems:\n- problem one\n- problem two\n- problem three\n- problem four.", out);
 }
 
 test "polished rejects punctuation that splits a conditional question" {

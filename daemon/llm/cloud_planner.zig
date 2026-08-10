@@ -69,7 +69,7 @@ pub const polished_policy_prompt =
     \\first/second/third-style enumerators or an explicit item-count/list introduction. Preserve
     \\spoken enumerators and conjunctions; generated list markers never replace source tokens.
     \\Counted introductions include nouns such as items, things, fruits, projects, tasks, options,
-    \\steps, points, and rules, but the spoken count must exactly match the item anchors. An explicit
+    \\steps, points, rules, and problems, but the spoken count must exactly match the item anchors. An explicit
     \\"these" plus one of those plural list nouns also introduces a list without a count only when
     \\followed by at least three clear single-token items, with "and" introducing the final item.
     \\Other uncounted conjunction-separated sequences must remain inline rather than guessed as lists.
@@ -111,6 +111,9 @@ pub const polished_policy_prompt =
     \\Example tokens 0:I 1:have 2:these 3:three 4:rules 5:in 6:my 7:life
     \\8:commitment 9:focus 10:and 11:passion require a colon after token 7, a period
     \\after token 11, and the same three-item bullet structure beginning at token 8.
+    \\Example tokens 0:We 1:have 2:four 3:problems 4:problem 5:one 6:problem
+    \\7:two 8:problem 9:three 10:problem 11:four require a colon after token 3, a period
+    \\after token 11, and list item anchors exactly 4, 6, 8, and 10.
     \\A conjunction introducing the final item belongs at that item's start; never attach it
     \\to the previous item and never delete it.
     \\Negative list example: tokens 0:The 1:button 2:says 3:first 4:second 5:third
