@@ -69,7 +69,7 @@ pub const polished_policy_prompt =
     \\first/second/third-style enumerators or an explicit item-count/list introduction. Preserve
     \\spoken enumerators and conjunctions; generated list markers never replace source tokens.
     \\Counted introductions include nouns such as items, fruits, projects, tasks, options, steps,
-    \\and points, but the spoken count must exactly match the item anchors. Without a count or
+    \\points, and rules, but the spoken count must exactly match the item anchors. Without a count or
     \\ordinal enumerators, keep a conjunction-separated sequence inline rather than guessing a list.
     \\Never turn reported or quoted content into a list: an ordinal sequence after say/says/said,
     \\read/reads, quote/quoted, or singular/plural literal quotation-mark cues stays inline and

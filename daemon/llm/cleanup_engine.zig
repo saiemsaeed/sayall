@@ -84,7 +84,7 @@ pub fn polishedBaseline(gpa: Allocator, transcript: []const u8, glossary: []cons
         var i: usize = 0;
         while (i + 2 < tokens.len) : (i += 1) if (numberWord(tokens[i].text)) |count| {
             if (!countedListNoun(tokens[i + 1].text)) continue;
-            const start = i + 2;
+            const start = countedListStart(tokens, i + 1);
             const remaining = tokens.len - start;
             const has_and = remaining >= 3 and asciiEq(tokens[tokens.len - 2].text, "and");
             const item_count = remaining - @intFromBool(has_and);
@@ -95,7 +95,7 @@ pub fn polishedBaseline(gpa: Allocator, transcript: []const u8, glossary: []cons
                 try anchors.append(gpa, .{ .start_token = item });
             }
             list_start = start;
-            try punctuation_ops.append(gpa, .{ .after_token = i + 1, .mark = .colon });
+            try punctuation_ops.append(gpa, .{ .after_token = start - 1, .mark = .colon });
             sufficient = true;
             break;
         };
@@ -186,8 +186,14 @@ fn numberWord(word: []const u8) ?usize {
 }
 
 fn countedListNoun(word: []const u8) bool {
-    for ([_][]const u8{ "items", "things", "fruits", "projects", "tasks", "points", "options", "steps", "reasons", "examples", "files", "changes", "questions", "ideas" }) |candidate| if (asciiEq(word, candidate)) return true;
+    for ([_][]const u8{ "items", "things", "fruits", "projects", "tasks", "points", "options", "steps", "reasons", "rules", "examples", "files", "changes", "questions", "ideas" }) |candidate| if (asciiEq(word, candidate)) return true;
     return false;
+}
+
+fn countedListStart(tokens: []const Token, noun: usize) usize {
+    const direct = noun + 1;
+    if (direct + 3 <= tokens.len and asciiEq(tokens[direct].text, "in") and asciiEq(tokens[direct + 1].text, "my") and asciiEq(tokens[direct + 2].text, "life")) return direct + 3;
+    return direct;
 }
 
 /// Deterministic conservative cleanup. The returned slice is allocator-owned.
@@ -818,15 +824,24 @@ fn validListEvidence(tokens: []const Token, list: List) bool {
     }
     if (ordinal_proof) return true;
 
-    if (list.start_token < 2 or list.end_token != tokens.len) return false;
-    const count = numberWord(tokens[list.start_token - 2].text) orelse return false;
-    if (!countedListNoun(tokens[list.start_token - 1].text) or list.items.len != count) return false;
+    if (list.end_token != tokens.len) return false;
+    var count: ?usize = null;
+    var i: usize = 0;
+    while (i + 1 < list.start_token) : (i += 1) {
+        const candidate = numberWord(tokens[i].text) orelse continue;
+        if (countedListNoun(tokens[i + 1].text) and countedListStart(tokens, i + 1) == list.start_token) {
+            count = candidate;
+            break;
+        }
+    }
+    const expected_count = count orelse return false;
+    if (list.items.len != expected_count) return false;
     const remaining = list.end_token - list.start_token;
     const has_and = remaining >= 3 and asciiEq(tokens[list.end_token - 2].text, "and");
     const item_count = remaining - @intFromBool(has_and);
-    if (item_count != count) return false;
-    for (list.items, 0..) |item, i| {
-        const expected = if (has_and and i == count - 1) list.end_token - 2 else list.start_token + i;
+    if (item_count != expected_count) return false;
+    for (list.items, 0..) |item, item_index| {
+        const expected = if (has_and and item_index == expected_count - 1) list.end_token - 2 else list.start_token + item_index;
         if (item.start_token != expected) return false;
     }
     return true;
@@ -866,6 +881,8 @@ test "polished baseline conservative formatting and coverage" {
         .{ .input = "can you work on these three projects education finance and upholding", .expected = "Can you work on these three projects:\n- education\n- finance\n- and upholding?", .sufficient = true },
         .{ .input = "can you bring me these four items apple banana and pears", .expected = "Can you bring me these four items apple banana and pears?", .sufficient = true },
         .{ .input = "bring four items apple banana orange and pears", .expected = "Bring four items:\n- apple\n- banana\n- orange\n- and pears.", .sufficient = true },
+        .{ .input = "I have three rules in my life commitment focus and passion", .expected = "I have three rules in my life:\n- commitment\n- focus\n- and passion.", .sufficient = true },
+        .{ .input = "I have these three rules in my life commitment focus and passion", .expected = "I have these three rules in my life:\n- commitment\n- focus\n- and passion.", .sufficient = true },
         .{ .input = "can you bring me these items apple bananas and pears", .expected = "Can you bring me these items apple bananas and pears?", .sufficient = true },
         .{ .input = "The button says first second third", .expected = "The button says first, second, third.", .sufficient = true },
         .{ .input = "The button says quotation mark start first second third quotation mark end", .expected = "The button says quotation mark start first, second, third quotation mark end.", .sufficient = true },
@@ -1007,6 +1024,16 @@ test "polished rejects a conjunction as a counted list item" {
     const items = [_]ListAnchor{ .{ .start_token = 7 }, .{ .start_token = 8 }, .{ .start_token = 9 }, .{ .start_token = 10 } };
     const lists = [_]List{.{ .start_token = 7, .end_token = 11, .items = &items, .kind = .bullet }};
     try expectInvalidPlan(source, &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &lists });
+}
+
+test "polished accepts a counted list after an explicit bridge" {
+    const source = "I have three rules in my life commitment focus and passion";
+    const punctuation_marks = [_]Punctuation{ .{ .after_token = 6, .mark = .colon }, .{ .after_token = 10, .mark = .period } };
+    const items = [_]ListAnchor{ .{ .start_token = 7 }, .{ .start_token = 8 }, .{ .start_token = 9 } };
+    const lists = [_]List{.{ .start_token = 7, .end_token = 11, .items = &items, .kind = .bullet }};
+    const out = try polished(std.testing.allocator, source, &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &punctuation_marks, .paragraph_breaks = &.{}, .lists = &lists });
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("I have three rules in my life:\n- commitment\n- focus\n- and passion.", out);
 }
 
 test "polished rejects provider deletion plans" {
