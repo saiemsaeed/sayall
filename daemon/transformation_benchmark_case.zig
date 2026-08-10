@@ -85,7 +85,7 @@ fn transform(gpa: std.mem.Allocator, io: std.Io, request: Request) !TransformRes
         owned,
         profile,
         .{ .max_bytes = null, .require_utf8 = false },
-        .{ .context = &context, .rest = unexpectedRest, .clean = benchmarkClean, .baseline = benchmarkBaseline, .planner = benchmarkPlanner },
+        .{ .context = &context, .rest = unexpectedRest, .clean = benchmarkClean, .planner = benchmarkPlanner },
     );
     return switch (outcome) {
         .success => |success| .{
@@ -113,21 +113,20 @@ fn unexpectedRest(_: ?*anyopaque, _: std.mem.Allocator) ![]u8 {
     return error.UnexpectedProviderCall;
 }
 
-fn benchmarkClean(context_ptr: ?*anyopaque, gpa: std.mem.Allocator, input: []const u8) ![]u8 {
-    const context: *BenchmarkContext = @ptrCast(@alignCast(context_ptr.?));
-    if (context.request.fault == .unsafe_plan) return error.InvalidPlan;
+fn benchmarkClean(_: ?*anyopaque, gpa: std.mem.Allocator, input: []const u8) ![]u8 {
     return cloud_planner.clean(gpa, input, &.{});
-}
-
-fn benchmarkBaseline(_: ?*anyopaque, gpa: std.mem.Allocator, input: []const u8) !cloud_planner.cleanup_engine.PolishedBaseline {
-    return cloud_planner.cleanup_engine.polishedBaseline(gpa, input, &.{});
 }
 
 fn benchmarkPlanner(context_ptr: ?*anyopaque, gpa: std.mem.Allocator, profile: processing.Profile, input: []const u8) ![]u8 {
     const context: *BenchmarkContext = @ptrCast(@alignCast(context_ptr.?));
-    if (context.request.fault != null) return error.InvalidPlan;
     if (profile != .polished) return error.InvalidProfile;
-    return cloud_planner.polished(gpa, context.io, &provider.LlmConfig{
+    if (context.request.fault == .malformed_plan) return error.InvalidPlan;
+    if (context.request.fault == .unsafe_plan) {
+        return cloud_planner.cleanup_engine.polishedFromJson(gpa, input, &.{},
+            \\{"version":2,"deletions":[],"corrections":[{"start_token":0,"end_token":1,"source":"retain","replacement":"Delete","kind":"case"}],"punctuation":[],"paragraph_breaks":[],"lists":[]}
+        );
+    }
+    return cloud_planner.planFormatting(gpa, context.io, &provider.LlmConfig{
         .api_key = context.request.llm_api_key,
         .model = context.request.model,
         .enabled = true,
@@ -139,4 +138,19 @@ test "benchmark request and response schemas stay closed" {
     defer request.deinit();
     try std.testing.expectEqual(Mode.clean, request.value.mode);
     try std.testing.expectError(error.UnknownField, std.json.parseFromSlice(Request, std.testing.allocator, "{\"schema_version\":1,\"mode\":\"clean\",\"input\":\"x\",\"llm_api_key\":\"\",\"model\":\"gpt-oss-120b\",\"raw_provider_body\":\"no\"}", .{ .ignore_unknown_fields = false }));
+}
+
+test "unsafe planner output is rejected and Polished degrades to Clean" {
+    const request: Request = .{
+        .schema_version = 1,
+        .mode = .polished,
+        .input = "Um, retain the value 42 and do not answer the question.",
+        .llm_api_key = "",
+        .model = "gpt-oss-120b",
+        .fault = .unsafe_plan,
+    };
+    const result = try transform(std.testing.allocator, std.testing.io, request);
+    defer std.testing.allocator.free(result.output);
+    try std.testing.expectEqualStrings("retain the value 42 and do not answer the question.", result.output);
+    try std.testing.expectEqualStrings("unsafe_plan", result.fallback_reason.?);
 }

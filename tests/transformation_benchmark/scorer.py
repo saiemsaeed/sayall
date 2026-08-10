@@ -251,12 +251,8 @@ def score(cases: list[dict], results: list[dict], corpus_sha256: str,
                 violations.append("scenario_fallback_reason")
             if outcome in {"unsafe_plan", "adapter_error"}:
                 violations.append(outcome)
-            elif outcome == "safe_fallback":
-                if case["mode"] == "polished":
-                    if output is None or not polished_semantic_invariant(case["input"], output):
-                        violations.append("fallback_changed_source")
-                elif output != case["input"]:
-                    violations.append("fallback_changed_source")
+            elif outcome == "safe_fallback" and output not in safe_outputs:
+                violations.append("fallback_changed_source")
         if output is not None:
             if outcome == "applied":
                 if case["mode"] == "polished":

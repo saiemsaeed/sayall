@@ -95,9 +95,7 @@ def run_case(case: dict, runner: pathlib.Path, api_key: str, model: str,
                           (case["mode"] != "polished" and response["output"] not in safe_outputs)))
     fallback_is_unsafe = (response["outcome"] == "safe_fallback" and
                           (not isinstance(response["output"], str) or
-                           (case["mode"] == "polished" and
-                            not polished_semantic_invariant(case["input"], response["output"])) or
-                           (case["mode"] != "polished" and response["output"] not in safe_outputs)))
+                           response["output"] not in safe_outputs))
     unsafe_output = (applied_is_unsafe
                      or fallback_is_unsafe
                      or (response["outcome"] == "adapter_error" and response["output"] is not None))

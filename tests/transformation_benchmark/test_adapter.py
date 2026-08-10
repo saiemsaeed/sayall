@@ -62,14 +62,14 @@ class AdapterTests(unittest.TestCase):
 
     def test_no_credential_runs_production_fallback_without_live_provider(self):
         response = {"schema_version": 1, "outcome": "safe_fallback",
-                    "output": "Synthetic input.", "fallback_reason": "missing_credential"}
+                    "output": "Synthetic input", "fallback_reason": "missing_credential"}
         completed = subprocess.CompletedProcess([], 0, stdout=json.dumps(response).encode())
         with mock.patch("adapter.subprocess.run", return_value=completed) as subprocess_run:
             result = run_case(POLISHED_CASE, pathlib.Path("runner"), "", "model", "version", 1)
         subprocess_run.assert_called_once()
         self.assertEqual(result["outcome"], "safe_fallback")
         self.assertEqual(result["fallback_reason"], "missing_credential")
-        self.assertEqual(result["output"], "Synthetic input.")
+        self.assertEqual(result["output"], "Synthetic input")
         self.assertEqual(result["provider"]["invocation_mode"], "not_attempted_no_credential")
 
     def test_no_live_provider_ignores_local_credential(self):

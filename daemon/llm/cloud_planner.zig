@@ -77,8 +77,9 @@ pub const polished_policy_prompt =
     \\Use bullet lists when spoken ordinal enumerators are present to avoid duplicate numbering.
     \\Capitalize the first ordinary source token of each sentence and list item with a one-token
     \\case correction; do not case-change acronyms, technical tokens, quotes, or glossary values.
-    \\Every non-list mid-transcript case correction that capitalizes a new sentence must be paired
-    \\with sentence-ending punctuation on the preceding token; never capitalize without its boundary.
+    \\Case correction never proves a sentence boundary. Request punctuation only where the spoken
+    \\structure warrants it, never merely to justify capitalization. In particular, capitalizing the
+    \\pronoun i must never cause punctuation after if, an auxiliary, or another preceding token.
     \\items must be a JSON array of objects, each with one integer start_token field, never a
     \\string or concatenated value.
     \\Allowed corrections are one-token capitalization and exact glossary spelling. Deletions
@@ -94,6 +95,8 @@ pub const polished_policy_prompt =
     \\Example tokens 0:I 1:have 2:income 3:do 4:you 5:think 6:I 7:qualify are
     \\two clauses, not three: add a period after token 2, capitalize token 3, and add a
     \\question after token 7. Never add punctuation after token 5 before the embedded I.
+    \\Example tokens 0:Okay 1:if 2:I 3:have 4:income 5:can 6:I 7:qualify are one
+    \\conditional question: never add punctuation after tokens 1 or 5; add a question after token 7.
     \\Example tokens 0:First 1:validate 2:corpus 3:second 4:run 5:scorer 6:third
     \\7:inspect 8:report require lists exactly
     \\[{"start_token":0,"end_token":9,"items":[{"start_token":0},{"start_token":3},{"start_token":6}],"kind":"bullet"}].
@@ -162,24 +165,9 @@ pub fn cleanup(gpa: Allocator, io: Io, cfg: *const config.LlmConfig, keyterms: [
     };
 }
 
-/// Performs exactly one provider call. Invalid plans remain errors so the
-/// processing pipeline can retain its deterministic Polished baseline.
-pub fn polished(gpa: Allocator, io: Io, cfg: *const config.LlmConfig, keyterms: []const []const u8, transcript: []const u8, verbose: bool) CleanupError![]u8 {
-    const cleaned = clean(gpa, transcript, keyterms) catch |e| switch (e) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return error.InvalidPlan,
-    };
-    defer gpa.free(cleaned);
-    return polishedPlan(gpa, io, cfg, keyterms, cleaned, verbose);
-}
-
-/// Performs the same source-anchored planning and local validation as
-/// `polished`, but deliberately skips deterministic cleanup first.
-pub fn polishedRaw(gpa: Allocator, io: Io, cfg: *const config.LlmConfig, keyterms: []const []const u8, transcript: []const u8, verbose: bool) CleanupError![]u8 {
-    return polishedPlan(gpa, io, cfg, keyterms, transcript, verbose);
-}
-
-fn polishedPlan(gpa: Allocator, io: Io, cfg: *const config.LlmConfig, keyterms: []const []const u8, transcript: []const u8, verbose: bool) CleanupError![]u8 {
+/// Performs exactly one source-anchored formatting request and renders only
+/// locally validated operations. The caller owns whether input is raw or Clean.
+pub fn planFormatting(gpa: Allocator, io: Io, cfg: *const config.LlmConfig, keyterms: []const []const u8, transcript: []const u8, verbose: bool) CleanupError![]u8 {
     if (cfg.api_key.len == 0) return error.MissingApiKey;
     if (!isFormatterModelSupported(cfg.model)) return error.BadResponse;
     const tokens = cleanup_engine.tokenize(gpa, transcript) catch |e| switch (e) {

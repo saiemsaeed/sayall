@@ -252,7 +252,7 @@ class ScoringTests(unittest.TestCase):
     def test_unsafe_plan_outcome_is_a_hard_failure(self):
         cases, digest = load_cases()
         results = [result(case) for case in cases]
-        target = next(case for case in cases if case["id"] == "clean-unsafe-plan-fallback")
+        target = next(case for case in cases if case["id"] == "polished-unsafe-plan-fallback")
         results[cases.index(target)] = result(target, output=None, outcome="unsafe_plan")
         report = score(cases, results, digest)
         scored = next(item for item in report["cases"] if item["case_id"] == target["id"])

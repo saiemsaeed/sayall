@@ -488,7 +488,7 @@ where
         }
         Ok(DeliveryCompletion::Failed { error, warning }) => {
             let message = if warning == Some(worker::Warning::TransformationFailed) {
-                format!("transformation failed; raw transcript delivery also failed: {error}")
+                format!("transformation failed; safe fallback delivery also failed: {error}")
             } else {
                 error
             };
@@ -527,12 +527,12 @@ fn terminal_message(
     if warning == Some(worker::Warning::TransformationFailed) {
         return match outcome {
             desktop::DeliveryOutcome::ClipboardFallback => {
-                "transformation failed; typing failed and raw transcript was copied to clipboard"
+                "transformation failed; typing failed and safe fallback was copied to clipboard"
             }
             desktop::DeliveryOutcome::Clipboard => {
-                "transformation failed; raw transcript copied to clipboard"
+                "transformation failed; safe fallback copied to clipboard"
             }
-            _ => "transformation failed; raw transcript delivered",
+            _ => "transformation failed; safe fallback delivered",
         };
     }
     match outcome {
@@ -814,14 +814,14 @@ mod tests {
                 desktop::DeliveryOutcome::Typed,
                 Some(worker::Warning::TransformationFailed)
             ),
-            "transformation failed; raw transcript delivered"
+            "transformation failed; safe fallback delivered"
         );
         assert_eq!(
             terminal_message(
                 desktop::DeliveryOutcome::ClipboardFallback,
                 Some(worker::Warning::TransformationFailed)
             ),
-            "transformation failed; typing failed and raw transcript was copied to clipboard"
+            "transformation failed; typing failed and safe fallback was copied to clipboard"
         );
     }
 

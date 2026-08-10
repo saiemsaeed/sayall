@@ -514,7 +514,7 @@ final class Coordinator {
     }
 
     nonisolated static func warningMessage(for warning: String?) -> String? {
-        warning == "transformation_failed" ? "Transformation failed; used the raw transcript." : nil
+        warning == "transformation_failed" ? "Transformation failed; used the safe fallback." : nil
     }
 
     nonisolated static func batchRequest(config: ProviderSettings, wavPath: String) -> HelperRequest {

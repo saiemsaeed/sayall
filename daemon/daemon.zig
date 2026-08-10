@@ -107,8 +107,7 @@ fn providerPlanner(context_ptr: ?*anyopaque, gpa: Allocator, profile: config.pro
     d.setStage(.cleaning);
     const started = d.nowMs();
     const cleaned = switch (profile) {
-        .polished => cloud_planner.polished(gpa, d.io, &d.cfg.llm, d.cfg.stt.keyterms, raw, d.cfg.verbose),
-        .ai_only => cloud_planner.polishedRaw(gpa, d.io, &d.cfg.llm, d.cfg.stt.keyterms, raw, d.cfg.verbose),
+        .polished, .ai_only => cloud_planner.planFormatting(gpa, d.io, &d.cfg.llm, d.cfg.stt.keyterms, raw, d.cfg.verbose),
         .legacy_v1 => cloud_planner.cleanup(gpa, d.io, &d.cfg.llm, d.cfg.stt.keyterms, raw, d.cfg.verbose),
         else => error.InvalidProfile,
     } catch |err| {
@@ -125,12 +124,6 @@ fn providerClean(context_ptr: ?*anyopaque, gpa: Allocator, raw: []const u8) ![]u
     const context: *ProviderContext = @ptrCast(@alignCast(context_ptr.?));
     context.daemon.setStage(.cleaning);
     return cloud_planner.clean(gpa, raw, context.daemon.cfg.stt.keyterms);
-}
-
-fn providerBaseline(context_ptr: ?*anyopaque, gpa: Allocator, raw: []const u8) !cloud_planner.cleanup_engine.PolishedBaseline {
-    const context: *ProviderContext = @ptrCast(@alignCast(context_ptr.?));
-    context.daemon.setStage(.cleaning);
-    return cloud_planner.cleanup_engine.polishedBaseline(gpa, raw, context.daemon.cfg.stt.keyterms);
 }
 
 fn annotateProcessingMetrics(context: *ProviderContext, profile: config.processing.Profile, outcome: config.processing.TransformationOutcome) void {
@@ -831,7 +824,6 @@ fn pipelineMain(d: *Daemon, job: PipelineJob) void {
         .context = &provider_context,
         .rest = providerRest,
         .clean = providerClean,
-        .baseline = providerBaseline,
         .planner = providerPlanner,
     }) catch |err| {
         completion_reason = "transcription_failed";

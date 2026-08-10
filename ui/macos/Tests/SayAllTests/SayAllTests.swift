@@ -1128,7 +1128,7 @@ final class ProcessingOwnershipTests: XCTestCase {
 
     func testTransformationWarningIsProductNeutralAndUnknownWarningsAreIgnored() {
         XCTAssertEqual(Coordinator.warningMessage(for: "transformation_failed"),
-            "Transformation failed; used the raw transcript.")
+            "Transformation failed; used the safe fallback.")
         XCTAssertNil(Coordinator.warningMessage(for: "future_warning"))
         XCTAssertNil(Coordinator.warningMessage(for: nil))
     }
@@ -1136,9 +1136,9 @@ final class ProcessingOwnershipTests: XCTestCase {
     @MainActor
     func testWarningPresenterFallsBackToAlertOnlyWhenNotificationFails() async {
         var alerts: [String] = []
-        await WarningPresenter.present(message: "Transformation failed; used the raw transcript.",
+        await WarningPresenter.present(message: "Transformation failed; used the safe fallback.",
             notify: { false }, showAlert: { alerts.append($0) })
-        XCTAssertEqual(alerts, ["Transformation failed; used the raw transcript."])
+        XCTAssertEqual(alerts, ["Transformation failed; used the safe fallback."])
 
         await WarningPresenter.present(message: "delivered", notify: { true },
             showAlert: { alerts.append($0) })
