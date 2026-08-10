@@ -91,6 +91,9 @@ pub const polished_policy_prompt =
     \\8:data are two adjacent complete clauses and require punctuation exactly
     \\[{"after_token":3,"mark":"period"},{"after_token":8,"mark":"period"}] plus corrections exactly
     \\[{"start_token":4,"end_token":5,"source":"it","replacement":"It","kind":"case"}].
+    \\Example tokens 0:I 1:have 2:income 3:do 4:you 5:think 6:I 7:qualify are
+    \\two clauses, not three: add a period after token 2, capitalize token 3, and add a
+    \\question after token 7. Never add punctuation after token 5 before the embedded I.
     \\Example tokens 0:First 1:validate 2:corpus 3:second 4:run 5:scorer 6:third
     \\7:inspect 8:report require lists exactly
     \\[{"start_token":0,"end_token":9,"items":[{"start_token":0},{"start_token":3},{"start_token":6}],"kind":"bullet"}].

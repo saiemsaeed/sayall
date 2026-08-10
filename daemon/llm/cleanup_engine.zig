@@ -103,14 +103,6 @@ pub fn polishedBaseline(gpa: Allocator, transcript: []const u8, glossary: []cons
     if (list_start) |start| try lists.append(gpa, .{ .start_token = start, .end_token = tokens.len, .items = anchors.items, .kind = .bullet });
     if (!decorated and try reportedOrdinalPunctuation(gpa, cleaned, tokens, &punctuation_ops)) sufficient = true;
 
-    // Deepgram can preserve the capital at an inferred sentence boundary
-    // without supplying punctuation. Recover only the narrow, unambiguous
-    // pronoun boundary; proper names and acronyms remain untouched.
-    if (!decorated) for (tokens[1..], 1..) |token, i| {
-        if (i < 3 or dependentClauseStarter(tokens[0].text) or !sentenceStarterPronoun(token.text) or hasFixedTrailingPunctuation(cleaned, tokens[i - 1])) continue;
-        try punctuation_ops.append(gpa, .{ .after_token = i - 1, .mark = .period });
-    };
-
     const question = directQuestion(tokens[0].text);
     if (question) sufficient = true;
     if (!decorated and !hasTerminalPunctuation(cleaned, tokens[tokens.len - 1]) and safeOrdinary(cleaned, tokens[tokens.len - 1])) {
@@ -143,11 +135,6 @@ fn directQuestion(word: []const u8) bool {
 
 fn sentenceStarterPronoun(word: []const u8) bool {
     for ([_][]const u8{ "I", "It", "This", "That", "These", "Those", "We", "You", "He", "She", "They", "There" }) |candidate| if (std.mem.eql(u8, word, candidate)) return true;
-    return false;
-}
-
-fn dependentClauseStarter(word: []const u8) bool {
-    for ([_][]const u8{ "if", "when", "whenever", "while", "because", "although", "though", "unless", "until", "once", "before", "after", "since", "whether" }) |candidate| if (asciiEq(word, candidate)) return true;
     return false;
 }
 
@@ -878,10 +865,11 @@ test "polished baseline conservative formatting and coverage" {
     const cases = [_]Case{
         .{ .input = "can we ship tomorrow", .expected = "Can we ship tomorrow?", .sufficient = true },
         .{ .input = "ordinary sentence", .expected = "Ordinary sentence.", .sufficient = false },
-        .{ .input = "This fixture is synthetic It contains no user data", .expected = "This fixture is synthetic. It contains no user data.", .sufficient = false },
+        .{ .input = "This fixture is synthetic It contains no user data", .expected = "This fixture is synthetic It contains no user data.", .sufficient = false },
         .{ .input = "If I have a good salary", .expected = "If I have a good salary.", .sufficient = false },
         .{ .input = "If the salary I receive is enough", .expected = "If the salary I receive is enough.", .sufficient = false },
         .{ .input = "Okay It works", .expected = "Okay It works.", .sufficient = false },
+        .{ .input = "I have around six one four one gross salary do you think I can avail wbs", .expected = "I have around six one four one gross salary do you think I can avail wbs.", .sufficient = false },
         .{ .input = "um ordinary sentence", .expected = "Ordinary sentence.", .sufficient = false },
         .{ .input = "first validate corpus second run scorer third inspect report", .expected = "- First validate corpus\n- second run scorer\n- third inspect report.", .sufficient = true },
         .{ .input = "bring three items apples bananas and pears", .expected = "Bring three items:\n- apples\n- bananas\n- and pears.", .sufficient = true },
