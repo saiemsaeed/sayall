@@ -393,6 +393,7 @@ test "processing migration matrix and explicit mode precedence" {
         .{ .json = "{\"processing\":{\"mode\":\"verbatim\"},\"llm\":{\"enabled\":true}}", .expected = .verbatim },
         .{ .json = "{\"processing\":{\"mode\":\"clean\"},\"llm\":{\"enabled\":true}}", .expected = .clean },
         .{ .json = "{\"processing\":{\"mode\":\"polished\"},\"llm\":{\"enabled\":false}}", .expected = .polished },
+        .{ .json = "{\"processing\":{\"mode\":\"ai_only\"},\"llm\":{\"enabled\":false}}", .expected = .ai_only },
     }) |case| {
         const parsed = try std.json.parseFromSlice(Config, std.testing.allocator, case.json, .{});
         defer parsed.deinit();

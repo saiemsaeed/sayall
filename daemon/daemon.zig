@@ -108,11 +108,12 @@ fn providerPlanner(context_ptr: ?*anyopaque, gpa: Allocator, profile: config.pro
     const started = d.nowMs();
     const cleaned = switch (profile) {
         .polished => cloud_planner.polished(gpa, d.io, &d.cfg.llm, d.cfg.stt.keyterms, raw, d.cfg.verbose),
+        .ai_only => cloud_planner.polishedRaw(gpa, d.io, &d.cfg.llm, d.cfg.stt.keyterms, raw, d.cfg.verbose),
         .legacy_v1 => cloud_planner.cleanup(gpa, d.io, &d.cfg.llm, d.cfg.stt.keyterms, raw, d.cfg.verbose),
         else => error.InvalidProfile,
     } catch |err| {
         context.planner_latency_ms = @intCast(@max(0, d.nowMs() - started));
-        d.log("llm cleanup failed: {s} — using deterministic baseline", .{@errorName(err)});
+        d.log("llm cleanup failed: {s} — using safe processing fallback", .{@errorName(err)});
         return err;
     };
     context.planner_latency_ms = @intCast(@max(0, d.nowMs() - started));

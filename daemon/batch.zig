@@ -319,6 +319,7 @@ fn liveBaseline(_: ?*anyopaque, gpa: std.mem.Allocator, keyterms: []const []cons
 fn livePlanner(_: ?*anyopaque, gpa: std.mem.Allocator, io: std.Io, cfg: *const provider.LlmConfig, keyterms: []const []const u8, profile: processing.Profile, raw: []const u8) ![]u8 {
     return switch (profile) {
         .polished => cloud_planner.polished(gpa, io, cfg, keyterms, raw, false),
+        .ai_only => cloud_planner.polishedRaw(gpa, io, cfg, keyterms, raw, false),
         .legacy_v1 => cloud_planner.cleanup(gpa, io, cfg, keyterms, raw, false),
         else => error.InvalidProfile,
     };
@@ -333,6 +334,7 @@ const FakeProvider = struct {
     clean_calls: usize = 0,
     planner_calls: usize = 0,
     polished_calls: usize = 0,
+    ai_only_calls: usize = 0,
     legacy_calls: usize = 0,
     invalid_polished_plan: bool = false,
     valid_no_change_plan: bool = false,
@@ -359,6 +361,7 @@ const FakeProvider = struct {
         self.planner_calls += 1;
         switch (profile) {
             .polished => self.polished_calls += 1,
+            .ai_only => self.ai_only_calls += 1,
             .legacy_v1 => self.legacy_calls += 1,
             else => return error.InvalidProfile,
         }
@@ -491,7 +494,7 @@ test "REST fallback preserves polished profile with degraded baseline" {
     try std.testing.expectEqualStrings("Streamed.", streamed.text.?);
 }
 
-test "protocol v3 routes clean polished and legacy engines by profile" {
+test "protocol v3 routes clean polished AI-only and legacy engines by profile" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     const path = try writeTestWav(&tmp, 16_000);
@@ -525,6 +528,13 @@ test "protocol v3 routes clean polished and legacy engines by profile" {
     try std.testing.expectEqualStrings("polished: Raw.", polished.text.?);
     try std.testing.expectEqual(@as(usize, 1), fake.polished_calls);
     try std.testing.expectEqual(@as(usize, 0), fake.legacy_calls);
+
+    request.processing_profile = .ai_only;
+    const ai_only = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "raw");
+    defer if (ai_only.text) |text| std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("ai_only: raw", ai_only.text.?);
+    try std.testing.expectEqual(@as(usize, 1), fake.ai_only_calls);
+    try std.testing.expectEqual(@as(usize, 1), fake.clean_calls);
 
     request.processing_profile = .legacy_v1;
     const legacy = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "raw");

@@ -89,9 +89,11 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
     let verbatim = CheckButton::with_label("Verbatim — preserve finalized transcription");
     let clean = CheckButton::with_label("Clean — apply deterministic cleanup");
     let polished = CheckButton::with_label("Polished — refine wording and structure");
+    let ai_only = CheckButton::with_label("AI Only — send raw transcription to Cerebras");
     clean.set_group(Some(&verbatim));
     polished.set_group(Some(&verbatim));
-    for button in [&verbatim, &clean, &polished] {
+    ai_only.set_group(Some(&verbatim));
+    for button in [&verbatim, &clean, &polished, &ai_only] {
         button.set_sensitive(false);
     }
     column.append(&heading);
@@ -104,6 +106,7 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
     column.append(&verbatim);
     column.append(&clean);
     column.append(&polished);
+    column.append(&ai_only);
     column.append(&login);
     window.set_child(Some(&column));
     let enable_for_click = enable_shortcut.clone();
@@ -135,6 +138,7 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
         let verbatim = verbatim.clone();
         let clean = clean.clone();
         let polished = polished.clone();
+        let ai_only = ai_only.clone();
         let changing = changing.clone();
         let confirmed_mode = confirmed_mode.clone();
         move || {
@@ -151,6 +155,7 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
             let verbatim = verbatim.clone();
             let clean = clean.clone();
             let polished = polished.clone();
+            let ai_only = ai_only.clone();
             let changing = changing.clone();
             let confirmed_mode = confirmed_mode.clone();
             gtk::glib::timeout_add_local(Duration::from_millis(20), move || {
@@ -176,7 +181,7 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
                         init.set_sensitive(false)
                     }
                 }
-                for button in [&verbatim, &clean, &polished] {
+                for button in [&verbatim, &clean, &polished, &ai_only] {
                     button.set_sensitive(config_valid);
                 }
                 if let Ok(mode) = mode {
@@ -186,6 +191,7 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
                         config::ProcessingMode::Verbatim => verbatim.set_active(true),
                         config::ProcessingMode::Clean => clean.set_active(true),
                         config::ProcessingMode::Polished => polished.set_active(true),
+                        config::ProcessingMode::AiOnly => ai_only.set_active(true),
                     }
                     changing.set(false);
                 }
@@ -236,6 +242,7 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
         (verbatim.clone(), config::ProcessingMode::Verbatim),
         (clean.clone(), config::ProcessingMode::Clean),
         (polished.clone(), config::ProcessingMode::Polished),
+        (ai_only.clone(), config::ProcessingMode::AiOnly),
     ] {
         let changing = changing.clone();
         let confirmed_mode = confirmed_mode.clone();
@@ -243,6 +250,7 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
         let verbatim = verbatim.clone();
         let clean = clean.clone();
         let polished = polished.clone();
+        let ai_only = ai_only.clone();
         button.connect_toggled(move |button| {
             if changing.get() || !button.is_active() {
                 return;
@@ -258,6 +266,7 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
                         config::ProcessingMode::Verbatim => verbatim.set_active(true),
                         config::ProcessingMode::Clean => clean.set_active(true),
                         config::ProcessingMode::Polished => polished.set_active(true),
+                        config::ProcessingMode::AiOnly => ai_only.set_active(true),
                     }
                     changing.set(false);
                     mode_status.set_text(&format!("Could not change mode: {error}"));

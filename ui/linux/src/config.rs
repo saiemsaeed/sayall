@@ -180,6 +180,7 @@ pub enum ProcessingMode {
     Verbatim,
     Clean,
     Polished,
+    AiOnly,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -188,6 +189,7 @@ pub enum ProcessingProfile {
     Verbatim,
     Clean,
     Polished,
+    AiOnly,
     LegacyV1,
 }
 
@@ -205,6 +207,7 @@ fn effective_processing_profile(
         Some(ProcessingMode::Verbatim) => ProcessingProfile::Verbatim,
         Some(ProcessingMode::Clean) => ProcessingProfile::Clean,
         Some(ProcessingMode::Polished) => ProcessingProfile::Polished,
+        Some(ProcessingMode::AiOnly) => ProcessingProfile::AiOnly,
         None if legacy_llm_enabled => ProcessingProfile::LegacyV1,
         None => ProcessingProfile::Verbatim,
     }
@@ -219,6 +222,7 @@ pub fn selected_processing_mode() -> io::Result<ProcessingMode> {
             ProcessingProfile::Verbatim => ProcessingMode::Verbatim,
             ProcessingProfile::Clean => ProcessingMode::Clean,
             ProcessingProfile::Polished | ProcessingProfile::LegacyV1 => ProcessingMode::Polished,
+            ProcessingProfile::AiOnly => ProcessingMode::AiOnly,
         },
     )
 }
@@ -290,6 +294,7 @@ fn encode_processing_mode(bytes: &[u8], mode: ProcessingMode) -> io::Result<Vec<
             ProcessingMode::Verbatim => ProcessingProfile::Verbatim,
             ProcessingMode::Clean => ProcessingProfile::Clean,
             ProcessingMode::Polished => ProcessingProfile::Polished,
+            ProcessingMode::AiOnly => ProcessingProfile::AiOnly,
         },
         &llm_api_key,
         &cfg.llm.model,
@@ -397,7 +402,9 @@ fn valid_processing_credentials(
     llm_model: &str,
 ) -> bool {
     match profile {
-        ProcessingProfile::Polished => llm_model == "gpt-oss-120b" && !llm_api_key.is_empty(),
+        ProcessingProfile::Polished | ProcessingProfile::AiOnly => {
+            llm_model == "gpt-oss-120b" && !llm_api_key.is_empty()
+        }
         ProcessingProfile::LegacyV1 => llm_model == "gpt-oss-120b",
         ProcessingProfile::Verbatim | ProcessingProfile::Clean => true,
     }
@@ -786,6 +793,10 @@ mod tests {
             effective_processing_profile(Some(ProcessingMode::Polished), false),
             ProcessingProfile::Polished
         );
+        assert_eq!(
+            effective_processing_profile(Some(ProcessingMode::AiOnly), false),
+            ProcessingProfile::AiOnly
+        );
     }
 
     #[test]
@@ -794,6 +805,10 @@ mod tests {
             serde_json::from_str(r#"{"processing":{"mode":"polished"},"llm":{"enabled":true}}"#)
                 .unwrap();
         assert_eq!(explicit.processing.mode, Some(ProcessingMode::Polished));
+        let ai_only: Config =
+            serde_json::from_str(r#"{"processing":{"mode":"ai_only"},"llm":{"enabled":false}}"#)
+                .unwrap();
+        assert_eq!(ai_only.processing.mode, Some(ProcessingMode::AiOnly));
         assert!(serde_json::from_str::<Config>(r#"{"processing":{"mode":"legacy_v1"}}"#).is_err());
     }
 
@@ -801,6 +816,11 @@ mod tests {
     fn planner_profiles_require_the_supported_model_and_polished_requires_credentials() {
         assert!(valid_processing_credentials(
             ProcessingProfile::Polished,
+            "secret",
+            "gpt-oss-120b"
+        ));
+        assert!(valid_processing_credentials(
+            ProcessingProfile::AiOnly,
             "secret",
             "gpt-oss-120b"
         ));

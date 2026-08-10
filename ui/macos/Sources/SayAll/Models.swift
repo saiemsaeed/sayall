@@ -6,25 +6,28 @@ enum ProcessingProtocol {
 
 enum ProcessingMode: String, Codable, CaseIterable, Equatable {
     case verbatim, clean, polished
+    case aiOnly = "ai_only"
 
-    var title: String { rawValue.capitalized }
+    var title: String { self == .aiOnly ? "AI Only" : rawValue.capitalized }
     var description: String {
         switch self {
         case .verbatim: return "Keep the transcript as spoken"
         case .clean: return "Apply faithful, deterministic cleanup"
         case .polished: return "Restructure for clarity with Cerebras"
+        case .aiOnly: return "Send the raw transcript directly to Cerebras"
         }
     }
 }
 
 enum ProcessingProfile: String, Codable, Equatable {
-    case verbatim, clean, polished, legacyV1 = "legacy_v1"
+    case verbatim, clean, polished, aiOnly = "ai_only", legacyV1 = "legacy_v1"
 
     var title: String {
         switch self {
         case .verbatim: return "Verbatim"
         case .clean: return "Clean"
         case .polished: return "Polished"
+        case .aiOnly: return "AI Only"
         case .legacyV1: return "Legacy"
         }
     }
@@ -34,6 +37,7 @@ enum ProcessingProfile: String, Codable, Equatable {
         case .verbatim: return .verbatim
         case .clean: return .clean
         case .polished, .legacyV1: return .polished
+        case .aiOnly: return .aiOnly
         }
     }
 }

@@ -165,20 +165,30 @@ pub fn cleanup(gpa: Allocator, io: Io, cfg: *const config.LlmConfig, keyterms: [
 /// Performs exactly one provider call. Invalid plans remain errors so the
 /// processing pipeline can retain its deterministic Polished baseline.
 pub fn polished(gpa: Allocator, io: Io, cfg: *const config.LlmConfig, keyterms: []const []const u8, transcript: []const u8, verbose: bool) CleanupError![]u8 {
-    if (cfg.api_key.len == 0) return error.MissingApiKey;
-    if (!isFormatterModelSupported(cfg.model)) return error.BadResponse;
     const cleaned = clean(gpa, transcript, keyterms) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.InvalidPlan,
     };
     defer gpa.free(cleaned);
-    const tokens = cleanup_engine.tokenize(gpa, cleaned) catch |e| switch (e) {
+    return polishedPlan(gpa, io, cfg, keyterms, cleaned, verbose);
+}
+
+/// Performs the same source-anchored planning and local validation as
+/// `polished`, but deliberately skips deterministic cleanup first.
+pub fn polishedRaw(gpa: Allocator, io: Io, cfg: *const config.LlmConfig, keyterms: []const []const u8, transcript: []const u8, verbose: bool) CleanupError![]u8 {
+    return polishedPlan(gpa, io, cfg, keyterms, transcript, verbose);
+}
+
+fn polishedPlan(gpa: Allocator, io: Io, cfg: *const config.LlmConfig, keyterms: []const []const u8, transcript: []const u8, verbose: bool) CleanupError![]u8 {
+    if (cfg.api_key.len == 0) return error.MissingApiKey;
+    if (!isFormatterModelSupported(cfg.model)) return error.BadResponse;
+    const tokens = cleanup_engine.tokenize(gpa, transcript) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.InvalidPlan,
     };
     defer gpa.free(tokens);
     if (tokens.len == 0 or tokens.len > max_tokens) return error.InvalidPlan;
-    const user = makePolishedUserData(gpa, cleaned, tokens, keyterms) catch return error.OutOfMemory;
+    const user = makePolishedUserData(gpa, transcript, tokens, keyterms) catch return error.OutOfMemory;
     defer gpa.free(user);
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
@@ -188,7 +198,7 @@ pub fn polished(gpa: Allocator, io: Io, cfg: *const config.LlmConfig, keyterms: 
         .{ .role = "user", .content = user },
     }, verbose) catch |err| return @errorCast(err);
     defer gpa.free(content);
-    return cleanup_engine.polishedFromJson(gpa, cleaned, keyterms, content) catch |e| switch (e) {
+    return cleanup_engine.polishedFromJson(gpa, transcript, keyterms, content) catch |e| switch (e) {
         error.OutOfMemory => error.OutOfMemory,
         error.InvalidPlan, error.TranscriptTooLarge => error.InvalidPlan,
     };

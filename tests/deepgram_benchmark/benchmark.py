@@ -129,7 +129,7 @@ def validate_result(frame):
     status = frame.get("status")
     if frame.get("version") != 3 or status not in ("success", "no_speech", "error"):
         raise ProtocolError("invalid worker result frame")
-    if frame.get("processing_profile") not in ("verbatim", "clean", "polished", "legacy_v1"):
+    if frame.get("processing_profile") not in ("verbatim", "clean", "polished", "ai_only", "legacy_v1"):
         raise ProtocolError("worker result omitted effective processing profile")
     if frame.get("transport") not in ("rest", "stream"):
         raise ProtocolError("worker result omitted authoritative transport")
