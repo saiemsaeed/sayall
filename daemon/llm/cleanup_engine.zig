@@ -305,7 +305,39 @@ pub fn polished(gpa: Allocator, transcript: []const u8, glossary: []const []cons
         for (list.items) |item| for (plan.corrections) |c| if (item.start_token > c.start_token and item.start_token < c.end_token) return error.InvalidPlan;
         for (plan.corrections) |c| if (list.end_token > c.start_token and list.end_token < c.end_token) return error.InvalidPlan;
     }
-    return renderPolished(gpa, transcript, tokens, deleted, plan);
+
+    // A provider may correctly identify a sentence boundary by capitalizing a
+    // pronoun but omit its paired punctuation. Complete that narrow operation
+    // locally so formatting quality does not depend on provider consistency.
+    var punctuation_ops: std.ArrayList(Punctuation) = .empty;
+    defer punctuation_ops.deinit(gpa);
+    try punctuation_ops.appendSlice(gpa, plan.punctuation);
+    for (plan.corrections) |c| {
+        if (c.kind != .case or c.start_token == 0 or !sentenceStarterPronoun(c.replacement) or layoutAt(plan, c.start_token) != 0) continue;
+        const previous = c.start_token - 1;
+        if (deleted[previous] or protected[previous] or tokens[previous].protected or technical(tokens[previous].text) or hasUnsafeDecoration(transcript, tokens, previous) or hasFixedTrailingPunctuation(transcript, tokens[previous]) or punctuationAfter(plan.punctuation, previous)) continue;
+        try punctuation_ops.append(gpa, .{ .after_token = previous, .mark = .period });
+    }
+    if (punctuation_ops.items.len + operation_count - plan.punctuation.len > max_operations) return error.InvalidPlan;
+    std.mem.sort(Punctuation, punctuation_ops.items, {}, struct {
+        fn lessThan(_: void, a: Punctuation, b: Punctuation) bool {
+            return a.after_token < b.after_token;
+        }
+    }.lessThan);
+    const normalized_plan = PolishedPlan{
+        .version = plan.version,
+        .deletions = plan.deletions,
+        .corrections = plan.corrections,
+        .punctuation = punctuation_ops.items,
+        .paragraph_breaks = plan.paragraph_breaks,
+        .lists = plan.lists,
+    };
+    return renderPolished(gpa, transcript, tokens, deleted, normalized_plan);
+}
+
+fn punctuationAfter(punctuation_ops: []const Punctuation, token: usize) bool {
+    for (punctuation_ops) |operation| if (operation.after_token == token) return true;
+    return false;
 }
 
 pub fn tokenize(gpa: Allocator, text: []const u8) Error![]Token {
@@ -887,6 +919,22 @@ test "polished compiles corrections punctuation paragraphs and numbered lists" {
     });
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("Hello world.\n\n1. first tea\n2. second coffee\nend", out);
+}
+
+test "polished pairs a provider sentence capitalization with punctuation" {
+    const source = "This fixture is synthetic it contains no user data";
+    const corrections = [_]Correction{.{ .start_token = 4, .end_token = 5, .source = "it", .replacement = "It", .kind = .case }};
+    const punctuation_marks = [_]Punctuation{.{ .after_token = 8, .mark = .period }};
+    const out = try polished(std.testing.allocator, source, &.{}, .{
+        .version = 2,
+        .deletions = &.{},
+        .corrections = &corrections,
+        .punctuation = &punctuation_marks,
+        .paragraph_breaks = &.{},
+        .lists = &.{},
+    });
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("This fixture is synthetic. It contains no user data.", out);
 }
 
 test "polished rejects lists introduced as reported or quoted content" {

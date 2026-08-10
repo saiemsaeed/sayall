@@ -69,7 +69,8 @@ pub const polished_policy_prompt =
     \\first/second/third-style enumerators or an explicit item-count/list introduction. Preserve
     \\spoken enumerators and conjunctions; generated list markers never replace source tokens.
     \\Never turn reported or quoted content into a list: an ordinal sequence after say/says/said,
-    \\read/reads, quote/quoted, or literal quotation-mark cues stays inline and may use commas.
+    \\read/reads, quote/quoted, or singular/plural literal quotation-mark cues stays inline and
+    \\should use comma punctuation between its ordinal tokens.
     \\Use bullet lists when spoken ordinal enumerators are present to avoid duplicate numbering.
     \\Capitalize the first ordinary source token of each sentence and list item with a one-token
     \\case correction; do not case-change acronyms, technical tokens, quotes, or glossary values.
