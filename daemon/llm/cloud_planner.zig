@@ -108,9 +108,13 @@ pub const polished_policy_prompt =
     \\Example tokens 0:Can 1:you 2:bring 3:me 4:these 5:things 6:apple 7:banana
     \\8:and 9:pears require a colon after token 5, a question after token 9, and lists exactly
     \\[{"start_token":6,"end_token":10,"items":[{"start_token":6},{"start_token":7},{"start_token":8}],"kind":"bullet"}].
-    \\Example tokens 0:I 1:have 2:these 3:three 4:rules 5:in 6:my 7:life
-    \\8:commitment 9:focus 10:and 11:passion require a colon after token 7, a period
-    \\after token 11, and the same three-item bullet structure beginning at token 8.
+    \\Example tokens 0:I 1:have 2:three 3:rules 4:in 5:my 6:life 7:commitment
+    \\8:focus 9:and 10:passion require a colon after token 6, a period after token 10,
+    \\and lists exactly
+    \\[{"start_token":7,"end_token":11,"items":[{"start_token":7},{"start_token":8},{"start_token":9}],"kind":"bullet"}].
+    \\The same operation is mandatory for tokens 0:I 1:have 2:these 3:rules 4:in 5:my
+    \\6:life 7:commitment 8:focus 9:and 10:passion: colon after token 6, period after
+    \\token 10, and list anchors exactly 7, 8, and 9.
     \\Example tokens 0:We 1:have 2:four 3:problems 4:problem 5:one 6:problem
     \\7:two 8:problem 9:three 10:problem 11:four require a colon after token 3, a period
     \\after token 11, and list item anchors exactly 4, 6, 8, and 10.
@@ -193,7 +197,7 @@ pub fn planFormatting(gpa: Allocator, io: Io, cfg: *const config.LlmConfig, keyt
     defer arena.deinit();
     const schema = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), polished_schema_json, .{}) catch return error.BadResponse;
     const content = cerebras.chat(gpa, io, cfg.api_key, cfg.base_url, cfg.model, "sayall_polished_plan", schema, &.{
-        .{ .role = "system", .content = polished_policy_prompt },
+        .{ .role = "developer", .content = polished_policy_prompt },
         .{ .role = "user", .content = user },
     }, verbose) catch |err| return @errorCast(err);
     defer gpa.free(content);

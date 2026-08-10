@@ -9,7 +9,7 @@ pub const Message = struct { role: []const u8, content: []const u8 };
 const ResponseFormat = struct { type: []const u8 = "json_schema", json_schema: struct { name: []const u8, strict: bool = true, schema: std.json.Value } };
 const Payload = struct {
     model: []const u8,
-    max_completion_tokens: u32 = 2048,
+    max_completion_tokens: u32 = 8192,
     reasoning_effort: []const u8 = "low",
     temperature: u8 = 0,
     response_format: ResponseFormat,
@@ -47,7 +47,8 @@ test "payload bounds completion and requests strict structured output" {
     const decoded = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, encoded, .{});
     defer decoded.deinit();
     const object = decoded.value.object;
-    try std.testing.expectEqual(@as(i64, 2048), object.get("max_completion_tokens").?.integer);
+    try std.testing.expectEqual(@as(i64, 8192), object.get("max_completion_tokens").?.integer);
+    try std.testing.expectEqualStrings("low", object.get("reasoning_effort").?.string);
     try std.testing.expectEqual(@as(i64, 0), object.get("temperature").?.integer);
     try std.testing.expect(object.get("response_format").?.object.get("json_schema").?.object.get("strict").?.bool);
 }
