@@ -117,8 +117,12 @@ impl Capture {
         analyze_tail(&self.pcm)
     }
     pub fn stop(mut self) -> io::Result<PathBuf> {
-        let status = self.terminate(Duration::from_secs(2));
-        if !status.success() {
+        let (status, interrupted) = self.terminate(Duration::from_secs(2));
+        // pw-record 1.6 exits with status 1 after handling SIGINT even though
+        // the recording completed normally. Only accept that status when this
+        // process was still alive and we successfully sent the stop signal;
+        // an independently failed capture must still surface as an error.
+        if !status.success() && !(interrupted && status.code() == Some(1)) {
             return Err(io::Error::other(format!("pw-record exited with {status}")));
         }
         self.finish_wav()?;
@@ -129,25 +133,23 @@ impl Capture {
         let _ = self.terminate(Duration::from_millis(500));
         let _ = fs::remove_dir_all(&self.dir);
     }
-    fn terminate(&mut self, first: Duration) -> std::process::ExitStatus {
+    fn terminate(&mut self, first: Duration) -> (std::process::ExitStatus, bool) {
         if let Some(status) = self.child.try_wait().ok().flatten() {
-            return status;
+            return (status, false);
         }
-        self.signal(libc::SIGINT);
+        let interrupted = self.signal(libc::SIGINT);
         if let Some(status) = self.reap_status(first) {
-            return status;
+            return (status, interrupted);
         }
         self.signal(libc::SIGTERM);
         if let Some(status) = self.reap_status(Duration::from_millis(500)) {
-            return status;
+            return (status, false);
         }
         self.signal(libc::SIGKILL);
-        self.child.wait().expect("capture child wait")
+        (self.child.wait().expect("capture child wait"), false)
     }
-    fn signal(&self, sig: i32) {
-        unsafe {
-            libc::kill(-(self.child.id() as i32), sig);
-        }
+    fn signal(&self, sig: i32) -> bool {
+        unsafe { libc::kill(-(self.child.id() as i32), sig) == 0 }
     }
     fn reap(&mut self, timeout: Duration) -> bool {
         self.reap_status(timeout).is_some()
@@ -436,6 +438,32 @@ mod tests {
         assert_eq!(fs::read(&wav).unwrap(), expected);
         assert!(!pcm.exists());
         assert_eq!(fs::metadata(&wav).unwrap().mode() & 0o777, 0o600);
+        cleanup(&wav);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stop_accepts_pw_record_sigint_exit_status() {
+        let root = private_root("sigint-status");
+        let script = root.join("fake-pw-record");
+        fs::write(
+            &script,
+            b"#!/bin/sh\nfor last do :; done\nprintf '\\001\\000' > \"$last\"\ntrap 'exit 1' INT\n: > \"$last.ready\"\nwhile :; do /bin/sleep 1; done\n",
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let capture = Capture::start_with_program(&root, 12, "", Ok(script)).unwrap();
+        let ready = root.join("session-12/audio.pcm.ready");
+        for _ in 0..100 {
+            if ready.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(ready.exists(), "fake capture did not become ready");
+
+        let wav = capture.stop().unwrap();
+        assert_eq!(&fs::read(&wav).unwrap()[44..], &[1, 0]);
         cleanup(&wav);
         fs::remove_dir_all(root).unwrap();
     }
