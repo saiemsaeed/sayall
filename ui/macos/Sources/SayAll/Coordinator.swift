@@ -547,7 +547,7 @@ final class Coordinator {
         case .malformed: return "SayAll config.json is not valid JSON"
         case .missingDeepgramKey: return "Set stt.api_key or DEEPGRAM_API_KEY in \(path)"
         case .invalidProvider: return "Use a valid stt.model, stt.language, and global/eu/au region"
-        case .invalidProcessingMode: return "Set processing.mode to verbatim, clean, polished, or ai_only"
+        case .invalidProcessingMode: return "Set processing.mode to verbatim, clean, or polished"
         case .missingCerebrasKey: return "Cloud processing requires llm.api_key or CEREBRAS_API_KEY"
         case .unsupportedPlannerModel:
             return "Cloud processing requires llm.model gpt-oss-120b"

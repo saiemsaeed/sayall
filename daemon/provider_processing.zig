@@ -46,19 +46,6 @@ pub fn process(
         return .no_speech;
     }
 
-    if (profile == .ai_only) {
-        const planned = seam.planner(seam.context, allocator, profile, raw) catch {
-            return .{ .success = .{ .text = raw, .warning = .transformation_failed, .transformation_outcome = .failed } };
-        };
-        validate(planned, output_policy) catch {
-            allocator.free(planned);
-            return .{ .success = .{ .text = raw, .warning = .transformation_failed, .transformation_outcome = .failed } };
-        };
-        const outcome: processing.TransformationOutcome = if (std.mem.eql(u8, raw, planned)) .no_change else .changed;
-        allocator.free(raw);
-        return .{ .success = .{ .text = planned, .transformation_outcome = outcome } };
-    }
-
     if (profile == .polished) {
         const cleaned = seam.clean(seam.context, allocator, raw) catch {
             return .{ .success = .{ .text = raw, .warning = .transformation_failed, .transformation_outcome = .failed } };
@@ -85,7 +72,7 @@ pub fn process(
         .verbatim => return .{ .success = .{ .text = raw, .transformation_outcome = .not_requested } },
         .clean => seam.clean(seam.context, allocator, raw),
         .legacy_v1 => seam.planner(seam.context, allocator, profile, raw),
-        .polished, .ai_only => unreachable,
+        .polished => unreachable,
     };
     if (transformed_result) |transformed| {
         validate(transformed, output_policy) catch {
@@ -117,7 +104,6 @@ const Fake = struct {
     clean_calls: usize = 0,
     planner_calls: usize = 0,
     polished_calls: usize = 0,
-    ai_only_calls: usize = 0,
     legacy_calls: usize = 0,
     expected_planner_input: ?[]const u8 = null,
 
@@ -143,7 +129,6 @@ const Fake = struct {
         }
         switch (profile) {
             .polished => self.polished_calls += 1,
-            .ai_only => self.ai_only_calls += 1,
             .legacy_v1 => self.legacy_calls += 1,
             else => return error.InvalidProfile,
         }
@@ -306,29 +291,4 @@ test "polished cleans once then always plans and degrades to clean" {
     const old = try process(std.testing.allocator, try owned("raw"), .legacy_v1, worker_policy, legacy.seam());
     defer freeOutcome(old);
     try std.testing.expectEqualStrings("legacy", old.success.text);
-}
-
-test "AI only plans raw input without deterministic processing and falls back to raw" {
-    var valid: Fake = .{
-        .clean_text = "Planner output.",
-        .expected_planner_input = "if. raw input",
-    };
-    const planned = try process(std.testing.allocator, try owned("if. raw input"), .ai_only, worker_policy, valid.seam());
-    defer freeOutcome(planned);
-    try std.testing.expectEqualStrings("Planner output.", planned.success.text);
-    try std.testing.expectEqual(@as(usize, 1), valid.planner_calls);
-    try std.testing.expectEqual(@as(usize, 1), valid.ai_only_calls);
-    try std.testing.expectEqual(@as(usize, 0), valid.clean_calls);
-
-    var failed: Fake = .{
-        .planner_error = error.RateLimited,
-        .expected_planner_input = "if. raw stays raw",
-    };
-    const fallback = try process(std.testing.allocator, try owned("if. raw stays raw"), .ai_only, worker_policy, failed.seam());
-    defer freeOutcome(fallback);
-    try std.testing.expectEqualStrings("if. raw stays raw", fallback.success.text);
-    try std.testing.expectEqual(Warning.transformation_failed, fallback.success.warning.?);
-    try std.testing.expectEqual(processing.TransformationOutcome.failed, fallback.success.transformation_outcome);
-    try std.testing.expectEqual(@as(usize, 1), failed.planner_calls);
-    try std.testing.expectEqual(@as(usize, 0), failed.clean_calls);
 }

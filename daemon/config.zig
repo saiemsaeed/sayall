@@ -393,12 +393,23 @@ test "processing migration matrix and explicit mode precedence" {
         .{ .json = "{\"processing\":{\"mode\":\"verbatim\"},\"llm\":{\"enabled\":true}}", .expected = .verbatim },
         .{ .json = "{\"processing\":{\"mode\":\"clean\"},\"llm\":{\"enabled\":true}}", .expected = .clean },
         .{ .json = "{\"processing\":{\"mode\":\"polished\"},\"llm\":{\"enabled\":false}}", .expected = .polished },
-        .{ .json = "{\"processing\":{\"mode\":\"ai_only\"},\"llm\":{\"enabled\":false}}", .expected = .ai_only },
     }) |case| {
         const parsed = try std.json.parseFromSlice(Config, std.testing.allocator, case.json, .{});
         defer parsed.deinit();
         try std.testing.expectEqual(case.expected, effectiveProcessingProfile(&parsed.value));
     }
+}
+
+test "removed AI-only mode is rejected" {
+    try std.testing.expectError(
+        error.InvalidEnumTag,
+        std.json.parseFromSlice(
+            Config,
+            std.testing.allocator,
+            "{\"processing\":{\"mode\":\"ai_only\"}}",
+            .{},
+        ),
+    );
 }
 
 test "config init honors XDG permissions and never overwrites" {

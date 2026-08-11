@@ -174,8 +174,6 @@ final class CoordinatorControlTests: XCTestCase {
 
         XCTAssertEqual(coordinator.selectProcessingMode(.polished),
             "Cloud processing requires llm.api_key or CEREBRAS_API_KEY")
-        XCTAssertEqual(coordinator.selectProcessingMode(.aiOnly),
-            "Cloud processing requires llm.api_key or CEREBRAS_API_KEY")
         try Data(#"{"stt":{"api_key":"key"},"processing":{"mode":"polished"}}"#.utf8).write(to: loader.url)
         let reload = coordinator.handleControl(.reload)
         XCTAssertFalse(reload.ok)
@@ -1282,6 +1280,9 @@ final class ConfigurationLoaderTests: XCTestCase {
 
         try Data(#"{"stt":{"api_key":"key"},"processing":{"mode":"legacy_v1"}}"#.utf8).write(to: loader.url)
         XCTAssertThrowsError(try loader.load()) { XCTAssertEqual($0 as? ConfigurationError, .invalidProcessingMode) }
+
+        try Data(#"{"stt":{"api_key":"key"},"processing":{"mode":"ai_only"}}"#.utf8).write(to: loader.url)
+        XCTAssertThrowsError(try loader.load()) { XCTAssertEqual($0 as? ConfigurationError, .invalidProcessingMode) }
     }
 
     func testProcessingMigrationExplicitPrecedenceAndModeMutation() throws {
@@ -1296,7 +1297,6 @@ final class ConfigurationLoaderTests: XCTestCase {
             (#"{"stt":{"api_key":"key"},"llm":{"enabled":true},"processing":{"mode":"verbatim"}}"#, .verbatim),
             (#"{"stt":{"api_key":"key"},"llm":{"enabled":true},"processing":{"mode":"clean"}}"#, .clean),
             (#"{"stt":{"api_key":"key"},"llm":{"api_key":"cerebras","enabled":false},"processing":{"mode":"polished"}}"#, .polished),
-            (#"{"stt":{"api_key":"key"},"llm":{"api_key":"cerebras","enabled":false},"processing":{"mode":"ai_only"}}"#, .aiOnly),
         ] {
             try Data(json.utf8).write(to: loader.url)
             XCTAssertEqual(try loader.load().processingProfile, expected)
@@ -1315,9 +1315,8 @@ final class ConfigurationLoaderTests: XCTestCase {
     }
 
     func testPrivateLegacyProfileProjectsToAUserFacingMode() {
-        XCTAssertEqual(ProcessingMode.allCases, [.verbatim, .clean, .polished, .aiOnly])
+        XCTAssertEqual(ProcessingMode.allCases, [.verbatim, .clean, .polished])
         XCTAssertEqual(ProcessingProfile.legacyV1.userMode, .polished)
-        XCTAssertEqual(ProcessingProfile.aiOnly.userMode, .aiOnly)
     }
 
     func testModeMutationRejectsSymlinkWithoutReplacingItsTarget() throws {
@@ -1427,9 +1426,6 @@ final class ConfigurationLoaderTests: XCTestCase {
         let verbatim = Data(#"{"stt":{"api_key":"key"},"processing":{"mode":"verbatim"}}"#.utf8)
         try verbatim.write(to: loader.url)
         XCTAssertThrowsError(try loader.setProcessingMode(.polished)) {
-            XCTAssertEqual($0 as? ConfigurationError, .missingCerebrasKey)
-        }
-        XCTAssertThrowsError(try loader.setProcessingMode(.aiOnly)) {
             XCTAssertEqual($0 as? ConfigurationError, .missingCerebrasKey)
         }
         XCTAssertEqual(try Data(contentsOf: loader.url), verbatim)

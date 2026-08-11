@@ -6,10 +6,9 @@ pub const Mode = enum {
     verbatim,
     /// Apply only deterministic Zig processing and no provider request.
     clean,
-    /// Attempt one semantic planner transformation, falling back to raw STT.
+    /// Apply deterministic cleanup, then attempt one semantic planner
+    /// transformation and silently fall back to the cleaned text.
     polished,
-    /// Send finalized raw STT directly to the semantic planner.
-    ai_only,
 };
 
 /// Internal routing contract. `legacy_v1` preserves the old formatter path for
@@ -18,13 +17,12 @@ pub const Profile = enum {
     verbatim,
     clean,
     polished,
-    ai_only,
     /// Compatibility route for legacy llm.enabled=true. It retains the old
     /// formatter behavior and does not opt into future Clean deletions.
     legacy_v1,
 
     pub fn usesPlanner(self: Profile) bool {
-        return self == .polished or self == .ai_only or self == .legacy_v1;
+        return self == .polished or self == .legacy_v1;
     }
 };
 
@@ -48,7 +46,6 @@ pub fn effective(config: Config, legacy_llm_enabled: bool) Profile {
         .verbatim => .verbatim,
         .clean => .clean,
         .polished => .polished,
-        .ai_only => .ai_only,
     };
     return if (legacy_llm_enabled) .legacy_v1 else .verbatim;
 }
@@ -59,5 +56,4 @@ test "migration matrix preserves explicit modes and legacy compatibility" {
     try std.testing.expectEqual(Profile.verbatim, effective(.{ .mode = .verbatim }, true));
     try std.testing.expectEqual(Profile.clean, effective(.{ .mode = .clean }, true));
     try std.testing.expectEqual(Profile.polished, effective(.{ .mode = .polished }, false));
-    try std.testing.expectEqual(Profile.ai_only, effective(.{ .mode = .ai_only }, false));
 }

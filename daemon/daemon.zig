@@ -107,7 +107,7 @@ fn providerPlanner(context_ptr: ?*anyopaque, gpa: Allocator, profile: config.pro
     d.setStage(.cleaning);
     const started = d.nowMs();
     const cleaned = switch (profile) {
-        .polished, .ai_only => cloud_planner.planFormatting(gpa, d.io, &d.cfg.llm, d.cfg.stt.keyterms, raw, d.cfg.verbose),
+        .polished => cloud_planner.planFormatting(gpa, d.io, &d.cfg.llm, d.cfg.stt.keyterms, raw, d.cfg.verbose),
         .legacy_v1 => cloud_planner.cleanup(gpa, d.io, &d.cfg.llm, d.cfg.stt.keyterms, raw, d.cfg.verbose),
         else => error.InvalidProfile,
     } catch |err| {
