@@ -430,9 +430,9 @@ The formatter makes one low-reasoning chat-completions request with a strict
 JSON schema. The model returns only anchored edits; Zig validates and renders
 them from the original Deepgram lexical tokens. It therefore cannot append an
 answer or recommendation. Any provider, schema, anchor, correction, rendering,
-or provenance failure retains the conservative deterministic Polished baseline.
-Only a local baseline failure falls back to the raw transcript with a warning. Check
-Cerebras's current model page for speed and pricing. Only Cerebras is implemented.
+or provenance failure retains the deterministic Clean result. Only a local
+Clean failure falls back to the raw transcript with a warning. Check Cerebras's
+current model page for speed and pricing. Only Cerebras is implemented.
 
 **Realistic cost:** ~2h dictation/day → ~$10/mo STT (after free credit) + ~$0.15/mo LLM.
 
@@ -473,17 +473,16 @@ sayall/
    Smart Format, punctuation, spoken dictation commands, numerals, measurements,
    and keyterm prompting. REST responses parse
    `results.channels[0].alternatives[0].transcript`.
-4. **Optional LLM formatting** — Cerebras chat completions, temperature 0,
-   disabled by default and controlled by the configuration. The pass preserves
-   every spoken word while correcting contextually unambiguous terminology,
-   punctuation, and capitalization; adding paragraph breaks; and formatting
-   clearly dictated or enumerated lists as bullets. When uncertain, it keeps
-   the original text. The effective keyword list is supplied as a spelling
-   glossary for terms such as `SayAll`. The transcript is treated as data, and
-   the prompt forbids adding, removing, reordering, summarizing, or paraphrasing
-   words. An anchored edit-plan validator and source-based renderer reject
-   answers and broad rewrites even if the model ignores those instructions;
-   rejection falls back to the unchanged Deepgram transcript.
+4. **Transcript processing** — Verbatim returns finalized Deepgram output
+   without a provider request; Clean performs deterministic local cleanup;
+   Polished applies Clean once and requests one structured edit plan from
+   Cerebras. Polished preserves the speaker's meaning while correcting
+   contextually unambiguous terminology, punctuation, and capitalization;
+   adding paragraph breaks; and formatting clearly dictated or enumerated
+   lists. The effective keyword list is supplied as a spelling glossary for
+   terms such as `SayAll`. An anchored edit-plan validator and source-based
+   renderer reject answers, broad rewrites, and unverifiable edits. Rejected or
+   failed Polished plans silently fall back to the deterministic Clean result.
 
 5. **Output** — type the complete transcript with `wtype`, copy it with
     `wl-copy`, or copy and paste it with one `Ctrl+V` shortcut. This works in
@@ -521,6 +520,7 @@ the process environment):
     "model": "gpt-oss-120b",
     "enabled": false
   },
+  "processing": { "mode": "verbatim" },
   "output": { "method": "type", "trailing_space": true },
   "recording": { "max_seconds": 300, "min_ms": 300, "source": "" },
   "metrics": { "enabled": true, "history_max_entries": 1000, "expose_api": true },
@@ -535,14 +535,15 @@ digits, or abbreviated measurements. SayAll sends every flag explicitly to
 Deepgram for both streaming transcription and the REST fallback; omitted flags
 default to `false`. Deepgram requires `punctuate` when `dictation` is enabled.
 
-LLM formatting is opt-in. To enable it, set `llm.enabled` to `true` and provide
-a Cerebras API key. If disabled, no transcript is sent to Cerebras. If an enabled
-request fails, SayAll falls back to the unchanged Deepgram transcript.
-The legacy `llama-3.1-8b-instant` model remains syntactically accepted for
-configuration compatibility, but is deprecated and unsupported for formatting;
-it cannot be used by the strict structured edit-plan formatter. Use
-`gpt-oss-120b` (the default) or `gpt-oss-120b` when enabling
-formatting.
+`processing.mode` accepts `verbatim`, `clean`, or `polished`. Verbatim is the
+default and sends no transcript to Cerebras. Clean performs deterministic local
+cleanup without a provider request. Polished requires a Cerebras API key and
+the `gpt-oss-120b` model; if its request or validated transformation fails,
+SayAll silently delivers the deterministic Clean result. Existing
+configurations that omit `processing.mode` and set `llm.enabled` to `true`
+retain their legacy formatting behavior for this migration cycle. The legacy
+`llama-3.1-8b-instant` model remains syntactically accepted for that
+compatibility path but cannot be selected for Polished mode.
 
 `hud.show_timer` defaults to `true` and displays recording duration as `mm:ss`.
 Set it to `false` for the centered recording layout without a timer or reserved

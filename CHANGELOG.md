@@ -5,6 +5,32 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.12] - 2026-08-15
+
+### Added
+
+- Added Verbatim, Clean, and Polished processing modes to the Linux HUD and
+  macOS menu. Verbatim sends no transcript to Cerebras, Clean performs only
+  local deterministic cleanup, and Polished applies Clean before using the
+  structured Cerebras planner with silent Clean fallback.
+- Added a deterministic transformation benchmark and release canary covering
+  cleanup safety, semantic preservation, and production worker integration.
+
+### Changed
+
+- Made processing-mode configuration updates atomic and concurrency-safe while
+  preserving the behavior of existing `llm.enabled` configurations during
+  migration.
+- Improved Polished mode's handling of acronyms, negation, false starts, and
+  cleanup outcomes while retaining provider degradation only in privacy-safe
+  local metrics.
+
+### Fixed
+
+- Accepted PipeWire 1.6 `pw-record` status 1 only after SayAll successfully
+  sends its expected stop signal, preventing completed Linux recordings from
+  being reported as capture failures while preserving genuine early exits.
+
 ## [0.2.11] - 2026-08-08
 
 ### Added
@@ -384,7 +410,8 @@ Initial release, tested and supported on x86-64 Arch Linux with Omarchy.
 - Persistent privacy-safe transcription metrics and microphone diagnostics.
 - systemd user services and Hyprland hotkey integration.
 
-[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.2.11...HEAD
+[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.2.12...HEAD
+[0.2.12]: https://github.com/saiemsaeed/sayall/compare/v0.2.11...v0.2.12
 [0.2.11]: https://github.com/saiemsaeed/sayall/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/saiemsaeed/sayall/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/saiemsaeed/sayall/compare/v0.2.8...v0.2.9
