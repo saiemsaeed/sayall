@@ -231,6 +231,21 @@ final class StateMachineTests: XCTestCase {
 
 final class HUDRenderingTests: XCTestCase {
     @MainActor
+    func testRecordingWaveformUsesRecentLevelsAcrossBars() {
+        let view = HUDView(frame: NSRect(x: 0, y: 0, width: 244, height: 48))
+        view.update(state: .starting, message: "", audioLevel: 0, showTimer: true)
+        for index in 0..<14 {
+            let level = index.isMultiple(of: 2) ? 0.2 : 0.9
+            view.update(state: .recording, message: "", audioLevel: level, showTimer: true)
+        }
+        view.tick()
+
+        XCTAssertEqual(view.bars.count, 14)
+        XCTAssertGreaterThan(Set(view.bars).count, 1)
+        XCTAssertLessThan(view.bars[0], view.bars[1])
+    }
+
+    @MainActor
     func testProductionVariantsRenderAtFigmaDimensions() throws {
         let variants: [(String, DictationState, Bool, String)] = [
             ("starting", .starting, true, "Starting recording…"),

@@ -1,6 +1,8 @@
 use crate::{autostart, config, global_shortcut, worker};
 use gtk::prelude::*;
-use gtk::{Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, Label, Orientation};
+use gtk::{
+    Align, Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, Label, Orientation,
+};
 use serde::Deserialize;
 use std::cell::Cell;
 use std::ffi::OsStr;
@@ -64,28 +66,100 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
     let window = ApplicationWindow::builder()
         .application(app)
         .title("SayAll Settings")
-        .default_width(460)
-        .default_height(340)
+        .default_width(560)
+        .default_height(520)
         .build();
-    let column = GtkBox::new(Orientation::Vertical, 12);
-    column.set_margin_top(20);
-    column.set_margin_bottom(20);
-    column.set_margin_start(20);
-    column.set_margin_end(20);
-    let heading = Label::new(Some("SayAll Linux host"));
+    window.add_css_class("sayall-settings");
+    let css = gtk::CssProvider::new();
+    css.load_from_data(
+        ".sayall-settings {
+            background-color: #101116;
+            color: #f7f7fa;
+        }
+        .settings-content {
+            background-color: #17191f;
+            border: 1px solid rgba(255, 255, 255, 0.10);
+            border-radius: 18px;
+            padding: 24px;
+        }
+        .settings-title {
+            color: #ffffff;
+            font-size: 24px;
+            font-weight: 700;
+        }
+        .settings-subtitle, .settings-secondary {
+            color: rgba(255, 255, 255, 0.66);
+        }
+        .settings-status {
+            color: #6beba0;
+            font-weight: 600;
+        }
+        .settings-card {
+            background-color: #20232b;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 12px;
+            padding: 16px;
+        }
+        .settings-section-title {
+            color: #ffffff;
+            font-size: 15px;
+            font-weight: 700;
+        }
+        .settings-option {
+            padding: 6px 2px;
+        }
+        .settings-actions button {
+            border-radius: 10px;
+            padding: 10px 14px;
+        }
+        .settings-primary {
+            background-color: #fa577a;
+            color: #ffffff;
+            font-weight: 700;
+        }",
+    );
+    gtk::style_context_add_provider_for_display(
+        &gtk::gdk::Display::default().expect("a graphical display"),
+        &css,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+    let column = GtkBox::new(Orientation::Vertical, 16);
+    column.add_css_class("settings-content");
+    column.set_width_request(480);
+    column.set_halign(Align::Center);
+    column.set_valign(Align::Center);
+    let heading = Label::new(Some("SayAll"));
     heading.set_xalign(0.0);
+    heading.add_css_class("settings-title");
+    let subtitle = Label::new(Some("Voice dictation settings"));
+    subtitle.set_xalign(0.0);
+    subtitle.add_css_class("settings-subtitle");
+    let overview = GtkBox::new(Orientation::Vertical, 8);
+    overview.add_css_class("settings-card");
     let status = Label::new(None);
     status.set_xalign(0.0);
     status.set_wrap(true);
+    status.add_css_class("settings-status");
     let shortcut = Label::new(Some(shortcut_status.message()));
     shortcut.set_xalign(0.0);
     shortcut.set_wrap(true);
+    shortcut.add_css_class("settings-secondary");
     let init = Button::with_label("Initialize configuration");
-    let enable_shortcut = Button::with_label("Enable/configure global shortcut");
+    let enable_shortcut = Button::with_label("Configure Shortcut");
     let reload = Button::with_label("Reload Configuration");
+    reload.add_css_class("settings-primary");
     let login = CheckButton::with_label("Start SayAll at login");
+    login.add_css_class("settings-option");
+    let actions = GtkBox::new(Orientation::Horizontal, 8);
+    actions.add_css_class("settings-actions");
+    actions.append(&enable_shortcut);
+    actions.append(&reload);
+    actions.append(&init);
+    let processing = GtkBox::new(Orientation::Vertical, 6);
+    processing.add_css_class("settings-card");
     let processing_heading = Label::new(Some("Processing mode"));
     processing_heading.set_xalign(0.0);
+    processing_heading.add_css_class("settings-section-title");
     let verbatim = CheckButton::with_label("Verbatim — preserve finalized transcription");
     let clean = CheckButton::with_label("Clean — apply deterministic cleanup");
     let polished = CheckButton::with_label("Polished — refine wording and structure");
@@ -93,17 +167,19 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
     polished.set_group(Some(&verbatim));
     for button in [&verbatim, &clean, &polished] {
         button.set_sensitive(false);
+        button.add_css_class("settings-option");
     }
     column.append(&heading);
-    column.append(&status);
-    column.append(&shortcut);
-    column.append(&enable_shortcut);
-    column.append(&init);
-    column.append(&reload);
-    column.append(&processing_heading);
-    column.append(&verbatim);
-    column.append(&clean);
-    column.append(&polished);
+    column.append(&subtitle);
+    overview.append(&status);
+    overview.append(&shortcut);
+    column.append(&overview);
+    column.append(&actions);
+    processing.append(&processing_heading);
+    processing.append(&verbatim);
+    processing.append(&clean);
+    processing.append(&polished);
+    column.append(&processing);
     column.append(&login);
     window.set_child(Some(&column));
     let enable_for_click = enable_shortcut.clone();

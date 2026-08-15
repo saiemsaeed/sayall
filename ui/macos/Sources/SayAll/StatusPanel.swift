@@ -55,14 +55,15 @@ final class HUDView: NSView {
     private static let processingHeights: [CGFloat] = [6, 10, 16, 22, 14, 8, 18, 24, 14, 8]
     private(set) var state: DictationState = .idle
     private var message = ""
-    private var audioLevel = 0.0
-    private var bars = [Double](repeating: 0, count: recordingBarCount)
+    private var history = [Double](repeating: 0, count: recordingBarCount)
+    private(set) var bars = [Double](repeating: 0, count: recordingBarCount)
     private var showTimer = true
     private var recordingStarted: Date?
     private var processingStarted: Date?
 
     func update(state: DictationState, message: String, audioLevel: Double, showTimer: Bool) {
         if state == .starting && self.state != .starting {
+            history = [Double](repeating: 0, count: Self.recordingBarCount)
             bars = [Double](repeating: 0, count: Self.recordingBarCount)
         }
         if state == .recording && self.state != .recording { recordingStarted = Date() }
@@ -74,15 +75,17 @@ final class HUDView: NSView {
         if !processingStates.contains(state) { processingStarted = nil }
         self.state = state
         self.message = message
-        self.audioLevel = min(max(audioLevel, 0), 1)
+        if state == .recording {
+            history.removeFirst()
+            history.append(min(max(audioLevel, 0), 1))
+        }
         self.showTimer = showTimer
         needsDisplay = true
     }
 
     func tick() {
         for index in bars.indices {
-            let shape = 0.68 + 0.32 * abs(sin(Date().timeIntervalSinceReferenceDate * 5.4 + Double(index) * 1.37))
-            let target = state == .recording ? audioLevel * shape : 0
+            let target = state == .recording ? history[index] : 0
             bars[index] += (target - bars[index]) * (target > bars[index] ? 0.48 : 0.18)
         }
         needsDisplay = true
