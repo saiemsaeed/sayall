@@ -1,4 +1,5 @@
 use crate::config::{OutputConfig, OutputMethod};
+use serde::Deserialize;
 use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
@@ -9,12 +10,14 @@ use std::time::{Duration, Instant};
 
 const TIMEOUT: Duration = Duration::from_secs(8);
 const NOTIFY_TIMEOUT: Duration = Duration::from_secs(2);
+const HYPRLAND_TIMEOUT: Duration = Duration::from_secs(1);
 const WTYPE: [&str; 2] = ["/usr/bin/wtype", "/bin/wtype"];
 const WLCOPY: [&str; 2] = ["/usr/bin/wl-copy", "/bin/wl-copy"];
 const WLPASTE: [&str; 2] = ["/usr/bin/wl-paste", "/bin/wl-paste"];
 const XDOTOOL: [&str; 2] = ["/usr/bin/xdotool", "/bin/xdotool"];
 const XSEL: [&str; 2] = ["/usr/bin/xsel", "/bin/xsel"];
 const NOTIFY: [&str; 2] = ["/usr/bin/notify-send", "/bin/notify-send"];
+const HYPRCTL: [&str; 2] = ["/usr/bin/hyprctl", "/bin/hyprctl"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Backend {
@@ -37,7 +40,25 @@ trait Runner: Send {
     fn run(&mut self, program: &[&str], args: &[&str], stdin: Option<&str>) -> io::Result<()>;
     fn start_clipboard(&mut self, backend: Backend, input: &str)
     -> io::Result<Box<dyn OwnedChild>>;
+    fn paste(&mut self, backend: Backend) -> io::Result<()> {
+        let (program, args) = paste_command(backend)?;
+        self.run(program, args, None)
+    }
 }
+
+fn paste_command(
+    backend: Backend,
+) -> io::Result<(&'static [&'static str], &'static [&'static str])> {
+    match backend {
+        Backend::Wayland => Ok((&WTYPE, &["-M", "ctrl", "-k", "v", "-m", "ctrl"])),
+        Backend::X11 => Ok((&XDOTOOL, &["key", "--clearmodifiers", "ctrl+v"])),
+        Backend::Unavailable => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no supported graphical session is available",
+        )),
+    }
+}
+
 struct Supervisor;
 impl Runner for Supervisor {
     fn run(&mut self, programs: &[&str], args: &[&str], input: Option<&str>) -> io::Result<()> {
@@ -95,6 +116,89 @@ impl Runner for Supervisor {
             }
         }
     }
+
+    fn paste(&mut self, backend: Backend) -> io::Result<()> {
+        if backend == Backend::Wayland
+            && let Some((hyprctl, target)) = hyprland_paste_target()?
+        {
+            let script = hyprland_paste_script(&target);
+            return supervise(&hyprctl, &["eval", &script], None, HYPRLAND_TIMEOUT);
+        }
+        let (program, args) = paste_command(backend)?;
+        self.run(program, args, None)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PasteChord {
+    CtrlV,
+    ShiftInsert,
+}
+
+struct HyprlandPasteTarget {
+    address: String,
+    chord: PasteChord,
+}
+
+#[derive(Deserialize)]
+struct HyprlandActiveWindow {
+    address: String,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+fn hyprland_paste_target() -> io::Result<Option<(PathBuf, HyprlandPasteTarget)>> {
+    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
+        return Ok(None);
+    }
+    let hyprctl = find_program(&HYPRCTL)?;
+    let output = capture_bounded(
+        &hyprctl,
+        &["-j", "activewindow"],
+        16 * 1024,
+        Instant::now() + HYPRLAND_TIMEOUT,
+    )?;
+    let target = parse_hyprland_paste_target(&output).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Hyprland returned invalid active-window metadata",
+        )
+    })?;
+    Ok(Some((hyprctl, target)))
+}
+
+fn parse_hyprland_paste_target(output: &[u8]) -> Option<HyprlandPasteTarget> {
+    let active: HyprlandActiveWindow = serde_json::from_slice(output).ok()?;
+    let digits = active.address.strip_prefix("0x")?;
+    if digits.is_empty()
+        || digits.len() > 16
+        || !digits.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    let terminal = active
+        .tags
+        .iter()
+        .any(|tag| tag.trim_end_matches('*') == "terminal");
+    Some(HyprlandPasteTarget {
+        address: active.address,
+        chord: if terminal {
+            PasteChord::ShiftInsert
+        } else {
+            PasteChord::CtrlV
+        },
+    })
+}
+
+fn hyprland_paste_script(target: &HyprlandPasteTarget) -> String {
+    let (mods, key) = match target.chord {
+        PasteChord::CtrlV => ("CTRL", "V"),
+        PasteChord::ShiftInsert => ("SHIFT", "Insert"),
+    };
+    format!(
+        "local w = hl.get_active_window(); if not w or tostring(w.address) ~= '{}' then error('active window changed') end; hl.dispatch(hl.dsp.send_key_state({{ mods = '{mods}', key = '{key}', state = 'down' }})); hl.timer(function() hl.dispatch(hl.dsp.send_key_state({{ mods = '{mods}', key = '{key}', state = 'up' }})) end, {{ timeout = 50, type = 'oneshot' }}); return 'ok'",
+        target.address
+    )
 }
 
 pub struct NativeDelivery {
@@ -125,13 +229,10 @@ impl NativeDelivery {
             OutputMethod::Clipboard => self.copy(&text).map(|_| DeliveryOutcome::Clipboard),
             OutputMethod::Paste => {
                 self.copy(&text)?;
-                let (program, args): (&[&str], &[&str]) = match self.backend {
-                    Backend::Wayland => (&WTYPE, &["-M", "ctrl", "-k", "v", "-m", "ctrl"]),
-                    Backend::X11 => (&XDOTOOL, &["key", "--clearmodifiers", "ctrl+v"]),
-                    Backend::Unavailable => return Err(unavailable()),
-                };
-                self.runner.run(program, args, None).map_err(err)?;
-                Ok(DeliveryOutcome::Pasted)
+                Ok(match self.runner.paste(self.backend) {
+                    Ok(()) => DeliveryOutcome::Pasted,
+                    Err(_) => DeliveryOutcome::ClipboardFallback,
+                })
             }
             OutputMethod::Type => match self.type_text(&text) {
                 Ok(()) => Ok(DeliveryOutcome::Typed),
@@ -168,12 +269,6 @@ impl NativeDelivery {
 }
 fn err(e: io::Error) -> String {
     format!("desktop delivery failed: {e}")
-}
-fn unavailable() -> String {
-    err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "no supported graphical session is available",
-    ))
 }
 
 fn detect_backend() -> Backend {
@@ -265,6 +360,7 @@ fn base_command(program: &Path, args: &[&str]) -> Command {
         "DISPLAY",
         "XAUTHORITY",
         "DBUS_SESSION_BUS_ADDRESS",
+        "HYPRLAND_INSTANCE_SIGNATURE",
     ] {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);
@@ -531,10 +627,7 @@ mod tests {
                 a.iter().map(|x| x.to_string()).collect(),
                 s.map(str::to_owned),
             ));
-            if self.1
-                && ((p == WTYPE && a.first() == Some(&"--"))
-                    || (p == XDOTOOL && a.first() == Some(&"type")))
-            {
+            if self.1 && (p == WTYPE || (p == XDOTOOL && a.first() == Some(&"type"))) {
                 Err(io::Error::other("crash"))
             } else {
                 Ok(())
@@ -605,8 +698,95 @@ mod tests {
                 },
             )
             .unwrap();
-            assert_eq!(calls.lock().unwrap().len(), n);
+            let calls = calls.lock().unwrap();
+            assert_eq!(calls.len(), n);
+            assert_eq!(calls[0].0, WLCOPY[0]);
+            assert_eq!(calls[0].1, ["--foreground"]);
+            if method == OutputMethod::Paste {
+                assert_eq!(calls[1].0, WTYPE[0]);
+                assert_eq!(calls[1].1, ["-M", "ctrl", "-k", "v", "-m", "ctrl"]);
+            }
         }
+    }
+
+    #[test]
+    fn failed_paste_injection_retains_verified_clipboard() {
+        let calls = Arc::new(Mutex::new(vec![]));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut delivery = NativeDelivery {
+            backend: Backend::Wayland,
+            runner: Box::new(Fake(calls.clone(), true, drops.clone())),
+            clipboard_owner: None,
+        };
+        assert_eq!(
+            delivery
+                .deliver(
+                    "list\n- one\n- two",
+                    &OutputConfig {
+                        method: OutputMethod::Paste,
+                        trailing_space: false,
+                    },
+                )
+                .unwrap(),
+            DeliveryOutcome::ClipboardFallback
+        );
+        assert_eq!(calls.lock().unwrap().len(), 2);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn hyprland_target_uses_ctrl_v_for_untagged_amp_window() {
+        let target = parse_hyprland_paste_target(
+            br#"{"address":"0x55cbc3bbf920","class":"dev.herdr.Terminal","title":"sensitive","tags":["default-opacity*"]}"#,
+        )
+        .unwrap();
+        assert_eq!(target.address, "0x55cbc3bbf920");
+        assert_eq!(target.chord, PasteChord::CtrlV);
+    }
+
+    #[test]
+    fn hyprland_target_uses_shift_insert_for_terminal_tags() {
+        for tag in ["terminal", "terminal*"] {
+            let json = format!(r#"{{"address":"0xabc123","tags":["{tag}"]}}"#);
+            let target = parse_hyprland_paste_target(json.as_bytes()).unwrap();
+            assert_eq!(target.chord, PasteChord::ShiftInsert);
+        }
+    }
+
+    #[test]
+    fn hyprland_target_rejects_malformed_or_untrusted_addresses() {
+        for json in [
+            br#"{}"#.as_slice(),
+            br#"{"address":"55","tags":[]}"#,
+            br#"{"address":"0x1;exec","tags":[]}"#,
+            br#"{"address":"0x1234567890abcdef0","tags":[]}"#,
+        ] {
+            assert!(parse_hyprland_paste_target(json).is_none());
+        }
+    }
+
+    #[test]
+    fn hyprland_script_checks_focus_and_sends_ctrl_v_down_then_up() {
+        let target = HyprlandPasteTarget {
+            address: "0xabc123".into(),
+            chord: PasteChord::CtrlV,
+        };
+        let script = hyprland_paste_script(&target);
+        assert!(script.contains("tostring(w.address) ~= '0xabc123'"));
+        assert!(script.contains("mods = 'CTRL', key = 'V', state = 'down'"));
+        assert!(script.contains("mods = 'CTRL', key = 'V', state = 'up'"));
+        assert!(script.contains("timeout = 50, type = 'oneshot'"));
+    }
+
+    #[test]
+    fn hyprland_script_uses_shift_insert_for_tagged_terminals() {
+        let target = HyprlandPasteTarget {
+            address: "0xabc123".into(),
+            chord: PasteChord::ShiftInsert,
+        };
+        let script = hyprland_paste_script(&target);
+        assert!(script.contains("mods = 'SHIFT', key = 'Insert', state = 'down'"));
+        assert!(script.contains("mods = 'SHIFT', key = 'Insert', state = 'up'"));
     }
 
     #[test]
@@ -726,15 +906,17 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert!(start.elapsed() < Duration::from_secs(1));
         let previous_xauthority = std::env::var_os("XAUTHORITY");
+        let previous_hyprland = std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE");
         unsafe {
             std::env::set_var("SAYALL_ENV_CLEAR_TEST", "present");
             std::env::set_var("XAUTHORITY", "/tmp/sayall-test-xauthority");
+            std::env::set_var("HYPRLAND_INSTANCE_SIGNATURE", "sayall-test-instance");
         }
         let result = supervise(
             Path::new("/bin/sh"),
             &[
                 "-c",
-                "test -z \"$SAYALL_ENV_CLEAR_TEST\" && test -n \"$HOME\" && test \"$XAUTHORITY\" = /tmp/sayall-test-xauthority",
+                "test -z \"$SAYALL_ENV_CLEAR_TEST\" && test -n \"$HOME\" && test \"$XAUTHORITY\" = /tmp/sayall-test-xauthority && test \"$HYPRLAND_INSTANCE_SIGNATURE\" = sayall-test-instance",
             ],
             None,
             Duration::from_secs(1),
@@ -745,6 +927,11 @@ mod tests {
                 std::env::set_var("XAUTHORITY", value);
             } else {
                 std::env::remove_var("XAUTHORITY");
+            }
+            if let Some(value) = previous_hyprland {
+                std::env::set_var("HYPRLAND_INSTANCE_SIGNATURE", value);
+            } else {
+                std::env::remove_var("HYPRLAND_INSTANCE_SIGNATURE");
             }
         }
         result.unwrap();

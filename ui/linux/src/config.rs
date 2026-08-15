@@ -53,7 +53,8 @@ impl Default for Config {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OutputMethod {
     Type,
     Clipboard,
@@ -223,9 +224,21 @@ pub fn selected_processing_mode() -> io::Result<ProcessingMode> {
     )
 }
 
+pub fn selected_output_method() -> io::Result<OutputMethod> {
+    let (_, bytes) = read_secure_config()?;
+    let cfg: Config =
+        serde_json::from_slice(&bytes).map_err(|e| invalid(&format!("invalid config: {e}")))?;
+    parse_output_method(&cfg.output.method)
+}
+
 pub fn set_processing_mode(mode: ProcessingMode) -> io::Result<()> {
     let (parent, parent_path) = open_secure_parent()?;
     set_processing_mode_at(&parent, &parent_path, mode, || {}, || {})
+}
+
+pub fn set_output_method(method: OutputMethod) -> io::Result<()> {
+    let (parent, parent_path) = open_secure_parent()?;
+    set_output_method_at(&parent, &parent_path, method, || {}, || {})
 }
 
 fn set_processing_mode_at<B, A>(
@@ -239,12 +252,45 @@ where
     B: FnOnce(),
     A: FnOnce(),
 {
+    mutate_config_at(parent, parent_path, before_lock, after_lock, |bytes| {
+        encode_processing_mode(bytes, mode)
+    })
+}
+
+fn set_output_method_at<B, A>(
+    parent: &File,
+    parent_path: &Path,
+    method: OutputMethod,
+    before_lock: B,
+    after_lock: A,
+) -> io::Result<()>
+where
+    B: FnOnce(),
+    A: FnOnce(),
+{
+    mutate_config_at(parent, parent_path, before_lock, after_lock, |bytes| {
+        encode_output_method(bytes, method)
+    })
+}
+
+fn mutate_config_at<B, A, E>(
+    parent: &File,
+    parent_path: &Path,
+    before_lock: B,
+    after_lock: A,
+    encode: E,
+) -> io::Result<()>
+where
+    B: FnOnce(),
+    A: FnOnce(),
+    E: FnOnce(&[u8]) -> io::Result<Vec<u8>>,
+{
     let source = read_config_at(parent)?;
     before_lock();
     let _lock = lock_config(parent)?;
     after_lock();
     ensure_source_unchanged(parent, &source)?;
-    let output = encode_processing_mode(&source.bytes, mode)?;
+    let output = encode(&source.bytes)?;
     project_session_config(&output, parent_path)?;
 
     let mut temporary = None;
@@ -319,6 +365,30 @@ fn encode_processing_mode(bytes: &[u8], mode: ProcessingMode) -> io::Result<Vec<
         return Err(invalid("config exceeds 1 MiB"));
     }
     Ok(output)
+}
+
+fn encode_output_method(bytes: &[u8], method: OutputMethod) -> io::Result<Vec<u8>> {
+    let mut value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|e| invalid(&format!("invalid config: {e}")))?;
+    let root = value
+        .as_object_mut()
+        .ok_or_else(|| invalid("config root must be an object"))?;
+    let output = root
+        .entry("output")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or_else(|| invalid("output must be an object"))?;
+    output.insert(
+        "method".into(),
+        serde_json::to_value(method).expect("output method serializes"),
+    );
+    let mut encoded = serde_json::to_vec_pretty(&value)
+        .map_err(|_| invalid("configuration could not be encoded"))?;
+    encoded.push(b'\n');
+    if encoded.len() > CONFIG_MAX {
+        return Err(invalid("config exceeds 1 MiB"));
+    }
+    Ok(encoded)
 }
 
 pub fn load() -> io::Result<SessionConfig> {
@@ -988,6 +1058,26 @@ mod tests {
         );
         assert_eq!(parse_output_method("paste").unwrap(), OutputMethod::Paste);
         assert!(parse_output_method("other").is_err());
+    }
+
+    #[test]
+    fn output_method_mutation_preserves_credentials_and_other_output_settings() {
+        let encoded = encode_output_method(
+            br#"{"stt":{"api_key":"deepgram-secret"},"llm":{"api_key":"cerebras-secret"},"output":{"method":"type","trailing_space":false},"notifications":false}"#,
+            OutputMethod::Paste,
+        )
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(value["output"]["method"], "paste");
+        assert_eq!(value["output"]["trailing_space"], false);
+        assert_eq!(value["stt"]["api_key"], "deepgram-secret");
+        assert_eq!(value["llm"]["api_key"], "cerebras-secret");
+        assert_eq!(value["notifications"], false);
+    }
+
+    #[test]
+    fn output_method_mutation_rejects_present_non_object_output() {
+        assert!(encode_output_method(br#"{"output":false}"#, OutputMethod::Paste).is_err());
     }
 
     #[test]

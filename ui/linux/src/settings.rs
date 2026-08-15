@@ -67,7 +67,7 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
         .application(app)
         .title("SayAll Settings")
         .default_width(560)
-        .default_height(520)
+        .default_height(680)
         .build();
     window.add_css_class("sayall-settings");
     let css = gtk::CssProvider::new();
@@ -180,6 +180,25 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
     processing.append(&clean);
     processing.append(&polished);
     column.append(&processing);
+    let output = GtkBox::new(Orientation::Vertical, 6);
+    output.add_css_class("settings-card");
+    let output_heading = Label::new(Some("Output method"));
+    output_heading.set_xalign(0.0);
+    output_heading.add_css_class("settings-section-title");
+    let type_output = CheckButton::with_label("Type — insert text as keystrokes");
+    let paste_output = CheckButton::with_label("Paste — copy and paste automatically");
+    let clipboard_output = CheckButton::with_label("Clipboard — copy without inserting");
+    paste_output.set_group(Some(&type_output));
+    clipboard_output.set_group(Some(&type_output));
+    for button in [&type_output, &paste_output, &clipboard_output] {
+        button.set_sensitive(false);
+        button.add_css_class("settings-option");
+    }
+    output.append(&output_heading);
+    output.append(&type_output);
+    output.append(&paste_output);
+    output.append(&clipboard_output);
+    column.append(&output);
     column.append(&login);
     window.set_child(Some(&column));
     let enable_for_click = enable_shortcut.clone();
@@ -204,6 +223,7 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
     });
     let changing = std::rc::Rc::new(Cell::new(false));
     let confirmed_mode = std::rc::Rc::new(Cell::new(config::ProcessingMode::Verbatim));
+    let confirmed_output = std::rc::Rc::new(Cell::new(config::OutputMethod::Type));
     let refresh = {
         let status = status.clone();
         let init = init.clone();
@@ -211,15 +231,20 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
         let verbatim = verbatim.clone();
         let clean = clean.clone();
         let polished = polished.clone();
+        let type_output = type_output.clone();
+        let paste_output = paste_output.clone();
+        let clipboard_output = clipboard_output.clone();
         let changing = changing.clone();
         let confirmed_mode = confirmed_mode.clone();
+        let confirmed_output = confirmed_output.clone();
         move || {
             let (tx, rx) = mpsc::channel();
             std::thread::spawn(move || {
                 let config = config_operation("--config-validate");
                 let mode = config::selected_processing_mode();
+                let output = config::selected_output_method();
                 let autostart = autostart::state();
-                let _ = tx.send((config, mode, autostart));
+                let _ = tx.send((config, mode, output, autostart));
             });
             let status = status.clone();
             let init = init.clone();
@@ -227,10 +252,14 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
             let verbatim = verbatim.clone();
             let clean = clean.clone();
             let polished = polished.clone();
+            let type_output = type_output.clone();
+            let paste_output = paste_output.clone();
+            let clipboard_output = clipboard_output.clone();
             let changing = changing.clone();
             let confirmed_mode = confirmed_mode.clone();
+            let confirmed_output = confirmed_output.clone();
             gtk::glib::timeout_add_local(Duration::from_millis(20), move || {
-                let Ok((result, mode, autostart_state)) = rx.try_recv() else {
+                let Ok((result, mode, output, autostart_state)) = rx.try_recv() else {
                     return gtk::glib::ControlFlow::Continue;
                 };
                 let config_valid = matches!(&result, Ok(ConfigResult::Valid));
@@ -252,7 +281,14 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
                         init.set_sensitive(false)
                     }
                 }
-                for button in [&verbatim, &clean, &polished] {
+                for button in [
+                    &verbatim,
+                    &clean,
+                    &polished,
+                    &type_output,
+                    &paste_output,
+                    &clipboard_output,
+                ] {
                     button.set_sensitive(config_valid);
                 }
                 if let Ok(mode) = mode {
@@ -262,6 +298,16 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
                         config::ProcessingMode::Verbatim => verbatim.set_active(true),
                         config::ProcessingMode::Clean => clean.set_active(true),
                         config::ProcessingMode::Polished => polished.set_active(true),
+                    }
+                    changing.set(false);
+                }
+                if let Ok(output) = output {
+                    confirmed_output.set(output);
+                    changing.set(true);
+                    match output {
+                        config::OutputMethod::Type => type_output.set_active(true),
+                        config::OutputMethod::Paste => paste_output.set_active(true),
+                        config::OutputMethod::Clipboard => clipboard_output.set_active(true),
                     }
                     changing.set(false);
                 }
@@ -337,6 +383,39 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
                     }
                     changing.set(false);
                     mode_status.set_text(&format!("Could not change mode: {error}"));
+                }
+            }
+        });
+    }
+    for (button, method) in [
+        (type_output.clone(), config::OutputMethod::Type),
+        (paste_output.clone(), config::OutputMethod::Paste),
+        (clipboard_output.clone(), config::OutputMethod::Clipboard),
+    ] {
+        let changing = changing.clone();
+        let confirmed_output = confirmed_output.clone();
+        let output_status = status.clone();
+        let type_output = type_output.clone();
+        let paste_output = paste_output.clone();
+        let clipboard_output = clipboard_output.clone();
+        button.connect_toggled(move |button| {
+            if changing.get() || !button.is_active() {
+                return;
+            }
+            match crate::set_output_method(method) {
+                Ok(()) => {
+                    confirmed_output.set(method);
+                    output_status.set_text("Output method saved. It applies to the next dictation.")
+                }
+                Err(error) => {
+                    changing.set(true);
+                    match confirmed_output.get() {
+                        config::OutputMethod::Type => type_output.set_active(true),
+                        config::OutputMethod::Paste => paste_output.set_active(true),
+                        config::OutputMethod::Clipboard => clipboard_output.set_active(true),
+                    }
+                    changing.set(false);
+                    output_status.set_text(&format!("Could not change output method: {error}"));
                 }
             }
         });

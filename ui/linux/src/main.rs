@@ -163,10 +163,10 @@ impl Model {
             && matches!(
                 snapshot.message.as_deref(),
                 Some("transcript copied to clipboard")
-                    | Some("typing failed; transcript copied to clipboard")
+                    | Some("automatic insertion failed; transcript copied to clipboard")
                     | Some("transformation failed; safe fallback copied to clipboard")
                     | Some(
-                        "transformation failed; typing failed and safe fallback was copied to clipboard"
+                        "transformation failed; automatic insertion failed and safe fallback was copied to clipboard"
                     )
             );
         let transformation_warning = snapshot.state == session::State::Success
@@ -413,6 +413,17 @@ fn set_processing_mode(mode: config::ProcessingMode) -> Result<(), String> {
     native
         .controller
         .set_processing_mode(mode)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn set_output_method(method: config::OutputMethod) -> Result<(), String> {
+    let slot = NATIVE.get().ok_or("native host is unavailable")?;
+    let guard = slot.lock().map_err(|_| "native host is unavailable")?;
+    let native = guard.as_ref().ok_or("native host is unavailable")?;
+    native
+        .controller
+        .set_output_method(method)
         .map(|_| ())
         .map_err(|error| error.to_string())
 }
@@ -1010,7 +1021,7 @@ mod tests {
             (3, "transcript copied to clipboard", HudState::Success),
             (
                 4,
-                "typing failed; transcript copied to clipboard",
+                "automatic insertion failed; transcript copied to clipboard",
                 HudState::Success,
             ),
         ] {
@@ -1048,7 +1059,7 @@ mod tests {
             state: session::State::Success,
             generation: 1,
             message: Some(
-                "transformation failed; typing failed and safe fallback was copied to clipboard"
+                "transformation failed; automatic insertion failed and safe fallback was copied to clipboard"
                     .to_owned(),
             ),
             ..session::Snapshot::default()
