@@ -12,7 +12,7 @@ enum ProcessingMode: String, Codable, CaseIterable, Equatable {
         switch self {
         case .verbatim: return "Keep the transcript as spoken"
         case .clean: return "Apply faithful, deterministic cleanup"
-        case .polished: return "Restructure for clarity with Groq"
+        case .polished: return "Restructure for clarity with Cerebras"
         }
     }
 }
@@ -78,9 +78,9 @@ struct HelperRequest: Codable, Equatable {
     let dictation: Bool
     let numerals: Bool
     let measurements: Bool
-    let groqAPIKey: String
-    let groqModel: String
-    let groqBaseURL: String
+    let llmAPIKey: String
+    let llmModel: String
+    let llmBaseURL: String
     let processingProfile: ProcessingProfile
     enum CodingKeys: String, CodingKey {
         case version, wavPath = "wav_path", deepgramAPIKey = "deepgram_api_key"
@@ -88,7 +88,7 @@ struct HelperRequest: Codable, Equatable {
         case deepgramRegion = "deepgram_region", deepgramKeyterms = "deepgram_keyterms"
         case smartFormat = "deepgram_smart_format", punctuate = "deepgram_punctuate"
         case dictation = "deepgram_dictation", numerals = "deepgram_numerals", measurements = "deepgram_measurements"
-        case groqAPIKey = "groq_api_key", groqModel = "groq_model", groqBaseURL = "groq_base_url"
+        case llmAPIKey = "llm_api_key", llmModel = "llm_model", llmBaseURL = "llm_base_url"
         case processingProfile = "processing_profile"
     }
 }
@@ -108,9 +108,9 @@ struct StreamingHelperRequest: Codable, Equatable {
     let numerals: Bool
     let measurements: Bool
     let streamFinalizeTimeoutMs: Int
-    let groqAPIKey: String
-    let groqModel: String
-    let groqBaseURL: String
+    let llmAPIKey: String
+    let llmModel: String
+    let llmBaseURL: String
     let processingProfile: ProcessingProfile
     enum CodingKeys: String, CodingKey {
         case version, wavPath = "wav_path", pcmPath = "pcm_path", deepgramAPIKey = "deepgram_api_key"
@@ -119,7 +119,7 @@ struct StreamingHelperRequest: Codable, Equatable {
         case smartFormat = "deepgram_smart_format", punctuate = "deepgram_punctuate"
         case dictation = "deepgram_dictation", numerals = "deepgram_numerals", measurements = "deepgram_measurements"
         case streamFinalizeTimeoutMs = "stream_finalize_timeout_ms"
-        case groqAPIKey = "groq_api_key", groqModel = "groq_model", groqBaseURL = "groq_base_url"
+        case llmAPIKey = "llm_api_key", llmModel = "llm_model", llmBaseURL = "llm_base_url"
         case processingProfile = "processing_profile"
     }
 }
@@ -147,6 +147,22 @@ enum WorkerErrorCode: String, Codable, Equatable {
 }
 
 struct HelperResult: Codable, Equatable {
+    struct Timing: Codable, Equatable {
+        let deepgramConnectMs: Int?
+        let deepgramStopToFinalMs: Int?
+        let restSTTMs: Int?
+        let deterministicProcessingMs: Int
+        let plannerMs: Int?
+        let processingTotalMs: Int
+        enum CodingKeys: String, CodingKey {
+            case deepgramConnectMs = "deepgram_connect_ms"
+            case deepgramStopToFinalMs = "deepgram_stop_to_final_ms"
+            case restSTTMs = "rest_stt_ms"
+            case deterministicProcessingMs = "deterministic_processing_ms"
+            case plannerMs = "planner_ms"
+            case processingTotalMs = "processing_total_ms"
+        }
+    }
     enum Status: String, Codable { case success, noSpeech = "no_speech", error }
     enum Transport: String, Codable { case rest, stream }
     let version: Int
@@ -156,8 +172,9 @@ struct HelperResult: Codable, Equatable {
     let error: WorkerErrorCode?
     let processingProfile: ProcessingProfile
     let transport: Transport
+    let timing: Timing?
     enum CodingKeys: String, CodingKey {
-        case version, status, text, warning, error, transport
+        case version, status, text, warning, error, transport, timing
         case processingProfile = "processing_profile"
     }
 }

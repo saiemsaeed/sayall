@@ -21,7 +21,7 @@ const product = product_module.Integration;
 const product_contract = product_module.contracts;
 const deepgram = @import("stt/deepgram.zig");
 const deepgram_stream = @import("stt/deepgram_stream.zig");
-const groq = @import("llm/groq.zig");
+const cloud_planner = @import("llm/cloud_planner.zig");
 
 pub fn main(init: std.process.Init) u8 {
     return run(init) catch |err| {
@@ -612,7 +612,7 @@ fn doctor(arena: std.mem.Allocator, io: Io, env: *const std.process.Environ.Map)
             const processing_profile = config.effectiveProcessingProfile(&cfg);
             if (processing_profile.usesPlanner() and cfg.llm.api_key.len == 0) {
                 warnings += 1;
-                try diagnostic(arena, io, "warn", "Groq credentials", "polished processing is selected but its API key is missing");
+                try diagnostic(arena, io, "warn", "Cerebras credentials", "polished processing is selected but its API key is missing");
             } else {
                 try diagnostic(arena, io, "ok", "Processing profile", @tagName(processing_profile));
             }
@@ -781,7 +781,7 @@ test {
     _ = recorder;
     _ = deepgram;
     _ = deepgram_stream;
-    _ = groq;
+    _ = cloud_planner;
     _ = metrics;
     _ = keywords;
     _ = protocol;

@@ -3,7 +3,7 @@
 This directory contains a privacy-safe, synthetic benchmark for Feature Set A
 text modes. The versioned corpus and scorer remain independent contracts;
 `adapter.py` and the test-only Zig case runner connect them to the production
-`groq.clean` and `groq.polished` APIs without introducing a second
+`cloud_planner.clean` and `cloud_planner.polished` APIs without introducing a second
 transformation implementation.
 
 ## Corpus contract (`corpus-v1.jsonl`)
@@ -92,8 +92,8 @@ python3 tests/transformation_benchmark/scorer.py --enforce-hard \
   --markdown transformation-report.md
 ```
 
-Set `GROQ_API_KEY` locally to exercise Polished live. Every Polished corpus case invokes
-exactly one `groq.polished` call. Verbatim and Clean always use their production
+Set `CEREBRAS_API_KEY` locally to exercise Polished live. Every Polished corpus case invokes
+exactly one `cloud_planner.polished` call. Verbatim and Clean always use their production
 deterministic paths and never receive the key. The adapter defaults to four
 case processes and a 45-second per-case deadline; `--concurrency` and
 `--timeout` may lower or raise those explicit bounds. Any outer case-process
@@ -131,7 +131,7 @@ same report and lists all safety failures and expected-output misses.
 
 `transformation-benchmark.yml` is manually dispatchable against any selected
 ref, and both manual and release qualification runs explicitly disable the live
-provider and receive no Groq credential. A release passes its exact
+provider and receive no Cerebras credential. A release passes its exact
 `github.sha`; the job asserts checked-out `HEAD` matches it and derives adapter
 identity from that `HEAD`, so tests and evidence bind to the release source. The
 workflow runs unit tests, downloads the newest retained compatible deterministic
@@ -139,7 +139,7 @@ report when available, runs the adapter, renders JSON and Markdown, and uploads
 result JSONL plus both reports for 30 days. Polished cases therefore produce
 `missing_credential`, source-exact fallbacks while deterministic coverage runs.
 
-Live Polished remains locally runnable with `GROQ_API_KEY`. CI live runs require
+Live Polished remains locally runnable with `CEREBRAS_API_KEY`. CI live runs require
 a future protected GitHub environment restricted to trusted release branches;
 until that environment and its approvals are configured, workflows must not
 reference or receive the provider credential.

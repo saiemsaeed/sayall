@@ -5,14 +5,14 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.2.12] - 2026-08-15
+## [0.3.0] - 2026-08-16
 
 ### Added
 
 - Added Verbatim, Clean, and Polished processing modes to the Linux HUD and
-  macOS menu. Verbatim sends no transcript to Groq, Clean performs only local
-  deterministic cleanup, and Polished uses the structured Groq planner with
-  unchanged-transcript fallback.
+  macOS menu. Verbatim sends no transcript to Cerebras, Clean performs only
+  local deterministic cleanup, and Polished applies Clean before using the
+  structured Cerebras planner with silent Clean fallback.
 - Added a deterministic transformation benchmark and release canary covering
   cleanup safety, semantic preservation, and production worker integration.
 
@@ -22,8 +22,8 @@ follows [Semantic Versioning](https://semver.org/).
   preserving the behavior of existing `llm.enabled` configurations during
   migration.
 - Improved Polished mode's handling of acronyms, negation, false starts, and
-  cleanup outcomes, and reported transformation failures without dropping an
-  otherwise valid transcript.
+  cleanup outcomes while retaining provider degradation only in privacy-safe
+  local metrics.
 
 ### Fixed
 
@@ -410,8 +410,8 @@ Initial release, tested and supported on x86-64 Arch Linux with Omarchy.
 - Persistent privacy-safe transcription metrics and microphone diagnostics.
 - systemd user services and Hyprland hotkey integration.
 
-[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.2.12...HEAD
-[0.2.12]: https://github.com/saiemsaeed/sayall/compare/v0.2.11...v0.2.12
+[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/saiemsaeed/sayall/compare/v0.2.11...v0.3.0
 [0.2.11]: https://github.com/saiemsaeed/sayall/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/saiemsaeed/sayall/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/saiemsaeed/sayall/compare/v0.2.8...v0.2.9

@@ -146,8 +146,8 @@ impl Model {
             self.clipping_until = None;
             self.error.clear();
             self.success_message = "Copied to clipboard".to_owned();
-            for value in &mut self.history {
-                *value = 0.0;
+            for level in &mut self.history {
+                *level = 0.0;
             }
             self.displayed.fill(0.0);
         }
@@ -163,10 +163,10 @@ impl Model {
             && matches!(
                 snapshot.message.as_deref(),
                 Some("transcript copied to clipboard")
-                    | Some("typing failed; transcript copied to clipboard")
-                    | Some("transformation failed; raw transcript copied to clipboard")
+                    | Some("automatic insertion failed; transcript copied to clipboard")
+                    | Some("transformation failed; safe fallback copied to clipboard")
                     | Some(
-                        "transformation failed; typing failed and raw transcript was copied to clipboard"
+                        "transformation failed; automatic insertion failed and safe fallback was copied to clipboard"
                     )
             );
         let transformation_warning = snapshot.state == session::State::Success
@@ -193,12 +193,12 @@ impl Model {
         }
         if copied {
             self.success_message = if transformation_warning {
-                "Raw transcript copied to clipboard".to_owned()
+                "Safe fallback copied to clipboard".to_owned()
             } else {
                 "Copied to clipboard".to_owned()
             };
         } else if transformation_warning {
-            self.success_message = "Raw transcript delivered".to_owned();
+            self.success_message = "Safe fallback delivered".to_owned();
         } else if matches!(
             snapshot.state,
             session::State::Error | session::State::Cancelled
@@ -224,10 +224,9 @@ impl Model {
         match event.kind {
             EventKind::StateChanged(snapshot) => self.apply_state(&snapshot),
             EventKind::AudioLevel(data) => {
-                let level = (data.rms * 2.2).max(data.peak * 0.72).clamp(0.0, 1.0);
                 self.history.pop_front();
-                self.history.push_back(level);
-                if data.clipping {
+                self.history.push_back(visual_audio_level(data.rms));
+                if data.clipping || data.peak >= 32760.0 / 32768.0 {
                     self.clipping_until = Some(Instant::now() + Duration::from_millis(350));
                 }
             }
@@ -278,8 +277,8 @@ impl Model {
         if self.state == HudState::Recording && previous != HudState::Recording {
             self.recording_started =
                 Instant::now().checked_sub(Duration::from_millis(snapshot.elapsed_ms));
-            for value in &mut self.history {
-                *value = 0.0;
+            for level in &mut self.history {
+                *level = 0.0;
             }
             self.displayed.fill(0.0);
             self.hide_at = None;
@@ -297,9 +296,14 @@ impl Model {
     }
 
     fn animate(&mut self) {
-        for (displayed, target) in self.displayed.iter_mut().zip(self.history.iter()) {
-            let speed = if *target > *displayed { 0.48 } else { 0.18 };
-            *displayed += (*target - *displayed) * speed;
+        for (displayed, level) in self.displayed.iter_mut().zip(self.history.iter()) {
+            let target = if self.state == HudState::Recording {
+                *level
+            } else {
+                0.0
+            };
+            let speed = if target > *displayed { 0.48 } else { 0.18 };
+            *displayed += (target - *displayed) * speed;
         }
         if self
             .hide_at
@@ -313,6 +317,11 @@ impl Model {
     fn visible(&self) -> bool {
         self.state != HudState::Idle
     }
+}
+
+fn visual_audio_level(rms: f64) -> f64 {
+    let decibels = 20.0 * rms.max(0.000_01).log10();
+    ((decibels + 55.0) / 55.0).clamp(0.0, 1.0)
 }
 
 fn main() -> glib::ExitCode {
@@ -408,6 +417,17 @@ fn set_processing_mode(mode: config::ProcessingMode) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+fn set_output_method(method: config::OutputMethod) -> Result<(), String> {
+    let slot = NATIVE.get().ok_or("native host is unavailable")?;
+    let guard = slot.lock().map_err(|_| "native host is unavailable")?;
+    let native = guard.as_ref().ok_or("native host is unavailable")?;
+    native
+        .controller
+        .set_output_method(method)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 fn start_native_host() -> io::Result<()> {
     let ownership = runtime::Ownership::acquire(socket_path()?)?;
     let root = runtime::session_root()?;
@@ -462,9 +482,10 @@ fn build_ui(app: &Application) {
         .default_width(HUD_WIDTH)
         .default_height(HUD_HEIGHT)
         .build();
+    window.add_css_class("sayall-hud-window");
 
     let css = gtk::CssProvider::new();
-    css.load_from_data("window { background-color: transparent; }");
+    css.load_from_data(".sayall-hud-window { background-color: transparent; }");
     gtk::style_context_add_provider_for_display(
         &gtk::gdk::Display::default().expect("a graphical display"),
         &css,
@@ -533,10 +554,9 @@ fn install_tick(
                         continue;
                     }
                     if let Some(level) = snapshot.level {
-                        let value = (level.rms * 2.2).max(level.peak * 0.72).clamp(0.0, 1.0);
                         model.history.pop_front();
-                        model.history.push_back(value);
-                        if level.clipping {
+                        model.history.push_back(visual_audio_level(level.rms));
+                        if level.clipping || level.peak >= 32760.0 / 32768.0 {
                             model.clipping_until =
                                 Some(Instant::now() + Duration::from_millis(350));
                         }
@@ -621,9 +641,6 @@ fn draw_hud(cr: &cairo::Context, width: i32, height: i32, model: &Model) {
 }
 
 fn draw_recording(cr: &cairo::Context, width: f64, height: f64, model: &Model) {
-    const REFERENCE_HEIGHTS: [f64; BAR_COUNT] = [
-        5.0, 9.0, 14.0, 20.0, 12.0, 24.0, 17.0, 22.0, 10.0, 16.0, 24.0, 14.0, 8.0, 5.0,
-    ];
     let content_width = 8.0 + 16.0 + 138.0 + if model.show_timer { 16.0 + 34.0 } else { 0.0 };
     let content_x = (width - content_width) / 2.0;
 
@@ -646,7 +663,7 @@ fn draw_recording(cr: &cairo::Context, width: f64, height: f64, model: &Model) {
     let bar_width = 4.5;
     let gap = (visualizer_width - bar_width * BAR_COUNT as f64) / (BAR_COUNT - 1) as f64;
     for (index, level) in model.displayed.iter().enumerate() {
-        let bar_height = 5.0 + level.clamp(0.0, 1.0) * (REFERENCE_HEIGHTS[index] - 5.0);
+        let bar_height = 5.0 + level.clamp(0.0, 1.0) * 19.0;
         let x = start_x + index as f64 * (bar_width + gap);
         rounded_rect(
             cr,
@@ -901,7 +918,17 @@ mod tests {
             br#"{"v":1,"type":"event","seq":2,"event":"audio.level","session_id":1,"data":{"rms":0.2,"peak":0.5,"clipping":false,"window_ms":100}}"#,
         );
         model.apply_event(level);
-        assert!(model.history.back().copied().unwrap_or_default() > 0.3);
+        assert!(model.history.back().copied().unwrap_or_default() > 0.7);
+        model.animate();
+        assert_eq!(model.displayed[0], 0.0);
+        assert!(model.displayed[BAR_COUNT - 1] > 0.0);
+    }
+
+    #[test]
+    fn audio_levels_match_the_macos_decibel_scale() {
+        assert_eq!(visual_audio_level(0.0), 0.0);
+        assert!((visual_audio_level(0.031_622_776) - 25.0 / 55.0).abs() < 0.000_001);
+        assert_eq!(visual_audio_level(1.0), 1.0);
     }
 
     #[test]
@@ -994,7 +1021,7 @@ mod tests {
             (3, "transcript copied to clipboard", HudState::Success),
             (
                 4,
-                "typing failed; transcript copied to clipboard",
+                "automatic insertion failed; transcript copied to clipboard",
                 HudState::Success,
             ),
         ] {
@@ -1017,11 +1044,11 @@ mod tests {
         model.apply_native_terminal(&session::Snapshot {
             state: session::State::Success,
             generation: 1,
-            message: Some("transformation failed; raw transcript delivered".to_owned()),
+            message: Some("transformation failed; safe fallback delivered".to_owned()),
             ..session::Snapshot::default()
         });
         assert_eq!(model.state, HudState::Success);
-        assert_eq!(model.success_message, "Raw transcript delivered");
+        assert_eq!(model.success_message, "Safe fallback delivered");
         assert!(model.hide_at.is_some());
     }
 
@@ -1032,13 +1059,13 @@ mod tests {
             state: session::State::Success,
             generation: 1,
             message: Some(
-                "transformation failed; typing failed and raw transcript was copied to clipboard"
+                "transformation failed; automatic insertion failed and safe fallback was copied to clipboard"
                     .to_owned(),
             ),
             ..session::Snapshot::default()
         });
         assert_eq!(model.state, HudState::Success);
-        assert_eq!(model.success_message, "Raw transcript copied to clipboard");
+        assert_eq!(model.success_message, "Safe fallback copied to clipboard");
         assert!(model.hide_at.is_some());
     }
 

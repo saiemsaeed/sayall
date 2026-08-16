@@ -39,6 +39,7 @@ final class Coordinator {
     private var pendingWarning: String?
     private var startupTiming: StartupTiming?
     private let startupMetrics = StartupMetricsStore()
+    private let pipelineMetrics = PipelineMetricsStore()
     private let configuration: ConfigurationLoader
     private let changed: () -> Void
     private let configurationAvailabilityChanged: () -> Void
@@ -287,6 +288,7 @@ final class Coordinator {
     }
     private func stop() {
         guard let id = operationID else { return }
+        let stopStarted = DispatchTime.now().uptimeNanoseconds
         audioLevel = 0
         set(.stopping, "Stopping recording…"); maximumTimer?.invalidate(); maximumTimer = nil
         let streamHelper = streamSession
@@ -343,13 +345,27 @@ final class Coordinator {
                 guard result.processingProfile == config.processingProfile else {
                     throw HelperFailure.malformedOutput
                 }
+                let helperFinished = DispatchTime.now().uptimeNanoseconds
                 guard result.status == .success, let text = result.text, !text.isEmpty else {
+                    persistPipeline(correlationID: id, result: result, outcome: "no_speech",
+                        stopStarted: stopStarted, helperFinished: helperFinished,
+                        deliveryStarted: nil, delivered: nil, config: config)
                     completeAndHide(id)
                     return
                 }
                 set(.delivering, "Delivering transcript…")
+                let deliveryStarted = DispatchTime.now().uptimeNanoseconds
                 let deliveredText = config.trailingSpace ? text + " " : text
                 let delivery = TextDelivery.deliver(deliveredText, method: config.outputMethod, to: deliveryTarget)
+                let delivered = DispatchTime.now().uptimeNanoseconds
+                let metricOutcome: String
+                switch delivery {
+                case .typeCommandPosted, .pasteCommandPosted, .copied: metricOutcome = "success"
+                case .copiedFallback: metricOutcome = "copied_fallback"
+                case .failed: metricOutcome = "delivery_error"
+                }
+                persistPipeline(correlationID: id, result: result, outcome: metricOutcome, stopStarted: stopStarted,
+                    helperFinished: helperFinished, deliveryStarted: deliveryStarted, delivered: delivered, config: config)
                 pendingWarning = Self.warningMessage(for: result.warning)
                 switch delivery {
                 case .typeCommandPosted, .pasteCommandPosted:
@@ -371,6 +387,25 @@ final class Coordinator {
             }
             catch { finish(id, as: .error, message: "Processing failed; try again", resetAfter: 8) }
         }
+    }
+
+    private func persistPipeline(correlationID: UUID, result: HelperResult, outcome: String, stopStarted: UInt64,
+                                 helperFinished: UInt64, deliveryStarted: UInt64?, delivered: UInt64?,
+                                 config: ProviderSettings) {
+        let timing = result.timing
+        let sample = PipelineMetricSample(correlationID: correlationID.uuidString,
+            deepgramConnectMs: timing?.deepgramConnectMs,
+            deepgramStopToFinalMs: timing?.deepgramStopToFinalMs, restSTTMs: timing?.restSTTMs,
+            deterministicProcessingMs: timing?.deterministicProcessingMs, plannerMs: timing?.plannerMs,
+            processingTotalMs: timing?.processingTotalMs,
+            helperFinishMs: Self.elapsedMilliseconds(from: stopStarted, to: helperFinished),
+            deliveryMs: deliveryStarted.flatMap { started in
+                delivered.map { Self.elapsedMilliseconds(from: started, to: $0) }
+            },
+            stopToDeliveredMs: delivered.map { Self.elapsedMilliseconds(from: stopStarted, to: $0) },
+            outcome: outcome, profile: config.processingProfile, transport: result.transport)
+        Task { await pipelineMetrics.record(sample, enabled: config.metricsEnabled,
+            limit: config.metricsHistoryMaxEntries) }
     }
     func cancel() {
         let hadOperation = operationID != nil
@@ -406,6 +441,7 @@ final class Coordinator {
         let finished = DispatchTime.now().uptimeNanoseconds
         let shortcut = timing.source == .shortcut
         let sample = StartupMetricSample(
+            correlationID: operationID?.uuidString,
             shortcutToHUDMs: shortcut ? timing.hudPresented.map {
                 Self.elapsedMilliseconds(from: timing.started, to: $0)
             } : nil,
@@ -478,7 +514,7 @@ final class Coordinator {
     }
 
     nonisolated static func warningMessage(for warning: String?) -> String? {
-        warning == "transformation_failed" ? "Transformation failed; used the raw transcript." : nil
+        warning == "transformation_failed" ? "Transformation failed; used the safe fallback." : nil
     }
 
     nonisolated static func batchRequest(config: ProviderSettings, wavPath: String) -> HelperRequest {
@@ -487,8 +523,8 @@ final class Coordinator {
             deepgramRegion: config.deepgramRegion, deepgramKeyterms: config.deepgramKeyterms,
             smartFormat: config.smartFormat, punctuate: config.punctuate,
             dictation: config.dictation, numerals: config.numerals, measurements: config.measurements,
-            groqAPIKey: config.groqAPIKey, groqModel: config.groqModel,
-            groqBaseURL: config.groqBaseURL, processingProfile: config.processingProfile)
+            llmAPIKey: config.llmAPIKey, llmModel: config.llmModel,
+            llmBaseURL: config.llmBaseURL, processingProfile: config.processingProfile)
     }
 
     nonisolated static func streamingRequest(config: ProviderSettings, wavPath: String,
@@ -500,8 +536,8 @@ final class Coordinator {
             smartFormat: config.smartFormat, punctuate: config.punctuate,
             dictation: config.dictation, numerals: config.numerals, measurements: config.measurements,
             streamFinalizeTimeoutMs: config.streamFinalizeTimeoutMs,
-            groqAPIKey: config.groqAPIKey, groqModel: config.groqModel,
-            groqBaseURL: config.groqBaseURL, processingProfile: config.processingProfile)
+            llmAPIKey: config.llmAPIKey, llmModel: config.llmModel,
+            llmBaseURL: config.llmBaseURL, processingProfile: config.processingProfile)
     }
 
     private static func message(for error: Error, path: String) -> String {
@@ -512,9 +548,9 @@ final class Coordinator {
         case .missingDeepgramKey: return "Set stt.api_key or DEEPGRAM_API_KEY in \(path)"
         case .invalidProvider: return "Use a valid stt.model, stt.language, and global/eu/au region"
         case .invalidProcessingMode: return "Set processing.mode to verbatim, clean, or polished"
-        case .missingGroqKey: return "Polished mode requires llm.api_key or GROQ_API_KEY"
+        case .missingCerebrasKey: return "Cloud processing requires llm.api_key or CEREBRAS_API_KEY"
         case .unsupportedPlannerModel:
-            return "Polished mode requires llm.model openai/gpt-oss-20b or openai/gpt-oss-120b"
+            return "Cloud processing requires llm.model gpt-oss-120b"
         case .invalidOutputMethod: return "Set output.method to type, paste, or clipboard"
         case .invalidMetrics: return "Set metrics.history_max_entries between 0 and 100000"
         case .invalidSecret: return "Provider API keys cannot contain whitespace"

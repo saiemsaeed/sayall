@@ -2,7 +2,7 @@ const std = @import("std");
 const recorder = @import("recorder.zig");
 const provider = @import("provider_config.zig");
 const deepgram = @import("stt/deepgram.zig");
-const groq = @import("llm/groq.zig");
+const cloud_planner = @import("llm/cloud_planner.zig");
 const keywords = @import("keywords.zig");
 const processing = @import("processing.zig");
 const provider_processing = @import("provider_processing.zig");
@@ -25,9 +25,9 @@ pub const Request = struct {
     deepgram_dictation: bool = false,
     deepgram_numerals: bool = false,
     deepgram_measurements: bool = false,
-    groq_api_key: []const u8,
-    groq_model: []const u8 = "openai/gpt-oss-20b",
-    groq_base_url: []const u8 = "https://api.groq.com/openai/v1/chat/completions",
+    llm_api_key: []const u8,
+    llm_model: []const u8 = "gpt-oss-120b",
+    llm_base_url: []const u8 = "https://api.cerebras.ai/v1/chat/completions",
     processing_profile: processing.Profile,
 };
 pub const ErrorCode = enum {
@@ -47,6 +47,14 @@ pub const ErrorCode = enum {
 pub const Warning = enum { transformation_failed };
 pub const Status = enum { success, no_speech, @"error" };
 pub const Transport = enum { rest, stream };
+pub const Timing = struct {
+    deepgram_connect_ms: ?u64 = null,
+    deepgram_stop_to_final_ms: ?u64 = null,
+    rest_stt_ms: ?u64 = null,
+    deterministic_processing_ms: u64,
+    planner_ms: ?u64 = null,
+    processing_total_ms: u64,
+};
 pub const Result = struct {
     version: u32 = worker_protocol.version,
     status: Status,
@@ -55,6 +63,7 @@ pub const Result = struct {
     @"error": ?ErrorCode = null,
     processing_profile: processing.Profile,
     transport: Transport,
+    timing: ?Timing = null,
 };
 pub const WireResult = struct {
     version: u32,
@@ -64,6 +73,7 @@ pub const WireResult = struct {
     @"error": ?ErrorCode = null,
     processing_profile: processing.Profile,
     transport: Transport,
+    timing: ?Timing = null,
 };
 pub const Seam = struct {
     context: ?*anyopaque = null,
@@ -82,14 +92,18 @@ pub fn process(gpa: std.mem.Allocator, io: std.Io, r: Request, seam: Seam) Resul
 }
 
 pub fn processWithTranscript(gpa: std.mem.Allocator, io: std.Io, r: Request, seam: Seam, streamed: ?[]const u8) Result {
+    return processWithTranscriptTiming(gpa, io, r, seam, streamed, null, null);
+}
+
+pub fn processWithTranscriptTiming(gpa: std.mem.Allocator, io: std.Io, r: Request, seam: Seam, streamed: ?[]const u8, connect_ms: ?u64, stop_to_final_ms: ?u64) Result {
     const transport: Transport = if (streamed != null) .stream else .rest;
     if (r.version != worker_protocol.version) return fail(.incompatible_version, r.processing_profile, transport);
     if (r.deepgram_api_key.len == 0) return fail(.missing_deepgram_key, r.processing_profile, transport);
     if (r.deepgram_dictation and !r.deepgram_punctuate) return fail(.invalid_request, r.processing_profile, transport);
-    if (!safeSecret(r.deepgram_api_key) or !safeSecret(r.groq_api_key)) return fail(.invalid_request, r.processing_profile, transport);
+    if (!safeSecret(r.deepgram_api_key) or !safeSecret(r.llm_api_key)) return fail(.invalid_request, r.processing_profile, transport);
     if (!safeProviderValue(r.deepgram_model) or !safeProviderValue(r.deepgram_language) or
-        !safeLlmModel(r.groq_model) or !validRegion(r.deepgram_region) or
-        !std.mem.eql(u8, r.groq_base_url, "https://api.groq.com/openai/v1/chat/completions")) return fail(.invalid_request, r.processing_profile, transport);
+        !safeLlmModel(r.llm_model) or !std.mem.eql(u8, r.llm_model, "gpt-oss-120b") or !validRegion(r.deepgram_region) or
+        !std.mem.eql(u8, r.llm_base_url, "https://api.cerebras.ai/v1/chat/completions")) return fail(.invalid_request, r.processing_profile, transport);
     keywords.validate(r.deepgram_keyterms) catch return fail(.invalid_request, r.processing_profile, transport);
     if (r.deepgram_keyterms.len > 0 and !std.mem.eql(u8, r.deepgram_model, "nova-3") and
         !std.mem.startsWith(u8, r.deepgram_model, "nova-3-")) return fail(.invalid_request, r.processing_profile, transport);
@@ -120,6 +134,7 @@ pub fn processWithTranscript(gpa: std.mem.Allocator, io: std.Io, r: Request, sea
     };
     var context: CoreContext = .{ .io = io, .request = &r, .seam = seam, .stt = &stt, .wav = wav };
     const streamed_owned = if (streamed) |text| gpa.dupe(u8, text) catch return fail(.internal, r.processing_profile, transport) else null;
+    const processing_started = nowMs(io);
     const outcome = provider_processing.process(gpa, streamed_owned, r.processing_profile, .{
         .max_bytes = max_output_bytes,
         .require_utf8 = true,
@@ -133,14 +148,23 @@ pub fn processWithTranscript(gpa: std.mem.Allocator, io: std.Io, r: Request, sea
         r.processing_profile,
         transport,
     );
+    const timing: Timing = .{
+        .deepgram_connect_ms = connect_ms,
+        .deepgram_stop_to_final_ms = stop_to_final_ms,
+        .rest_stt_ms = context.rest_stt_ms,
+        .deterministic_processing_ms = context.deterministic_processing_ms,
+        .planner_ms = context.planner_ms,
+        .processing_total_ms = elapsedMs(processing_started, io),
+    };
     return switch (outcome) {
-        .no_speech => .{ .status = .no_speech, .processing_profile = r.processing_profile, .transport = transport },
+        .no_speech => .{ .status = .no_speech, .processing_profile = r.processing_profile, .transport = transport, .timing = timing },
         .success => |value| .{
             .status = .success,
             .text = value.text,
             .warning = if (value.warning != null) .transformation_failed else null,
             .processing_profile = r.processing_profile,
             .transport = transport,
+            .timing = timing,
         },
     };
 }
@@ -151,27 +175,44 @@ const CoreContext = struct {
     seam: Seam,
     stt: *const provider.SttConfig,
     wav: []const u8,
+    rest_stt_ms: ?u64 = null,
+    deterministic_processing_ms: u64 = 0,
+    planner_ms: ?u64 = null,
 };
 
 fn coreRest(context_ptr: ?*anyopaque, gpa: std.mem.Allocator) ![]u8 {
     const context: *CoreContext = @ptrCast(@alignCast(context_ptr.?));
+    const started = nowMs(context.io);
+    defer context.rest_stt_ms = elapsedMs(started, context.io);
     return context.seam.transcribe(context.seam.context, gpa, context.io, context.stt, context.wav);
 }
 
 fn coreClean(context_ptr: ?*anyopaque, gpa: std.mem.Allocator, raw: []const u8) ![]u8 {
     const context: *CoreContext = @ptrCast(@alignCast(context_ptr.?));
+    const started = nowMs(context.io);
+    defer context.deterministic_processing_ms += elapsedMs(started, context.io);
     return context.seam.clean(context.seam.context, gpa, context.request.deepgram_keyterms, raw);
 }
 
 fn corePlanner(context_ptr: ?*anyopaque, gpa: std.mem.Allocator, profile: processing.Profile, raw: []const u8) ![]u8 {
     const context: *CoreContext = @ptrCast(@alignCast(context_ptr.?));
+    const started = nowMs(context.io);
+    defer context.planner_ms = elapsedMs(started, context.io);
     if (profile != context.request.processing_profile) return error.InvalidProfile;
     const llm: provider.LlmConfig = .{
-        .api_key = context.request.groq_api_key,
-        .model = context.request.groq_model,
-        .base_url = context.request.groq_base_url,
+        .api_key = context.request.llm_api_key,
+        .model = context.request.llm_model,
+        .base_url = context.request.llm_base_url,
     };
     return context.seam.planner(context.seam.context, gpa, context.io, &llm, context.request.deepgram_keyterms, profile, raw);
+}
+
+fn nowMs(io: std.Io) i64 {
+    return std.Io.Clock.now(.awake, io).toMilliseconds();
+}
+
+fn elapsedMs(started: i64, io: std.Io) u64 {
+    return @intCast(@max(0, nowMs(io) - started));
 }
 
 fn fail(code: ErrorCode, profile: processing.Profile, transport: Transport) Result {
@@ -206,7 +247,7 @@ fn validRegion(region: []const u8) bool {
 }
 
 test "batch LLM model validation accepts one optional namespace" {
-    try std.testing.expect(safeLlmModel("openai/gpt-oss-20b"));
+    try std.testing.expect(safeLlmModel("gpt-oss-120b"));
     try std.testing.expect(!safeLlmModel("/openai"));
     try std.testing.expect(!safeLlmModel("openai/"));
     try std.testing.expect(!safeLlmModel("a/b/c"));
@@ -259,13 +300,13 @@ fn liveTranscribe(_: ?*anyopaque, gpa: std.mem.Allocator, io: std.Io, cfg: *cons
 }
 
 fn liveClean(_: ?*anyopaque, gpa: std.mem.Allocator, keyterms: []const []const u8, raw: []const u8) ![]u8 {
-    return groq.clean(gpa, raw, keyterms);
+    return cloud_planner.clean(gpa, raw, keyterms);
 }
 
 fn livePlanner(_: ?*anyopaque, gpa: std.mem.Allocator, io: std.Io, cfg: *const provider.LlmConfig, keyterms: []const []const u8, profile: processing.Profile, raw: []const u8) ![]u8 {
     return switch (profile) {
-        .polished => groq.polished(gpa, io, cfg, keyterms, raw, false),
-        .legacy_v1 => groq.cleanup(gpa, io, cfg, keyterms, raw, false),
+        .polished => cloud_planner.planFormatting(gpa, io, cfg, keyterms, raw, false),
+        .legacy_v1 => cloud_planner.cleanup(gpa, io, cfg, keyterms, raw, false),
         else => error.InvalidProfile,
     };
 }
@@ -273,6 +314,7 @@ fn livePlanner(_: ?*anyopaque, gpa: std.mem.Allocator, io: std.Io, cfg: *const p
 const FakeProvider = struct {
     transcript: []const u8 = "München",
     cleanup_fails: bool = false,
+    planner_fails: bool = false,
     expected_region: []const u8 = "global",
     expected_formatting: bool = false,
     transcribe_calls: usize = 0,
@@ -308,9 +350,9 @@ const FakeProvider = struct {
             .legacy_v1 => self.legacy_calls += 1,
             else => return error.InvalidProfile,
         }
-        if (self.cleanup_fails) return error.RequestFailed;
-        if (self.invalid_polished_plan and profile == .polished) return groq.cleanup_engine.polishedFromJson(gpa, raw, keyterms, "{}");
-        if (self.valid_no_change_plan and profile == .polished) return groq.cleanup_engine.polished(gpa, raw, keyterms, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
+        if (self.planner_fails) return error.RequestFailed;
+        if (self.invalid_polished_plan and profile == .polished) return cloud_planner.cleanup_engine.polishedFromJson(gpa, raw, keyterms, "{}");
+        if (self.valid_no_change_plan and profile == .polished) return cloud_planner.cleanup_engine.polished(gpa, raw, keyterms, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &.{} });
         return std.fmt.allocPrint(gpa, "{s}: {s}", .{ @tagName(profile), raw });
     }
 
@@ -338,12 +380,12 @@ fn writeTestWav(tmp: *std.testing.TmpDir, sample_bytes: usize) ![]u8 {
 }
 
 test "strict bounded request and result JSON" {
-    const json = "{\"version\":3,\"wav_path\":\"/a\",\"deepgram_api_key\":\"d\",\"groq_api_key\":\"g\",\"processing_profile\":\"polished\"}";
+    const json = "{\"version\":3,\"wav_path\":\"/a\",\"deepgram_api_key\":\"d\",\"llm_api_key\":\"g\",\"processing_profile\":\"polished\"}";
     const parsed = try parseRequest(std.testing.allocator, json);
     defer parsed.deinit();
     try std.testing.expectError(error.InvalidRequest, parseRequest(std.testing.allocator, json ++ "x"));
-    try std.testing.expectError(error.InvalidRequest, parseRequest(std.testing.allocator, "{\"version\":3,\"wav_path\":\"/a\",\"deepgram_api_key\":\"d\",\"groq_api_key\":\"g\"}"));
-    try std.testing.expectError(error.InvalidRequest, parseRequest(std.testing.allocator, "{\"version\":3,\"wav_path\":\"/a\",\"deepgram_api_key\":\"d\",\"groq_api_key\":\"g\",\"cleanup_enabled\":true}"));
+    try std.testing.expectError(error.InvalidRequest, parseRequest(std.testing.allocator, "{\"version\":3,\"wav_path\":\"/a\",\"deepgram_api_key\":\"d\",\"llm_api_key\":\"g\"}"));
+    try std.testing.expectError(error.InvalidRequest, parseRequest(std.testing.allocator, "{\"version\":3,\"wav_path\":\"/a\",\"deepgram_api_key\":\"d\",\"llm_api_key\":\"g\",\"cleanup_enabled\":true}"));
     const out = try stringifyResult(std.testing.allocator, .{
         .status = .success,
         .text = "München",
@@ -352,6 +394,27 @@ test "strict bounded request and result JSON" {
     });
     defer std.testing.allocator.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "München") != null);
+}
+
+test "result timing is additive and round trips" {
+    const encoded = try stringifyResult(std.testing.allocator, .{
+        .status = .success,
+        .text = "ok",
+        .processing_profile = .clean,
+        .transport = .stream,
+        .timing = .{
+            .deepgram_connect_ms = 12,
+            .deepgram_stop_to_final_ms = 34,
+            .deterministic_processing_ms = 5,
+            .processing_total_ms = 40,
+        },
+    });
+    defer std.testing.allocator.free(encoded);
+    const parsed = try parseResult(std.testing.allocator, encoded);
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(?u64, 12), parsed.value.timing.?.deepgram_connect_ms);
+    try std.testing.expectEqual(@as(u64, 5), parsed.value.timing.?.deterministic_processing_ms);
+    try std.testing.expectEqual(@as(?u64, null), parsed.value.timing.?.rest_stt_ms);
 }
 
 test "worker result decoder requires fields and status semantics" {
@@ -374,7 +437,7 @@ test "provider mapping is deterministic" {
     try std.testing.expectEqual(ErrorCode.deepgram_server, mapDeepgramError(error.ServerError));
 }
 
-test "REST fallback preserves polished profile when transformation fails" {
+test "REST and stream planner failure preserve polished profile with Clean fallback" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     const path = try writeTestWav(&tmp, 16_000);
@@ -389,10 +452,10 @@ test "REST fallback preserves polished profile when transformation fails" {
         .deepgram_dictation = true,
         .deepgram_numerals = true,
         .deepgram_measurements = true,
-        .groq_api_key = "groq",
+        .llm_api_key = "cerebras",
         .processing_profile = .polished,
     };
-    var fake: FakeProvider = .{ .cleanup_fails = true, .expected_region = "eu", .expected_formatting = true };
+    var fake: FakeProvider = .{ .planner_fails = true, .expected_region = "eu", .expected_formatting = true };
     const result = process(std.testing.allocator, std.testing.io, request, fake.seam());
     defer if (result.text) |text| std.testing.allocator.free(text);
     try std.testing.expectEqual(.success, result.status);
@@ -401,15 +464,16 @@ test "REST fallback preserves polished profile when transformation fails" {
     try std.testing.expectEqual(@as(usize, 1), fake.transcribe_calls);
     try std.testing.expectEqual(@as(usize, 1), fake.polished_calls);
     try std.testing.expectEqual(@as(usize, 0), fake.legacy_calls);
-    try std.testing.expectEqual(Warning.transformation_failed, result.warning.?);
-    try std.testing.expectEqualStrings("München", result.text.?);
+    try std.testing.expectEqual(@as(?Warning, null), result.warning);
+    try std.testing.expectEqualStrings("clean: München", result.text.?);
 
     const streamed = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "streamed");
     defer if (streamed.text) |text| std.testing.allocator.free(text);
     try std.testing.expectEqual(.success, streamed.status);
     try std.testing.expectEqual(Transport.stream, streamed.transport);
     try std.testing.expectEqual(processing.Profile.polished, streamed.processing_profile);
-    try std.testing.expectEqualStrings("streamed", streamed.text.?);
+    try std.testing.expectEqual(@as(?Warning, null), streamed.warning);
+    try std.testing.expectEqualStrings("clean: streamed", streamed.text.?);
 }
 
 test "protocol v3 routes clean polished and legacy engines by profile" {
@@ -422,7 +486,7 @@ test "protocol v3 routes clean polished and legacy engines by profile" {
         .version = worker_protocol.version,
         .wav_path = path,
         .deepgram_api_key = "deepgram",
-        .groq_api_key = "groq",
+        .llm_api_key = "cerebras",
         .processing_profile = .verbatim,
     };
 
@@ -443,7 +507,7 @@ test "protocol v3 routes clean polished and legacy engines by profile" {
     request.processing_profile = .polished;
     const polished = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "raw");
     defer if (polished.text) |text| std.testing.allocator.free(text);
-    try std.testing.expectEqualStrings("polished: raw", polished.text.?);
+    try std.testing.expectEqualStrings("polished: clean: raw", polished.text.?);
     try std.testing.expectEqual(@as(usize, 1), fake.polished_calls);
     try std.testing.expectEqual(@as(usize, 0), fake.legacy_calls);
 
@@ -456,10 +520,10 @@ test "protocol v3 routes clean polished and legacy engines by profile" {
 
     fake.invalid_polished_plan = true;
     request.processing_profile = .polished;
-    const invalid_plan = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "do not change");
+    const invalid_plan = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "please do not change");
     defer if (invalid_plan.text) |text| std.testing.allocator.free(text);
-    try std.testing.expectEqualStrings("do not change", invalid_plan.text.?);
-    try std.testing.expectEqual(Warning.transformation_failed, invalid_plan.warning.?);
+    try std.testing.expectEqualStrings("clean: please do not change", invalid_plan.text.?);
+    try std.testing.expectEqual(@as(?Warning, null), invalid_plan.warning);
     try std.testing.expectEqual(@as(usize, 2), fake.polished_calls);
     try std.testing.expectEqual(@as(usize, 0), fake.transcribe_calls);
 
@@ -467,7 +531,7 @@ test "protocol v3 routes clean polished and legacy engines by profile" {
     fake.valid_no_change_plan = true;
     const no_change = processWithTranscript(std.testing.allocator, std.testing.io, request, fake.seam(), "keep  exactly\nthis");
     defer if (no_change.text) |text| std.testing.allocator.free(text);
-    try std.testing.expectEqualStrings("keep  exactly\nthis", no_change.text.?);
+    try std.testing.expectEqualStrings("clean: keep  exactly\nthis", no_change.text.?);
     try std.testing.expectEqual(@as(?Warning, null), no_change.warning);
 }
 
@@ -486,7 +550,7 @@ test "process distinguishes short and invalid audio without calling providers" {
         .version = worker_protocol.version,
         .wav_path = path,
         .deepgram_api_key = "deepgram",
-        .groq_api_key = "",
+        .llm_api_key = "",
         .processing_profile = .verbatim,
     };
     var fake: FakeProvider = .{};
@@ -504,7 +568,7 @@ test "process rejects incompatible requests and oversized provider output" {
         .version = worker_protocol.version - 1,
         .wav_path = "/unused",
         .deepgram_api_key = "deepgram",
-        .groq_api_key = "",
+        .llm_api_key = "",
         .processing_profile = .verbatim,
     }, fake.seam());
     try std.testing.expectEqual(ErrorCode.incompatible_version, incompatible.@"error".?);
@@ -521,7 +585,7 @@ test "process rejects incompatible requests and oversized provider output" {
         .version = worker_protocol.version,
         .wav_path = path,
         .deepgram_api_key = "deepgram",
-        .groq_api_key = "",
+        .llm_api_key = "",
         .processing_profile = .verbatim,
     }, fake.seam());
     try std.testing.expectEqual(ErrorCode.response_too_large, result.@"error".?);

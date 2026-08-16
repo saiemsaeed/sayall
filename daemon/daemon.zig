@@ -12,7 +12,7 @@ const protocol = @import("protocol.zig");
 const host_control = @import("host_control.zig");
 const recorder_mod = @import("recorder.zig");
 const deepgram_stream = @import("stt/deepgram_stream.zig");
-const groq = @import("llm/groq.zig");
+const cloud_planner = @import("llm/cloud_planner.zig");
 const provider_processing = @import("provider_processing.zig");
 const typer = @import("typer.zig");
 const notify = @import("notify.zig");
@@ -107,12 +107,12 @@ fn providerPlanner(context_ptr: ?*anyopaque, gpa: Allocator, profile: config.pro
     d.setStage(.cleaning);
     const started = d.nowMs();
     const cleaned = switch (profile) {
-        .polished => groq.polished(gpa, d.io, &d.cfg.llm, d.cfg.stt.keyterms, raw, d.cfg.verbose),
-        .legacy_v1 => groq.cleanup(gpa, d.io, &d.cfg.llm, d.cfg.stt.keyterms, raw, d.cfg.verbose),
+        .polished => cloud_planner.planFormatting(gpa, d.io, &d.cfg.llm, d.cfg.stt.keyterms, raw, d.cfg.verbose),
+        .legacy_v1 => cloud_planner.cleanup(gpa, d.io, &d.cfg.llm, d.cfg.stt.keyterms, raw, d.cfg.verbose),
         else => error.InvalidProfile,
     } catch |err| {
         context.planner_latency_ms = @intCast(@max(0, d.nowMs() - started));
-        d.log("llm cleanup failed: {s} — using raw transcript", .{@errorName(err)});
+        d.log("llm cleanup failed: {s} — using safe processing fallback", .{@errorName(err)});
         return err;
     };
     context.planner_latency_ms = @intCast(@max(0, d.nowMs() - started));
@@ -123,7 +123,7 @@ fn providerPlanner(context_ptr: ?*anyopaque, gpa: Allocator, profile: config.pro
 fn providerClean(context_ptr: ?*anyopaque, gpa: Allocator, raw: []const u8) ![]u8 {
     const context: *ProviderContext = @ptrCast(@alignCast(context_ptr.?));
     context.daemon.setStage(.cleaning);
-    return groq.clean(gpa, raw, context.daemon.cfg.stt.keyterms);
+    return cloud_planner.clean(gpa, raw, context.daemon.cfg.stt.keyterms);
 }
 
 fn annotateProcessingMetrics(context: *ProviderContext, profile: config.processing.Profile, outcome: config.processing.TransformationOutcome) void {

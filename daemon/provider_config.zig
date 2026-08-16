@@ -17,9 +17,9 @@ pub const SttConfig = struct {
 };
 
 pub const LlmConfig = struct {
-    provider: []const u8 = "groq",
+    provider: []const u8 = "cerebras",
     api_key: []const u8 = "",
-    model: []const u8 = "openai/gpt-oss-20b",
-    base_url: []const u8 = "https://api.groq.com/openai/v1/chat/completions",
+    model: []const u8 = "gpt-oss-120b",
+    base_url: []const u8 = "https://api.cerebras.ai/v1/chat/completions",
     enabled: bool = false,
 };

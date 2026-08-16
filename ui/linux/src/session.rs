@@ -85,6 +85,10 @@ enum Command {
         config::ProcessingMode,
         mpsc::Sender<Result<Snapshot, ToggleError>>,
     ),
+    SetOutputMethod(
+        config::OutputMethod,
+        mpsc::Sender<Result<Snapshot, ToggleError>>,
+    ),
     Shutdown,
 }
 struct Inner {
@@ -203,6 +207,32 @@ impl Controller {
         self.0.admitted.store(false, Ordering::Release);
         result
     }
+    pub fn set_output_method(&self, method: config::OutputMethod) -> Result<Snapshot, ToggleError> {
+        if self.status().state != State::Idle {
+            return Err(ToggleError::Busy);
+        }
+        if self
+            .0
+            .admitted
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(ToggleError::Busy);
+        }
+        let (tx, rx) = mpsc::channel();
+        if self
+            .0
+            .tx
+            .send(Command::SetOutputMethod(method, tx))
+            .is_err()
+        {
+            self.0.admitted.store(false, Ordering::Release);
+            return Err(ToggleError::Unavailable);
+        }
+        let result = rx.recv().unwrap_or(Err(ToggleError::Unavailable));
+        self.0.admitted.store(false, Ordering::Release);
+        result
+    }
     pub fn shutdown_and_join(&self) {
         self.0.shutdown.store(true, Ordering::Release);
         let _ = self.0.tx.send(Command::Shutdown);
@@ -267,6 +297,17 @@ fn run(
                     Err(ToggleError::Busy)
                 } else {
                     config::set_processing_mode(mode)
+                        .map_err(|error| ToggleError::Failed(error.to_string()))
+                        .and_then(|_| validate_reload(config::load))
+                        .map(|()| shared.lock().unwrap().clone())
+                };
+                let _ = reply.send(result);
+            }
+            Ok(Command::SetOutputMethod(method, reply)) => {
+                let result = if shared.lock().unwrap().state != State::Idle || active.is_some() {
+                    Err(ToggleError::Busy)
+                } else {
+                    config::set_output_method(method)
                         .map_err(|error| ToggleError::Failed(error.to_string()))
                         .and_then(|_| validate_reload(config::load))
                         .map(|()| shared.lock().unwrap().clone())
@@ -488,7 +529,7 @@ where
         }
         Ok(DeliveryCompletion::Failed { error, warning }) => {
             let message = if warning == Some(worker::Warning::TransformationFailed) {
-                format!("transformation failed; raw transcript delivery also failed: {error}")
+                format!("transformation failed; safe fallback delivery also failed: {error}")
             } else {
                 error
             };
@@ -527,17 +568,17 @@ fn terminal_message(
     if warning == Some(worker::Warning::TransformationFailed) {
         return match outcome {
             desktop::DeliveryOutcome::ClipboardFallback => {
-                "transformation failed; typing failed and raw transcript was copied to clipboard"
+                "transformation failed; automatic insertion failed and safe fallback was copied to clipboard"
             }
             desktop::DeliveryOutcome::Clipboard => {
-                "transformation failed; raw transcript copied to clipboard"
+                "transformation failed; safe fallback copied to clipboard"
             }
-            _ => "transformation failed; raw transcript delivered",
+            _ => "transformation failed; safe fallback delivered",
         };
     }
     match outcome {
         desktop::DeliveryOutcome::ClipboardFallback => {
-            "typing failed; transcript copied to clipboard"
+            "automatic insertion failed; transcript copied to clipboard"
         }
         desktop::DeliveryOutcome::Clipboard => "transcript copied to clipboard",
         _ => "delivery completed",
@@ -731,7 +772,8 @@ mod tests {
             let reply = match rx.recv().unwrap() {
                 Command::Toggle(_, reply)
                 | Command::Reload(reply)
-                | Command::SetProcessingMode(_, reply) => reply,
+                | Command::SetProcessingMode(_, reply)
+                | Command::SetOutputMethod(_, reply) => reply,
                 Command::Shutdown => panic!(),
             };
             count.fetch_add(1, Ordering::SeqCst);
@@ -808,20 +850,40 @@ mod tests {
     }
 
     #[test]
+    fn output_method_change_rejects_active_session_without_dispatching() {
+        let (tx, rx) = mpsc::channel();
+        let mut snapshot = Snapshot::default();
+        snapshot.state = State::Recording;
+        let controller = Controller(Arc::new(Inner {
+            tx,
+            snapshot: Arc::new(Mutex::new(snapshot)),
+            admitted: Arc::new(AtomicBool::new(false)),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            join: Mutex::new(None),
+        }));
+
+        assert!(matches!(
+            controller.set_output_method(config::OutputMethod::Paste),
+            Err(ToggleError::Busy)
+        ));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
     fn transformation_warning_is_product_neutral() {
         assert_eq!(
             terminal_message(
                 desktop::DeliveryOutcome::Typed,
                 Some(worker::Warning::TransformationFailed)
             ),
-            "transformation failed; raw transcript delivered"
+            "transformation failed; safe fallback delivered"
         );
         assert_eq!(
             terminal_message(
                 desktop::DeliveryOutcome::ClipboardFallback,
                 Some(worker::Warning::TransformationFailed)
             ),
-            "transformation failed; typing failed and raw transcript was copied to clipboard"
+            "transformation failed; automatic insertion failed and safe fallback was copied to clipboard"
         );
     }
 

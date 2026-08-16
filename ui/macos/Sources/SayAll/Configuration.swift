@@ -18,9 +18,9 @@ struct ProviderSettings: Equatable {
     let measurements: Bool
     let streamingEnabled: Bool
     let streamFinalizeTimeoutMs: Int
-    let groqAPIKey: String
-    let groqModel: String
-    let groqBaseURL: String
+    let llmAPIKey: String
+    let llmModel: String
+    let llmBaseURL: String
     let processingProfile: ProcessingProfile
     let showTimer: Bool
     let outputMethod: OutputMethod
@@ -31,12 +31,12 @@ struct ProviderSettings: Equatable {
 
 enum ConfigurationError: Error, Equatable {
     case missing, oversized, malformed, missingDeepgramKey, invalidProvider, invalidProcessingMode
-    case missingGroqKey, unsupportedPlannerModel, invalidOutputMethod, invalidMetrics, invalidSecret, writeFailed
+    case missingCerebrasKey, unsupportedPlannerModel, invalidOutputMethod, invalidMetrics, invalidSecret, writeFailed
 }
 
 struct ConfigurationLoader {
     private static let maximumBytes = 1_048_576
-    private static let supportedPlannerModels = ["openai/gpt-oss-20b", "openai/gpt-oss-120b"]
+    private static let supportedPlannerModels = ["gpt-oss-120b"]
     private let environment: [String: String]
     private let homeDirectory: URL
     private let prePublication: (() throws -> Void)?
@@ -138,15 +138,19 @@ struct ConfigurationLoader {
 
     private func settings(from document: Document) throws -> ProviderSettings {
         let deepgram = resolve(document.stt?.apiKey, override: "DEEPGRAM_API_KEY")
-        let groq = resolve(document.llm?.apiKey, override: "GROQ_API_KEY")
+        let legacyCloudConfig = document.llm?.provider == "groq" ||
+            document.llm?.baseURL == "https://api.groq.com/openai/v1/chat/completions"
+        let cerebras = resolve(legacyCloudConfig ? nil : document.llm?.apiKey,
+            override: "CEREBRAS_API_KEY")
         let model = document.stt?.model ?? "nova-3"
         let language = document.stt?.language ?? "en"
         let region = document.stt?.region ?? "global"
         let keyterms = try loadKeyterms(fallback: document.stt?.keyterms ?? [])
         let streaming = document.stt?.streaming ?? true
         let finalizeTimeout = document.stt?.streamFinalizeTimeoutMs ?? 2_000
-        let groqModel = document.llm?.model ?? "openai/gpt-oss-20b"
-        let groqBaseURL = document.llm?.baseURL ?? "https://api.groq.com/openai/v1/chat/completions"
+        let llmModel = legacyCloudConfig ? "gpt-oss-120b" : document.llm?.model ?? "gpt-oss-120b"
+        let llmBaseURL = legacyCloudConfig ? "https://api.cerebras.ai/v1/chat/completions" :
+            document.llm?.baseURL ?? "https://api.cerebras.ai/v1/chat/completions"
         let configuredMode: ProcessingMode?
         if let rawMode = document.processing?.mode {
             guard let mode = ProcessingMode(rawValue: rawMode) else { throw ConfigurationError.invalidProcessingMode }
@@ -167,20 +171,21 @@ struct ConfigurationLoader {
             throw ConfigurationError.invalidMetrics
         }
         guard !deepgram.isEmpty else { throw ConfigurationError.missingDeepgramKey }
-        guard Self.safeSecret(deepgram), Self.safeSecret(groq) else { throw ConfigurationError.invalidSecret }
+        guard Self.safeSecret(deepgram), Self.safeSecret(cerebras) else { throw ConfigurationError.invalidSecret }
+        guard Self.safeLLMModel(llmModel) else { throw ConfigurationError.invalidProvider }
+        guard Self.supportedPlannerModels.contains(llmModel) else {
+            throw ConfigurationError.unsupportedPlannerModel
+        }
         if configuredMode == .polished {
-            guard !groq.isEmpty else { throw ConfigurationError.missingGroqKey }
-            guard Self.supportedPlannerModels.contains(groqModel) else {
-                throw ConfigurationError.unsupportedPlannerModel
-            }
+            guard !cerebras.isEmpty else { throw ConfigurationError.missingCerebrasKey }
         }
         guard (document.stt?.provider ?? "deepgram") == "deepgram",
-              (document.llm?.provider ?? "groq") == "groq",
-              Self.safeProviderValue(model), Self.safeProviderValue(language), Self.safeLLMModel(groqModel),
+              legacyCloudConfig || (document.llm?.provider ?? "cerebras") == "cerebras",
+              Self.safeProviderValue(model), Self.safeProviderValue(language),
               ["global", "eu", "au"].contains(region),
               (250...10_000).contains(finalizeTimeout),
               !(document.stt?.dictation ?? false) || (document.stt?.punctuate ?? false),
-              groqBaseURL == "https://api.groq.com/openai/v1/chat/completions",
+              llmBaseURL == "https://api.cerebras.ai/v1/chat/completions",
               keyterms.isEmpty || model == "nova-3" || model.hasPrefix("nova-3-") else {
             throw ConfigurationError.invalidProvider
         }
@@ -197,9 +202,9 @@ struct ConfigurationLoader {
             measurements: document.stt?.measurements ?? false,
             streamingEnabled: streaming,
             streamFinalizeTimeoutMs: finalizeTimeout,
-            groqAPIKey: groq,
-            groqModel: groqModel,
-            groqBaseURL: groqBaseURL,
+            llmAPIKey: cerebras,
+            llmModel: llmModel,
+            llmBaseURL: llmBaseURL,
             processingProfile: processingProfile,
             showTimer: document.hud?.showTimer ?? true,
             outputMethod: outputMethod,

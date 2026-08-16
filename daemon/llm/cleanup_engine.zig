@@ -39,6 +39,66 @@ pub const PolishedPlan = struct {
     lists: []const List,
 };
 
+fn questionAuxiliary(word: []const u8) bool {
+    for ([_][]const u8{ "can", "could", "would", "should", "will", "do", "does", "did", "is", "are", "was", "were", "have", "has", "had", "am", "may", "might" }) |candidate| if (asciiEq(word, candidate)) return true;
+    return false;
+}
+
+fn questionSubject(word: []const u8) bool {
+    for ([_][]const u8{ "i", "you", "we", "he", "she", "they", "it", "there" }) |candidate| if (asciiEq(word, candidate)) return true;
+    return false;
+}
+
+fn ordinal(word: []const u8) ?usize {
+    for ([_][]const u8{ "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth" }, 1..) |candidate, value| if (asciiEq(word, candidate)) return value;
+    return null;
+}
+
+fn ordinalAnchors(gpa: Allocator, tokens: []const Token, anchors: *std.ArrayList(ListAnchor)) bool {
+    if (ordinal(tokens[0].text) != 1) return false;
+    var expected: usize = 1;
+    for (tokens, 0..) |token, i| if (ordinal(token.text)) |value| {
+        if (value != expected) return false;
+        anchors.append(gpa, .{ .start_token = i }) catch return false;
+        expected += 1;
+    };
+    return expected >= 3;
+}
+
+fn reportedOrdinalPunctuation(gpa: Allocator, source: []const u8, tokens: []const Token, punctuation_ops: *std.ArrayList(Punctuation)) !bool {
+    var indexes: [10]usize = undefined;
+    var count: usize = 0;
+    var expected: usize = 1;
+    for (tokens, 0..) |token, i| if (ordinal(token.text)) |value| {
+        if (value != expected) return false;
+        indexes[count] = i;
+        count += 1;
+        expected += 1;
+    };
+    if (count < 3 or !reportingListContext(source, tokens, indexes[0])) return false;
+    for (indexes[1..count]) |next| {
+        const previous = next - 1;
+        if (!hasFixedTrailingPunctuation(source, tokens[previous])) try punctuation_ops.append(gpa, .{ .after_token = previous, .mark = .comma });
+    }
+    return true;
+}
+
+fn numberWord(word: []const u8) ?usize {
+    for ([_][]const u8{ "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten" }, 2..) |candidate, value| if (asciiEq(word, candidate)) return value;
+    return null;
+}
+
+fn countedListNoun(word: []const u8) bool {
+    for ([_][]const u8{ "items", "things", "fruits", "projects", "tasks", "points", "options", "steps", "reasons", "rules", "problems", "examples", "files", "changes", "questions", "ideas" }) |candidate| if (asciiEq(word, candidate)) return true;
+    return false;
+}
+
+fn countedListStart(tokens: []const Token, noun: usize) usize {
+    const direct = noun + 1;
+    if (direct + 3 <= tokens.len and asciiEq(tokens[direct].text, "in") and asciiEq(tokens[direct + 1].text, "my") and asciiEq(tokens[direct + 2].text, "life")) return direct + 3;
+    return direct;
+}
+
 /// Deterministic conservative cleanup. The returned slice is allocator-owned.
 pub fn clean(gpa: Allocator, transcript: []const u8, glossary: []const []const u8) Error![]u8 {
     const tokens = tokenize(gpa, transcript) catch |err| switch (err) {
@@ -161,7 +221,7 @@ pub fn polished(gpa: Allocator, transcript: []const u8, glossary: []const []cons
     // must be sorted, in range, and point at a surviving source token.
     var last: ?usize = null;
     for (plan.punctuation) |p| {
-        if (p.after_token >= tokens.len or deleted[p.after_token] or tokens[p.after_token].protected or hasUnsafeDecoration(transcript, tokens, p.after_token) or (technical(tokens[p.after_token].text) and hasFixedTrailingPunctuation(transcript, tokens[p.after_token])) or (last != null and p.after_token <= last.?)) return error.InvalidPlan;
+        if (p.after_token >= tokens.len or deleted[p.after_token] or tokens[p.after_token].protected or hasUnsafeDecoration(transcript, tokens, p.after_token) or punctuationSplitsClause(tokens, p.after_token) or (technical(tokens[p.after_token].text) and hasFixedTrailingPunctuation(transcript, tokens[p.after_token])) or (last != null and p.after_token <= last.?)) return error.InvalidPlan;
         for (plan.corrections) |c| if (p.after_token >= c.start_token and p.after_token + 1 < c.end_token) return error.InvalidPlan;
         last = p.after_token;
     }
@@ -170,7 +230,7 @@ pub fn polished(gpa: Allocator, transcript: []const u8, glossary: []const []cons
     var item_total: usize = 0;
     for (plan.lists) |list| {
         item_total += list.items.len;
-        if (list.start_token >= list.end_token or list.end_token > tokens.len or list.start_token < list_end or list.items.len < 2 or item_total > max_list_items or list.items[0].start_token != list.start_token or !strictListItems(list.items, list.start_token, list.end_token, deleted, protected) or protectedLayoutBoundary(list.start_token, deleted, protected) or (list.end_token < tokens.len and protectedLayoutBoundary(list.end_token, deleted, protected))) return error.InvalidPlan;
+        if (list.start_token >= list.end_token or list.end_token > tokens.len or list.start_token < list_end or list.items.len < 2 or item_total > max_list_items or list.items[0].start_token != list.start_token or !strictListItems(list.items, list.start_token, list.end_token, deleted, protected) or !validListEvidence(tokens, list) or protectedLayoutBoundary(list.start_token, deleted, protected) or reportingListContext(transcript, tokens, list.start_token) or (list.end_token < tokens.len and protectedLayoutBoundary(list.end_token, deleted, protected))) return error.InvalidPlan;
         for (list.items) |item| if (hasLocalListMarker(transcript, tokens[item.start_token])) return error.InvalidPlan;
         list_end = list.end_token;
     }
@@ -179,7 +239,13 @@ pub fn polished(gpa: Allocator, transcript: []const u8, glossary: []const []cons
         for (list.items) |item| for (plan.corrections) |c| if (item.start_token > c.start_token and item.start_token < c.end_token) return error.InvalidPlan;
         for (plan.corrections) |c| if (list.end_token > c.start_token and list.end_token < c.end_token) return error.InvalidPlan;
     }
+
     return renderPolished(gpa, transcript, tokens, deleted, plan);
+}
+
+fn punctuationSplitsClause(tokens: []const Token, after: usize) bool {
+    if (after + 1 >= tokens.len or !questionSubject(tokens[after + 1].text)) return false;
+    return asciiEq(tokens[after].text, "if") or questionAuxiliary(tokens[after].text);
 }
 
 pub fn tokenize(gpa: Allocator, text: []const u8) Error![]Token {
@@ -622,12 +688,71 @@ fn strictListItems(v: []const ListAnchor, start: usize, end: usize, deleted: []c
     }
     return true;
 }
+
+fn validListEvidence(tokens: []const Token, list: List) bool {
+    var ordinal_expected: usize = 1;
+    var ordinal_proof = true;
+    for (list.items) |item| {
+        if (ordinal(tokens[item.start_token].text) != ordinal_expected) {
+            ordinal_proof = false;
+            break;
+        }
+        ordinal_expected += 1;
+    }
+    if (ordinal_proof) return true;
+
+    if (list.end_token != tokens.len) return false;
+    var count: ?usize = null;
+    var demonstrative = false;
+    var i: usize = 0;
+    while (i + 1 < list.start_token) : (i += 1) {
+        if (numberWord(tokens[i].text)) |candidate| {
+            if (countedListNoun(tokens[i + 1].text) and countedListStart(tokens, i + 1) == list.start_token) {
+                count = candidate;
+                break;
+            }
+        }
+        if (asciiEq(tokens[i].text, "these") and countedListNoun(tokens[i + 1].text) and countedListStart(tokens, i + 1) == list.start_token) {
+            demonstrative = true;
+            break;
+        }
+    }
+    const expected_count = count orelse if (demonstrative and list.items.len >= 3) list.items.len else return false;
+    if (list.items.len != expected_count) return false;
+    const remaining = list.end_token - list.start_token;
+    const has_and = remaining >= 3 and asciiEq(tokens[list.end_token - 2].text, "and");
+    const item_count = remaining - @intFromBool(has_and);
+    if (item_count == expected_count) {
+        for (list.items, 0..) |item, item_index| {
+            const expected = if (has_and and item_index == expected_count - 1) list.end_token - 2 else list.start_token + item_index;
+            if (item.start_token != expected) return false;
+        }
+        return true;
+    }
+    if (has_and or remaining != expected_count * 2) return false;
+    for (list.items, 0..) |item, item_index| {
+        const expected = list.start_token + item_index * 2;
+        if (item.start_token != expected or !asciiEq(tokens[item.start_token].text, tokens[list.start_token].text)) return false;
+    }
+    return true;
+}
 fn protectedLayoutBoundary(token: usize, deleted: []const bool, protected: []const bool) bool {
     if (deleted[token] or protected[token]) return true;
     var previous = token;
     while (previous > 0) {
         previous -= 1;
         if (!deleted[previous]) return protected[previous];
+    }
+    return false;
+}
+
+fn reportingListContext(source: []const u8, tokens: []const Token, start: usize) bool {
+    if (start == 0) return false;
+    var i = start;
+    while (i > 0) {
+        i -= 1;
+        if (hasFixedTrailingPunctuation(source, tokens[i])) break;
+        for ([_][]const u8{ "say", "says", "said", "read", "reads", "quote", "quoted", "quotation" }) |word| if (asciiEq(tokens[i].text, word)) return true;
     }
     return false;
 }
@@ -723,6 +848,109 @@ test "polished compiles corrections punctuation paragraphs and numbered lists" {
     });
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("Hello world.\n\n1. first tea\n2. second coffee\nend", out);
+}
+
+test "polished never infers punctuation from a case correction" {
+    const source = "This fixture is synthetic it contains no user data";
+    const corrections = [_]Correction{.{ .start_token = 4, .end_token = 5, .source = "it", .replacement = "It", .kind = .case }};
+    const punctuation_marks = [_]Punctuation{.{ .after_token = 8, .mark = .period }};
+    const out = try polished(std.testing.allocator, source, &.{}, .{
+        .version = 2,
+        .deletions = &.{},
+        .corrections = &corrections,
+        .punctuation = &punctuation_marks,
+        .paragraph_breaks = &.{},
+        .lists = &.{},
+    });
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("This fixture is synthetic It contains no user data.", out);
+}
+
+test "polished renders discourse-marker conditional punctuation exactly as planned" {
+    const source = "okay if i have good salary in germany can i avail wbs in germany";
+    const corrections = [_]Correction{
+        .{ .start_token = 0, .end_token = 1, .source = "okay", .replacement = "Okay", .kind = .case },
+        .{ .start_token = 2, .end_token = 3, .source = "i", .replacement = "I", .kind = .case },
+        .{ .start_token = 7, .end_token = 8, .source = "germany", .replacement = "Germany", .kind = .case },
+        .{ .start_token = 9, .end_token = 10, .source = "i", .replacement = "I", .kind = .case },
+        .{ .start_token = 11, .end_token = 12, .source = "wbs", .replacement = "WBS", .kind = .case },
+        .{ .start_token = 13, .end_token = 14, .source = "germany", .replacement = "Germany", .kind = .case },
+    };
+    const punctuation_marks = [_]Punctuation{
+        .{ .after_token = 0, .mark = .comma },
+        .{ .after_token = 7, .mark = .comma },
+        .{ .after_token = 13, .mark = .question },
+    };
+    const out = try polished(std.testing.allocator, source, &.{}, .{
+        .version = 2,
+        .deletions = &.{},
+        .corrections = &corrections,
+        .punctuation = &punctuation_marks,
+        .paragraph_breaks = &.{},
+        .lists = &.{},
+    });
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("Okay, if I have good salary in Germany, can I avail WBS in Germany?", out);
+}
+
+test "polished rejects lists introduced as reported or quoted content" {
+    const source = "The button says quotation marks start first second third quotation mark end";
+    const items = [_]ListAnchor{ .{ .start_token = 6 }, .{ .start_token = 7 }, .{ .start_token = 8 } };
+    const lists = [_]List{.{ .start_token = 6, .end_token = 9, .items = &items, .kind = .bullet }};
+    try expectInvalidPlan(source, &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &lists });
+}
+
+test "polished rejects a conjunction as a counted list item" {
+    const source = "Can you bring me these four items apple banana and pears";
+    const items = [_]ListAnchor{ .{ .start_token = 7 }, .{ .start_token = 8 }, .{ .start_token = 9 }, .{ .start_token = 10 } };
+    const lists = [_]List{.{ .start_token = 7, .end_token = 11, .items = &items, .kind = .bullet }};
+    try expectInvalidPlan(source, &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &.{}, .paragraph_breaks = &.{}, .lists = &lists });
+}
+
+test "polished accepts a counted list after an explicit bridge" {
+    const source = "I have three rules in my life commitment focus and passion";
+    const punctuation_marks = [_]Punctuation{ .{ .after_token = 6, .mark = .colon }, .{ .after_token = 10, .mark = .period } };
+    const items = [_]ListAnchor{ .{ .start_token = 7 }, .{ .start_token = 8 }, .{ .start_token = 9 } };
+    const lists = [_]List{.{ .start_token = 7, .end_token = 11, .items = &items, .kind = .bullet }};
+    const out = try polished(std.testing.allocator, source, &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &punctuation_marks, .paragraph_breaks = &.{}, .lists = &lists });
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("I have three rules in my life:\n- commitment\n- focus\n- and passion.", out);
+}
+
+test "polished accepts a demonstrative list without a spoken count" {
+    const source = "Can you bring me these things apple banana and pears";
+    const punctuation_marks = [_]Punctuation{ .{ .after_token = 5, .mark = .colon }, .{ .after_token = 9, .mark = .question } };
+    const items = [_]ListAnchor{ .{ .start_token = 6 }, .{ .start_token = 7 }, .{ .start_token = 8 } };
+    const lists = [_]List{.{ .start_token = 6, .end_token = 10, .items = &items, .kind = .bullet }};
+    const out = try polished(std.testing.allocator, source, &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &punctuation_marks, .paragraph_breaks = &.{}, .lists = &lists });
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("Can you bring me these things:\n- apple\n- banana\n- and pears?", out);
+
+    const bridged_source = "I have these rules in my life commitment focus and passion";
+    const bridged_punctuation = [_]Punctuation{ .{ .after_token = 6, .mark = .colon }, .{ .after_token = 10, .mark = .period } };
+    const bridged_items = [_]ListAnchor{ .{ .start_token = 7 }, .{ .start_token = 8 }, .{ .start_token = 9 } };
+    const bridged_lists = [_]List{.{ .start_token = 7, .end_token = 11, .items = &bridged_items, .kind = .bullet }};
+    const bridged = try polished(std.testing.allocator, bridged_source, &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &bridged_punctuation, .paragraph_breaks = &.{}, .lists = &bridged_lists });
+    defer std.testing.allocator.free(bridged);
+    try std.testing.expectEqualStrings("I have these rules in my life:\n- commitment\n- focus\n- and passion.", bridged);
+}
+
+test "polished accepts counted repeated-label multi-token items" {
+    const source = "We have four problems problem one problem two problem three problem four";
+    const punctuation_marks = [_]Punctuation{ .{ .after_token = 3, .mark = .colon }, .{ .after_token = 11, .mark = .period } };
+    const items = [_]ListAnchor{ .{ .start_token = 4 }, .{ .start_token = 6 }, .{ .start_token = 8 }, .{ .start_token = 10 } };
+    const lists = [_]List{.{ .start_token = 4, .end_token = 12, .items = &items, .kind = .bullet }};
+    const out = try polished(std.testing.allocator, source, &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &punctuation_marks, .paragraph_breaks = &.{}, .lists = &lists });
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("We have four problems:\n- problem one\n- problem two\n- problem three\n- problem four.", out);
+}
+
+test "polished rejects punctuation that splits a conditional question" {
+    const source = "If I have income can I qualify";
+    const after_if = [_]Punctuation{.{ .after_token = 0, .mark = .period }};
+    try expectInvalidPlan(source, &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &after_if, .paragraph_breaks = &.{}, .lists = &.{} });
+    const after_auxiliary = [_]Punctuation{.{ .after_token = 4, .mark = .period }};
+    try expectInvalidPlan(source, &.{}, .{ .version = 2, .deletions = &.{}, .corrections = &.{}, .punctuation = &after_auxiliary, .paragraph_breaks = &.{}, .lists = &.{} });
 }
 
 test "polished rejects provider deletion plans" {

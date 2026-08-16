@@ -11,7 +11,7 @@ SayAll currently has two working but asymmetric products. On Linux, the Zig
 `sayall daemon` owns recording, provider processing, delivery, and state while
 the Rust/GTK process subscribes as a HUD. On macOS, the Swift app owns the
 complete user-visible session and launches the one-shot Zig `sayall-process`
-helper for Deepgram and Groq work. macOS also bundles a Swift command-line
+helper for Deepgram and Cerebras work. macOS also bundles a Swift command-line
 client for native app control.
 
 The 0.2.0 goal is one provider-processing implementation and one public CLI
@@ -26,7 +26,7 @@ SayAll will have three explicit layers:
 
 1. **The platform-neutral Zig processing core** owns provider configuration
    validation, canonical audio validation, Deepgram REST and streaming,
-   optional Groq cleanup, raw-transcript fallback, and normalized processing
+   optional Cerebras cleanup, raw-transcript fallback, and normalized processing
    outcomes. File/process framing is an adapter around this core.
 2. **One native application host per platform** owns the complete live
    dictation state machine, recording, permissions, shortcuts, UI,
@@ -67,8 +67,8 @@ native UI ─────────▶│ native app host     │
 - The CLI does not independently record when controlling a native session.
 - A worker failure cannot perform text delivery and cannot leave the host with
   two active sessions.
-- Streaming failure permits at most one REST fallback. Groq cleanup failure
-  preserves the raw transcript with a structured warning.
+- Streaming failure permits at most one REST fallback. Cerebras cleanup failure
+  preserves the conservative deterministic Polished baseline.
 - Transcript delivery is at most once even when a provider or worker outcome
   is ambiguous. The host is the only delivery authority.
 - Secrets are never passed in argv, inherited environment, filenames, logs, or

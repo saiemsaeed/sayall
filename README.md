@@ -2,11 +2,11 @@
 
 A voice-dictation product for Linux and macOS. Toggle a hotkey,
 speak, toggle again, and text is inserted into your focused window. An optional
-Groq pass can format the transcript and correct contextually clear terminology
+Cerebras pass can format the transcript and correct contextually clear terminology
 without rewriting the speaker's words.
 
 - **STT:** Deepgram Nova-3 (cloud streaming with REST fallback)
-- **Formatting:** optional structured edit-plan pass (Groq `openai/gpt-oss-20b`) — corrects
+- **Formatting:** optional structured edit-plan pass (Cerebras `gpt-oss-120b`) — corrects
   terminology and structures dictated text without rewriting it
 - **Zig dependencies:** one pinned WebSocket library; otherwise Zig's standard
   library
@@ -359,7 +359,7 @@ Control+/ Carbon hotkey and menu fallback, Accessibility-authorized typing and
 pasting with clipboard fallback, temporary audio, and packaging. It invokes the
 bundled `sayall-process` helper once per recording. The Zig helper streams private raw
 PCM to Deepgram during capture, validates the completed PCM S16LE mono 16 kHz
-WAV, falls back to REST when streaming fails, and optionally runs Groq cleanup.
+WAV, falls back to REST when streaming fails, and optionally runs Cerebras cleanup.
 The signed `sayall` helper uses a separate bounded JSON request/response socket
 under a mode-0700 per-user directory for same-UID `status`, `toggle`, and `reload` calls.
 The app's `Coordinator` handles all three methods on the main actor; a nonblocking
@@ -378,8 +378,8 @@ Provider settings use the same `$XDG_CONFIG_HOME/sayall/config.json` or
 `~/.config/sayall/config.json` schema as Linux. The app reloads it before each
 recording. Environment overrides work when the app is launched from a shell;
 Finder launches do not inherit interactive shell-file variables. Audio is streamed
-to Deepgram during recording and, only when `llm.enabled` is true and a Groq key is present, the
-transcript is sent to Groq. SayAll collects no telemetry.
+to Deepgram during recording and, only when `llm.enabled` is true and a Cerebras key is present, the
+transcript is sent to Cerebras. SayAll collects no telemetry.
 
 ### Linux
 
@@ -390,7 +390,7 @@ Hyprland/portal ──▶ Rust/GTK native host ◀──v2 socket── sayall C
                             │ private bounded protocol
                       Zig sayall-process worker
                             │ streaming + REST fallback
-                      Deepgram → optional Groq cleanup
+                      Deepgram → optional Cerebras cleanup
                             │ transcript result
                       wtype/wl-copy or xdotool/xsel
 ```
@@ -420,18 +420,19 @@ defined by the [unified architecture ADR](docs/adr-unified-core-cli-and-native-h
 | Candidate | Cost/hr | Latency (10s clip) | Verdict |
 |---|---|---|---|
 | **Deepgram Nova-3** ✅ | ~$0.26 | ~0.3–0.8s | Smart Formatting (punctuation/casing) included free; simplest API (raw WAV body, no multipart — a real win in Zig); $200 free credit ≈ 770 hrs |
-| Groq Whisper v3 Turbo | $0.04 | ~0.3–0.6s | Cheapest/fastest; roadmap candidate |
+| Cerebras Whisper v3 Turbo | $0.04 | ~0.3–0.6s | Cheapest/fastest; roadmap candidate |
 | OpenAI gpt-4o-transcribe | $0.36 | ~1–2s | Strong alternative; not implemented yet |
 | AssemblyAI Universal-3.5 | $0.21 | slowest | Upload→poll model; wrong fit for dictation |
 
-### Optional LLM formatting: Groq `openai/gpt-oss-20b`
+### Optional LLM formatting: Cerebras `gpt-oss-120b`
 
 The formatter makes one low-reasoning chat-completions request with a strict
 JSON schema. The model returns only anchored edits; Zig validates and renders
 them from the original Deepgram lexical tokens. It therefore cannot append an
 answer or recommendation. Any provider, schema, anchor, correction, rendering,
-or provenance failure falls back to the raw transcript with a warning. Check
-Groq's current model page for speed and pricing. Only Groq is implemented.
+or provenance failure retains the deterministic Clean result. Only a local
+Clean failure falls back to the raw transcript with a warning. Check Cerebras's
+current model page for speed and pricing. Only Cerebras is implemented.
 
 **Realistic cost:** ~2h dictation/day → ~$10/mo STT (after free credit) + ~$0.15/mo LLM.
 
@@ -453,7 +454,7 @@ sayall/
 │   ├── platform/windows.zig   # explicit unsupported Windows runtime
 │   ├── recorder.zig           # portable PCM/WAV validation and analysis
 │   ├── stt/deepgram.zig       # raw-body POST, JSON parse
-│   ├── llm/groq.zig           # OpenAI-compatible chat completions
+│   ├── llm/cloud_planner.zig           # OpenAI-compatible chat completions
 │   ├── typer.zig              # direct wtype delivery, clipboard fallback
 │   ├── config.zig             # ~/.config/sayall/config.json + env var keys
 │   └── notify.zig             # platform notification dispatch
@@ -472,15 +473,16 @@ sayall/
    Smart Format, punctuation, spoken dictation commands, numerals, measurements,
    and keyterm prompting. REST responses parse
    `results.channels[0].alternatives[0].transcript`.
-4. **Transcript processing** — Verbatim returns Deepgram output without a Groq
-   request; Clean performs deterministic local cleanup; Polished requests a
-   structured edit plan from Groq. Polished preserves the speaker's meaning
-   while correcting contextually unambiguous terminology, punctuation, and
-   capitalization; adding paragraph breaks; and formatting clearly dictated or
-   enumerated lists. The effective keyword list is supplied as a spelling
-   glossary for terms such as `SayAll`. An anchored edit-plan validator and
-   source-based renderer reject answers, broad rewrites, and unverifiable edits;
-   rejection falls back to the unchanged Deepgram transcript.
+4. **Transcript processing** — Verbatim returns finalized Deepgram output
+   without a provider request; Clean performs deterministic local cleanup;
+   Polished applies Clean once and requests one structured edit plan from
+   Cerebras. Polished preserves the speaker's meaning while correcting
+   contextually unambiguous terminology, punctuation, and capitalization;
+   adding paragraph breaks; and formatting clearly dictated or enumerated
+   lists. The effective keyword list is supplied as a spelling glossary for
+   terms such as `SayAll`. An anchored edit-plan validator and source-based
+   renderer reject answers, broad rewrites, and unverifiable edits. Rejected or
+   failed Polished plans silently fall back to the deterministic Clean result.
 
 5. **Output** — type the complete transcript with `wtype`, copy it with
     `wl-copy`, or copy and paste it with one `Ctrl+V` shortcut. This works in
@@ -513,9 +515,9 @@ the process environment):
     "stream_finalize_timeout_ms": 2000
   },
   "llm": {
-    "provider": "groq",
-    "api_key": "$GROQ_API_KEY",
-    "model": "openai/gpt-oss-20b",
+    "provider": "cerebras",
+    "api_key": "$CEREBRAS_API_KEY",
+    "model": "gpt-oss-120b",
     "enabled": false
   },
   "processing": { "mode": "verbatim" },
@@ -534,14 +536,14 @@ Deepgram for both streaming transcription and the REST fallback; omitted flags
 default to `false`. Deepgram requires `punctuate` when `dictation` is enabled.
 
 `processing.mode` accepts `verbatim`, `clean`, or `polished`. Verbatim is the
-default and sends no transcript to Groq. Clean performs deterministic local
-cleanup without a provider request. Polished requires a Groq API key and either
-`openai/gpt-oss-20b` (the default) or `openai/gpt-oss-120b`; if its request or
-validated transformation fails, SayAll delivers the unchanged Deepgram
-transcript with a warning. Existing configurations that omit `processing.mode`
-and set `llm.enabled` to `true` retain their legacy formatting behavior for this
-migration cycle. The legacy `llama-3.1-8b-instant` model remains syntactically
-accepted for that compatibility path but cannot be selected for Polished mode.
+default and sends no transcript to Cerebras. Clean performs deterministic local
+cleanup without a provider request. Polished requires a Cerebras API key and
+the `gpt-oss-120b` model; if its request or validated transformation fails,
+SayAll silently delivers the deterministic Clean result. Existing
+configurations that omit `processing.mode` and set `llm.enabled` to `true`
+retain their legacy formatting behavior for this migration cycle. The legacy
+`llama-3.1-8b-instant` model remains syntactically accepted for that
+compatibility path but cannot be selected for Polished mode.
 
 `hud.show_timer` defaults to `true` and displays recording duration as `mm:ss`.
 Set it to `false` for the centered recording layout without a timer or reserved

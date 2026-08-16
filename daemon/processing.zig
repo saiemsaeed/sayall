@@ -6,7 +6,8 @@ pub const Mode = enum {
     verbatim,
     /// Apply only deterministic Zig processing and no provider request.
     clean,
-    /// Attempt one semantic planner transformation, falling back to raw STT.
+    /// Apply deterministic cleanup, then attempt one semantic planner
+    /// transformation and silently fall back to the cleaned text.
     polished,
 };
 
@@ -30,6 +31,7 @@ pub const TransformationOutcome = enum {
     not_requested,
     changed,
     no_change,
+    degraded,
     failed,
 };
 

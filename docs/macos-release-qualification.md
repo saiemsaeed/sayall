@@ -59,7 +59,7 @@ Use one row per clean/prior-install state and target-app/device combination.
 Do not replace OS build or chip with generic marketing names. Link defects and
 retain logs without credentials, transcripts, or audio.
 
-| Date | Version | DMG SHA-256 | macOS version/build | Mac model/chip | State (clean/prior) | Input device/default | Target app + field | Install/Gatekeeper | Mic/TCC | Control+/ + menu | AX/clipboard | Deepgram | Groq success/failure | 300 ms / 300 s / 45 s bounds | Update/uninstall | Result | Defects/evidence |
+| Date | Version | DMG SHA-256 | macOS version/build | Mac model/chip | State (clean/prior) | Input device/default | Target app + field | Install/Gatekeeper | Mic/TCC | Control+/ + menu | AX/clipboard | Deepgram | Cerebras success/failure | 300 ms / 300 s / 45 s bounds | Update/uninstall | Result | Defects/evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | YYYY-MM-DD | `<version>` | `<sha256>` | `15.x (build)` | `model / M-series` | clean | built-in default | TextEdit normal field | pending | pending | pending | pending | pending | pending | pending | pending | pending | link |
 
@@ -76,7 +76,7 @@ At minimum, qualify:
   never auto-pastes into the wrong target.
 - [ ] Microphone denied then granted, Accessibility denied then granted, focus
   changes during processing, Control+/ conflict, and menu-only operation.
-- [ ] Deepgram success and network/auth/server failures; Groq disabled, success,
+- [ ] Deepgram success and network/auth/server failures; Cerebras disabled, success,
   and failure with raw-transcript warning/delivery.
 - [ ] Normal streaming without REST, final PCM drain, network loss during
   recording with REST fallback, helper exit, and EU/global regional behavior.

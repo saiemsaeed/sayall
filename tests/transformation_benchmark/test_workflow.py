@@ -8,9 +8,9 @@ RELEASE = (ROOT / ".github/workflows/release.yml").read_text()
 
 
 class WorkflowTests(unittest.TestCase):
-    def test_ci_has_no_live_provider_or_groq_secret_access(self):
+    def test_ci_has_no_live_provider_or_cerebras_secret_access(self):
         self.assertNotIn("live_provider", WORKFLOW + RELEASE)
-        self.assertNotIn("GROQ_API_KEY", WORKFLOW + RELEASE)
+        self.assertNotIn("CEREBRAS_API_KEY", WORKFLOW + RELEASE)
         self.assertIn("--no-live-provider", WORKFLOW)
 
     def test_manual_and_release_runs_bind_to_exact_deterministic_source(self):

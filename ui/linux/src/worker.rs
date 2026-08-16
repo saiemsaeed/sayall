@@ -216,9 +216,9 @@ struct Request<'a> {
     deepgram_measurements: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_finalize_timeout_ms: Option<u32>,
-    groq_api_key: &'a str,
-    groq_model: &'a str,
-    groq_base_url: &'a str,
+    llm_api_key: &'a str,
+    llm_model: &'a str,
+    llm_base_url: &'a str,
     processing_profile: ProcessingProfile,
 }
 
@@ -427,9 +427,9 @@ fn encode(wav: &Path, pcm: Option<&Path>, c: &ProviderConfig) -> Result<Vec<u8>,
         deepgram_numerals: c.numerals,
         deepgram_measurements: c.measurements,
         stream_finalize_timeout_ms: pcm.map(|_| c.finalize_ms),
-        groq_api_key: &c.groq_api_key,
-        groq_model: &c.groq_model,
-        groq_base_url: &c.groq_base_url,
+        llm_api_key: &c.llm_api_key,
+        llm_model: &c.llm_model,
+        llm_base_url: &c.llm_base_url,
         processing_profile: c.processing_profile,
     };
     let b = serde_json::to_vec(&r).map_err(|_| "invalid processing request")?;
@@ -914,9 +914,9 @@ mod tests {
             measurements: false,
             streaming,
             finalize_ms: 2000,
-            groq_api_key: String::new(),
-            groq_model: "openai/gpt-oss-20b".into(),
-            groq_base_url: "https://api.groq.com/openai/v1/chat/completions".into(),
+            llm_api_key: String::new(),
+            llm_model: "gpt-oss-120b".into(),
+            llm_base_url: "https://api.cerebras.ai/v1/chat/completions".into(),
             processing_profile: ProcessingProfile::Clean,
         }
     }
