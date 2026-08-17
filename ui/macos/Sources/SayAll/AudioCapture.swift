@@ -141,6 +141,30 @@ enum MicrophoneSelection {
 
 final class AudioCapture {
     enum CaptureError: Error { case format, deviceUnavailable, tooShort, tooLong }
+#if DEBUG
+    private static let maximumFixtureBytes: off_t = 100 * 1_024 * 1_024
+    private static let fixtureChunkDuration = 0.02
+
+    static func debugFixtureConfigured(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        environment["SAYALL_TEST_AUDIO_FIXTURE"].map { !$0.isEmpty } ?? false
+    }
+
+    static func debugFixtureURL(environment: [String: String] = ProcessInfo.processInfo.environment) throws -> URL? {
+        guard let path = environment["SAYALL_TEST_AUDIO_FIXTURE"], !path.isEmpty else { return nil }
+        guard path.hasPrefix("/"), !path.utf8.contains(0) else { throw CaptureError.format }
+        var info = stat()
+        guard lstat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
+              info.st_size > 12, info.st_size <= maximumFixtureBytes else { throw CaptureError.format }
+        let descriptor = Darwin.open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { throw CaptureError.format }
+        defer { Darwin.close(descriptor) }
+        var header = [UInt8](repeating: 0, count: 12)
+        guard Darwin.read(descriptor, &header, header.count) == header.count,
+              Array(header[0..<4]) == Array("RIFF".utf8),
+              Array(header[8..<12]) == Array("WAVE".utf8) else { throw CaptureError.format }
+        return URL(fileURLWithPath: path)
+    }
+#endif
     final class AudioResampler {
         private var sourceFormat: AVAudioFormat?
         private var converter: AVAudioConverter?
@@ -201,6 +225,16 @@ final class AudioCapture {
     private static let maximumFrames: AVAudioFramePosition = 4_800_000
     private let resampler = AudioResampler()
     private var inputUnit: AUHALInput?
+#if DEBUG
+    private var fixtureTimer: DispatchSourceTimer?
+    private var fixtureFile: AVAudioFile?
+    private let fixtureQueueKey = DispatchSpecificKey<Void>()
+    private lazy var fixtureQueue: DispatchQueue = {
+        let queue = DispatchQueue(label: "pro.leets.sayall.audio-fixture")
+        queue.setSpecific(key: fixtureQueueKey, value: ())
+        return queue
+    }()
+#endif
     private var captureGeneration: UUID?
     private var selectedChannel = 0
     private var channelCandidate = 0
@@ -263,6 +297,17 @@ final class AudioCapture {
             }
             file = try AVAudioFile(forWriting: wavURL, settings: canonical.settings, commonFormat: .pcmFormatInt16, interleaved: true)
             let filePreparationMs = Self.elapsedMilliseconds(since: phaseStarted)
+#if DEBUG
+            if let fixtureURL = try Self.debugFixtureURL() {
+                let generation = UUID()
+                captureGeneration = generation
+                try startFixture(url: fixtureURL, generation: generation)
+                return Recording(directoryURL: directory, wavURL: wavURL, pcmURL: pcmURL,
+                    streamSourceFailed: false,
+                    startTiming: StartTiming(filePreparationMs: filePreparationMs, deviceResolutionMs: 0,
+                        inputInitializationMs: 0, inputStartMs: 0), captureGeneration: generation)
+            }
+#endif
             phaseStarted = DispatchTime.now().uptimeNanoseconds
             let deviceID = try AudioInputDevices.selectedDeviceID(uniqueID: MicrophoneSelection.uniqueID)
             let deviceResolutionMs = Self.elapsedMilliseconds(since: phaseStarted)
@@ -333,6 +378,12 @@ final class AudioCapture {
 
     private func cleanup(deleteFile: Bool) {
         lock.withLock { intentionalTeardown = true }
+#if DEBUG
+        fixtureTimer?.cancel()
+        fixtureTimer = nil
+        if DispatchQueue.getSpecific(key: fixtureQueueKey) != nil { fixtureFile = nil }
+        else { fixtureQueue.sync { fixtureFile = nil } }
+#endif
         let activeInput = inputUnit
         activeInput?.stop()
         resampler.reset()
@@ -392,6 +443,40 @@ final class AudioCapture {
     private func markCaptureFailed() {
         lock.withLock { captureFailed = true }
     }
+
+#if DEBUG
+    private func startFixture(url: URL, generation: UUID) throws {
+        let source = try AVAudioFile(forReading: url, commonFormat: .pcmFormatInt16, interleaved: true)
+        guard source.length > 0,
+              source.processingFormat.sampleRate == Self.sampleRate,
+              source.processingFormat.channelCount == 1,
+              Double(source.length) / source.processingFormat.sampleRate <= Double(Self.maximumFrames) / Self.sampleRate
+        else {
+            throw CaptureError.format
+        }
+        let chunkFrames = AVAudioFrameCount(max(1,
+            (source.processingFormat.sampleRate * Self.fixtureChunkDuration).rounded()))
+        fixtureFile = source
+        let timer = DispatchSource.makeTimerSource(queue: fixtureQueue)
+        fixtureTimer = timer
+        timer.schedule(deadline: .now() + Self.fixtureChunkDuration,
+            repeating: Self.fixtureChunkDuration, leeway: .milliseconds(2))
+        timer.setEventHandler { [weak self, weak timer] in
+            guard let self, let source = self.fixtureFile else { timer?.cancel(); return }
+            let remaining = source.length - source.framePosition
+            guard remaining > 0 else { timer?.cancel(); return }
+            let requestedFrames = min(chunkFrames, AVAudioFrameCount(remaining))
+            guard let input = AVAudioPCMBuffer(
+                pcmFormat: source.processingFormat, frameCapacity: requestedFrames
+            ) else { self.markUnexpectedFailure(generation: generation); timer?.cancel(); return }
+            do { try source.read(into: input, frameCount: requestedFrames) }
+            catch { self.markUnexpectedFailure(generation: generation); timer?.cancel(); return }
+            guard input.frameLength > 0 else { timer?.cancel(); return }
+            self.write(input)
+        }
+        timer.resume()
+    }
+#endif
 
     private static func elapsedMilliseconds(since started: UInt64) -> Int {
         let finished = DispatchTime.now().uptimeNanoseconds

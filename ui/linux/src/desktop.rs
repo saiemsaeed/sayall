@@ -225,6 +225,12 @@ impl NativeDelivery {
         if !text.is_empty() && output.trailing_space {
             text.push(' ');
         }
+        #[cfg(debug_assertions)]
+        if let Some(path) = std::env::var_os("SAYALL_TEST_TRANSCRIPT_PATH") {
+            return write_test_transcript(Path::new(&path), &text)
+                .map(|()| DeliveryOutcome::Clipboard)
+                .map_err(err);
+        }
         match output.method {
             OutputMethod::Clipboard => self.copy(&text).map(|_| DeliveryOutcome::Clipboard),
             OutputMethod::Paste => {
@@ -266,6 +272,26 @@ impl NativeDelivery {
             )),
         }
     }
+}
+
+#[cfg(debug_assertions)]
+fn write_test_transcript(path: &Path, text: &str) -> io::Result<()> {
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "test transcript path must be absolute",
+        ));
+    }
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    output.write_all(text.as_bytes())?;
+    output.sync_all()
 }
 fn err(e: io::Error) -> String {
     format!("desktop delivery failed: {e}")
@@ -654,6 +680,26 @@ mod tests {
                 .push((program.into(), args, Some(input.into())));
             Ok(Box::new(FakeOwner(self.2.clone())))
         }
+    }
+    #[test]
+    fn test_transcript_sink_is_exclusive_and_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = std::env::temp_dir().join(format!(
+            "sayall-transcript-sink-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir(&directory).unwrap();
+        let output = directory.join("transcript.txt");
+        write_test_transcript(&output, "fixture output").unwrap();
+        assert_eq!(std::fs::read_to_string(&output).unwrap(), "fixture output");
+        assert_eq!(
+            std::fs::metadata(&output).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(write_test_transcript(&output, "replacement").is_err());
+        assert!(write_test_transcript(Path::new("relative.txt"), "output").is_err());
+        std::fs::remove_dir_all(directory).unwrap();
     }
     #[test]
     fn type_falls_back_once_and_appends_once() {

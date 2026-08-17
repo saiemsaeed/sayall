@@ -71,6 +71,16 @@ final class ControlFoundationTests: XCTestCase {
             error: .init(code: "error", message: String(repeating: "x", count: ControlSocket.maximumFrameBytes)))))
     }
 
+#if DEBUG
+    func testDebugControlSocketOverrideAcceptsOnlySafeAbsolutePaths() {
+        XCTAssertEqual(ControlSocket.debugOverrideURL(environment: ["SAYALL_SOCKET": "/tmp/private/sayall.sock"])?.path,
+            "/tmp/private/sayall.sock")
+        for path in ["relative.sock", "/tmp/../sayall.sock", "/tmp//sayall.sock", "/tmp/bad\nsocket"] {
+            XCTAssertNil(ControlSocket.debugOverrideURL(environment: ["SAYALL_SOCKET": path]))
+        }
+    }
+#endif
+
     func testV2FailureBoundaryRemovesOnlyExactLegacyPrefix() {
         XCTAssertEqual(hostV2Failure("busy: SayAll is processing", method: .toggle),
             HostControlError(code: "busy", message: "SayAll is processing"))
@@ -228,6 +238,92 @@ final class StateMachineTests: XCTestCase {
         }
     }
 }
+
+#if DEBUG
+final class AudioFixtureCaptureTests: XCTestCase {
+    func testFixtureRequiresAbsoluteRegularWAV() throws {
+        XCTAssertFalse(AudioCapture.debugFixtureConfigured(environment: [:]))
+        XCTAssertFalse(AudioCapture.debugFixtureConfigured(
+            environment: ["SAYALL_TEST_AUDIO_FIXTURE": ""]))
+        XCTAssertTrue(AudioCapture.debugFixtureConfigured(
+            environment: ["SAYALL_TEST_AUDIO_FIXTURE": "/fixture.wav"]))
+        XCTAssertNil(try AudioCapture.debugFixtureURL(environment: [:]))
+        XCTAssertThrowsError(try AudioCapture.debugFixtureURL(
+            environment: ["SAYALL_TEST_AUDIO_FIXTURE": "relative.wav"]))
+
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        XCTAssertThrowsError(try AudioCapture.debugFixtureURL(
+            environment: ["SAYALL_TEST_AUDIO_FIXTURE": directory.path]))
+        let malformed = directory.appendingPathComponent("bad.wav")
+        try Data(repeating: 0, count: 32).write(to: malformed)
+        XCTAssertThrowsError(try AudioCapture.debugFixtureURL(
+            environment: ["SAYALL_TEST_AUDIO_FIXTURE": malformed.path]))
+    }
+
+    func testFixtureIsPacedAndCanStopWithoutFurtherWrites() throws {
+        let fixture = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
+        try makeFixture(at: fixture, seconds: 0.8)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let previous = getenv("SAYALL_TEST_AUDIO_FIXTURE").map { String(cString: $0) }
+        setenv("SAYALL_TEST_AUDIO_FIXTURE", fixture.path, 1)
+        defer {
+            if let previous { setenv("SAYALL_TEST_AUDIO_FIXTURE", previous, 1) }
+            else { unsetenv("SAYALL_TEST_AUDIO_FIXTURE") }
+        }
+
+        let capture = AudioCapture()
+        let firstWrite = expectation(description: "first paced write")
+        var levels = 0
+        capture.firstPCMWriteHandler = { _, _ in firstWrite.fulfill() }
+        capture.levelHandler = { _ in levels += 1 }
+        let started = Date()
+        let initial = try capture.start()
+        XCTAssertEqual((try Data(contentsOf: initial.pcmURL)).count, 0)
+        wait(for: [firstWrite], timeout: 0.3)
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started), 0.01)
+        Thread.sleep(forTimeInterval: 0.34)
+        let recording = try capture.stop()
+        let sizeAtStop = try Data(contentsOf: recording.pcmURL).count
+        XCTAssertGreaterThanOrEqual(sizeAtStop, 9_600)
+        XCTAssertLessThan(sizeAtStop, 25_600)
+        XCTAssertGreaterThan(levels, 0)
+        Thread.sleep(forTimeInterval: 0.06)
+        XCTAssertEqual(try Data(contentsOf: recording.pcmURL).count, sizeAtStop)
+        try? FileManager.default.removeItem(at: recording.directoryURL)
+    }
+
+    @MainActor
+    func testTranscriptSinkIsExclusiveAndPrivate() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("transcript.txt")
+        XCTAssertTrue(TextDelivery.debugWriteTestTranscript("fixture output", path: output.path))
+        XCTAssertEqual(try String(contentsOf: output, encoding: .utf8), "fixture output")
+        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: output.path)[.posixPermissions] as? NSNumber)?.intValue,
+            0o600)
+        XCTAssertFalse(TextDelivery.debugWriteTestTranscript("replacement", path: output.path))
+        XCTAssertFalse(TextDelivery.debugWriteTestTranscript("output", path: "relative.txt"))
+    }
+
+    private func makeFixture(at url: URL, seconds: Double) throws {
+        let format = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16_000,
+            channels: 1, interleaved: true)!
+        let frames = AVAudioFrameCount(format.sampleRate * seconds)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
+        buffer.frameLength = frames
+        let samples = buffer.int16ChannelData![0]
+        for frame in 0..<Int(frames) {
+            samples[frame] = Int16(sin(Double(frame) * 2 * .pi * 440 / format.sampleRate) * 16_000)
+        }
+        let file = try AVAudioFile(forWriting: url, settings: format.settings,
+            commonFormat: .pcmFormatInt16, interleaved: true)
+        try file.write(from: buffer)
+    }
+}
+#endif
 
 final class HUDRenderingTests: XCTestCase {
     @MainActor

@@ -5,14 +5,29 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+#[cfg(debug_assertions)]
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+#[cfg(debug_assertions)]
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 pub struct Capture {
-    child: Child,
+    source: CaptureSource,
     dir: PathBuf,
     pcm: PathBuf,
     wav: PathBuf,
     cleanup: bool,
+}
+enum CaptureSource {
+    Process(Child),
+    #[cfg(debug_assertions)]
+    Fixture {
+        stop: Arc<AtomicBool>,
+        thread: Option<JoinHandle<io::Result<()>>>,
+    },
 }
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct Level {
@@ -23,6 +38,12 @@ pub struct Level {
 
 impl Capture {
     pub fn start(root: &Path, generation: u64, source: &str) -> io::Result<Self> {
+        // This entire branch, including the environment variable name, is
+        // compiled out of release builds.
+        #[cfg(debug_assertions)]
+        if let Some(path) = std::env::var_os("SAYALL_TEST_AUDIO_FIXTURE") {
+            return Self::start_fixture(root, generation, Path::new(&path));
+        }
         Self::start_with_program(root, generation, source, resolve_program("pw-record"))
     }
     fn start_with_program(
@@ -100,7 +121,47 @@ impl Capture {
         let child = command.spawn()?;
         startup_cleanup.0 = None;
         Ok(Self {
-            child,
+            source: CaptureSource::Process(child),
+            dir,
+            pcm,
+            wav,
+            cleanup: true,
+        })
+    }
+    #[cfg(debug_assertions)]
+    fn start_fixture(root: &Path, generation: u64, fixture: &Path) -> io::Result<Self> {
+        let pcm_data = read_fixture(fixture)?;
+        let dir = root.join(format!("session-{generation}"));
+        fs::DirBuilder::new().mode(0o700).create(&dir)?;
+        let pcm = dir.join("audio.pcm");
+        let wav = dir.join("audio.wav");
+        let result = (|| {
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&pcm)?;
+            let mut wav_file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&wav)?;
+            write_wav(&mut wav_file, &[])
+        })();
+        if let Err(error) = result {
+            let _ = fs::remove_dir_all(&dir);
+            return Err(error);
+        }
+
+        let output = pcm.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
+        let thread = std::thread::spawn(move || stream_fixture(&output, &pcm_data, &thread_stop));
+        Ok(Self {
+            source: CaptureSource::Fixture {
+                stop,
+                thread: Some(thread),
+            },
             dir,
             pcm,
             wav,
@@ -111,19 +172,27 @@ impl Capture {
         (&self.pcm, &self.wav)
     }
     pub fn alive(&mut self) -> io::Result<bool> {
-        Ok(self.child.try_wait()?.is_none())
+        match &mut self.source {
+            CaptureSource::Process(child) => Ok(child.try_wait()?.is_none()),
+            #[cfg(debug_assertions)]
+            CaptureSource::Fixture { thread, .. } => {
+                Ok(!thread.as_ref().is_some_and(|t| t.is_finished()))
+            }
+        }
     }
     pub fn level(&self) -> io::Result<Level> {
         analyze_tail(&self.pcm)
     }
     pub fn stop(mut self) -> io::Result<PathBuf> {
-        let (status, interrupted) = self.terminate(Duration::from_secs(2));
+        let process_result = self.terminate(Duration::from_secs(2));
         // pw-record 1.6 exits with status 1 after handling SIGINT even though
         // the recording completed normally. Only accept that status when this
         // process was still alive and we successfully sent the stop signal;
         // an independently failed capture must still surface as an error.
-        if !status.success() && !(interrupted && status.code() == Some(1)) {
-            return Err(io::Error::other(format!("pw-record exited with {status}")));
+        if let Some((status, interrupted)) = process_result? {
+            if !status.success() && !(interrupted && status.code() == Some(1)) {
+                return Err(io::Error::other(format!("pw-record exited with {status}")));
+            }
         }
         self.finish_wav()?;
         self.cleanup = false;
@@ -133,36 +202,39 @@ impl Capture {
         let _ = self.terminate(Duration::from_millis(500));
         let _ = fs::remove_dir_all(&self.dir);
     }
-    fn terminate(&mut self, first: Duration) -> (std::process::ExitStatus, bool) {
-        if let Some(status) = self.child.try_wait().ok().flatten() {
-            return (status, false);
+    fn terminate(
+        &mut self,
+        first: Duration,
+    ) -> io::Result<Option<(std::process::ExitStatus, bool)>> {
+        #[cfg(debug_assertions)]
+        if let CaptureSource::Fixture { stop, thread } = &mut self.source {
+            stop.store(true, Ordering::Release);
+            let result = thread
+                .take()
+                .expect("fixture capture thread")
+                .join()
+                .map_err(|_| io::Error::other("fixture capture thread panicked"))?;
+            result?;
+            return Ok(None);
         }
-        let interrupted = self.signal(libc::SIGINT);
-        if let Some(status) = self.reap_status(first) {
-            return (status, interrupted);
+        let CaptureSource::Process(child) = &mut self.source else {
+            unreachable!()
+        };
+        if let Some(status) = child.try_wait().ok().flatten() {
+            return Ok(Some((status, false)));
         }
-        self.signal(libc::SIGTERM);
-        if let Some(status) = self.reap_status(Duration::from_millis(500)) {
-            return (status, false);
+        let child_id = child.id();
+        let signal = |sig| unsafe { libc::kill(-(child_id as i32), sig) == 0 };
+        let interrupted = signal(libc::SIGINT);
+        if let Some(status) = reap_status(child, first) {
+            return Ok(Some((status, interrupted)));
         }
-        self.signal(libc::SIGKILL);
-        (self.child.wait().expect("capture child wait"), false)
-    }
-    fn signal(&self, sig: i32) -> bool {
-        unsafe { libc::kill(-(self.child.id() as i32), sig) == 0 }
-    }
-    fn reap(&mut self, timeout: Duration) -> bool {
-        self.reap_status(timeout).is_some()
-    }
-    fn reap_status(&mut self, timeout: Duration) -> Option<std::process::ExitStatus> {
-        let end = Instant::now() + timeout;
-        while Instant::now() < end {
-            if let Some(status) = self.child.try_wait().ok().flatten() {
-                return Some(status);
-            }
-            std::thread::sleep(Duration::from_millis(20));
+        signal(libc::SIGTERM);
+        if let Some(status) = reap_status(child, Duration::from_millis(500)) {
+            return Ok(Some((status, false)));
         }
-        None
+        signal(libc::SIGKILL);
+        Ok(Some((child.wait()?, false)))
     }
     fn finish_wav(&mut self) -> io::Result<()> {
         let mut pcm = Vec::new();
@@ -186,15 +258,113 @@ impl Capture {
 }
 impl Drop for Capture {
     fn drop(&mut self) {
-        if self.child.try_wait().ok().flatten().is_none() {
-            self.signal(libc::SIGKILL);
-            let _ = self.child.wait();
+        match &mut self.source {
+            CaptureSource::Process(child) => {
+                if child.try_wait().ok().flatten().is_none() {
+                    unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+                    let _ = child.wait();
+                }
+            }
+            #[cfg(debug_assertions)]
+            CaptureSource::Fixture { stop, thread } => {
+                stop.store(true, Ordering::Release);
+                if let Some(thread) = thread.take() {
+                    let _ = thread.join();
+                }
+            }
         }
         if self.cleanup {
             let _ = fs::remove_dir_all(&self.dir);
         }
     }
 }
+fn reap_status(child: &mut Child, timeout: Duration) -> Option<std::process::ExitStatus> {
+    let end = Instant::now() + timeout;
+    while Instant::now() < end {
+        if let Some(status) = child.try_wait().ok().flatten() {
+            return Some(status);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    None
+}
+
+#[cfg(debug_assertions)]
+const MAX_FIXTURE_PCM_BYTES: u64 = 32_000 * 300;
+
+#[cfg(debug_assertions)]
+fn read_fixture(path: &Path) -> io::Result<Vec<u8>> {
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "audio fixture must be an absolute canonical path",
+        ));
+    }
+    if fs::canonicalize(path)?.as_path() != path {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "audio fixture must be an absolute canonical path",
+        ));
+    }
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file()
+        || metadata.len() < 44
+        || metadata.len() > 44 + MAX_FIXTURE_PCM_BYTES
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "audio fixture is not a bounded regular WAV file",
+        ));
+    }
+    let mut header = [0; 44];
+    file.read_exact(&mut header)?;
+    let data_len = u32::from_le_bytes(header[40..44].try_into().unwrap()) as u64;
+    let canonical = &header[..4] == b"RIFF"
+        && u32::from_le_bytes(header[4..8].try_into().unwrap()) as u64 == 36 + data_len
+        && &header[8..12] == b"WAVE"
+        && &header[12..36] == b"fmt \x10\0\0\0\x01\0\x01\0\x80>\0\0\0}\0\0\x02\0\x10\0"
+        && &header[36..40] == b"data"
+        && data_len <= MAX_FIXTURE_PCM_BYTES
+        && data_len % 2 == 0
+        && metadata.len() == 44 + data_len;
+    if !canonical {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "audio fixture must be canonical 16 kHz mono S16LE WAV",
+        ));
+    }
+    let mut pcm = Vec::with_capacity(data_len as usize);
+    file.read_to_end(&mut pcm)?;
+    Ok(pcm)
+}
+
+#[cfg(debug_assertions)]
+fn stream_fixture(path: &Path, pcm: &[u8], stop: &AtomicBool) -> io::Result<()> {
+    let mut output = OpenOptions::new()
+        .append(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    let started = Instant::now();
+    for (index, chunk) in pcm.chunks(320).enumerate() {
+        if stop.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        output.write_all(chunk)?;
+        let deadline = started + Duration::from_millis(10 * (index as u64 + 1));
+        if let Some(delay) = deadline.checked_duration_since(Instant::now()) {
+            std::thread::sleep(delay);
+        }
+    }
+    while !stop.load(Ordering::Acquire) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
+}
+
 pub fn cleanup(path: &Path) {
     if let Some(dir) = path.parent() {
         let _ = fs::remove_dir_all(dir);
@@ -317,6 +487,73 @@ mod tests {
         assert_eq!(&wav[36..40], b"data");
         assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 4);
         assert_eq!(&wav[44..], &[1, 0, 255, 127]);
+    }
+
+    #[test]
+    fn fixture_rejects_noncanonical_and_unsafe_inputs() {
+        let root = private_root("fixture-invalid");
+        let malformed = root.join("malformed.wav");
+        fs::write(&malformed, b"not a wav").unwrap();
+        let malformed = fs::canonicalize(malformed).unwrap();
+        assert_eq!(
+            read_fixture(&malformed).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            read_fixture(Path::new("relative.wav")).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+
+        let valid = root.join("valid.wav");
+        let mut bytes = Vec::new();
+        write_wav(&mut bytes, &[0, 0]).unwrap();
+        fs::write(&valid, bytes).unwrap();
+        let link = root.join("link.wav");
+        symlink(&valid, &link).unwrap();
+        assert_eq!(
+            read_fixture(&link).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn fixture_is_paced_and_stop_preserves_levels_and_partial_audio() {
+        let root = private_root("fixture-paced");
+        let fixture = root.join("fixture.wav");
+        let pcm = vec![0x7f; 3200]; // 100 ms
+        let mut bytes = Vec::new();
+        write_wav(&mut bytes, &pcm).unwrap();
+        fs::write(&fixture, bytes).unwrap();
+        let fixture = fs::canonicalize(fixture).unwrap();
+
+        let capture = Capture::start_fixture(&root, 20, &fixture).unwrap();
+        std::thread::sleep(Duration::from_millis(35));
+        let captured = fs::metadata(capture.paths().0).unwrap().len();
+        assert!(
+            (640..=1600).contains(&captured),
+            "unexpected paced byte count: {captured}"
+        );
+        assert!(capture.level().unwrap().peak > 0.0);
+        let wav = capture.stop().unwrap();
+        let output = fs::read(&wav).unwrap();
+        assert_eq!(output.len() as u64, 44 + captured);
+        assert!(output.len() < 44 + pcm.len());
+        cleanup(&wav);
+    }
+
+    #[test]
+    fn fixture_cancel_stops_promptly_and_removes_session() {
+        let root = private_root("fixture-cancel");
+        let fixture = root.join("fixture.wav");
+        let mut bytes = Vec::new();
+        write_wav(&mut bytes, &vec![0; 32_000]).unwrap();
+        fs::write(&fixture, bytes).unwrap();
+        let fixture = fs::canonicalize(fixture).unwrap();
+        let capture = Capture::start_fixture(&root, 21, &fixture).unwrap();
+        let started = Instant::now();
+        capture.cancel();
+        assert!(started.elapsed() < Duration::from_millis(200));
+        assert!(!root.join("session-21").exists());
     }
 
     #[test]

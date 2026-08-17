@@ -330,7 +330,15 @@ fn main() -> glib::ExitCode {
         return glib::ExitCode::SUCCESS;
     }
     let autostart = env::args_os().skip(1).any(|arg| arg == "--autostart");
-    let app = Application::builder().application_id(APP_ID).build();
+    #[cfg(debug_assertions)]
+    let app_id = if env::var_os("SAYALL_TEST_AUDIO_FIXTURE").is_some() {
+        "dev.sayall.Hud.AcousticTest"
+    } else {
+        APP_ID
+    };
+    #[cfg(not(debug_assertions))]
+    let app_id = APP_ID;
+    let app = Application::builder().application_id(app_id).build();
     let settings_action = gio::SimpleAction::new("settings", None);
     let settings_app = app.clone();
     settings_action.connect_activate(move |_, _| settings::show(&settings_app, portal_status()));

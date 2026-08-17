@@ -217,11 +217,23 @@ final class Coordinator {
         pendingWarning = nil
         var phaseStarted = DispatchTime.now().uptimeNanoseconds
         let allowed: Bool
+#if DEBUG
+        if AudioCapture.debugFixtureConfigured() {
+            allowed = true
+        } else {
+            switch AVCaptureDevice.authorizationStatus(for: .audio) {
+            case .authorized: allowed = true
+            case .notDetermined: allowed = await AVCaptureDevice.requestAccess(for: .audio)
+            default: allowed = false
+            }
+        }
+#else
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: allowed = true
         case .notDetermined: allowed = await AVCaptureDevice.requestAccess(for: .audio)
         default: allowed = false
         }
+#endif
         startupTiming?.microphonePermissionMs = Self.elapsedMilliseconds(since: phaseStarted)
         guard operationID == id, !Task.isCancelled else { return }
         guard allowed else {
