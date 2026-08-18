@@ -39,3 +39,25 @@ WER exceeds 0.35 or aggregate CER exceeds 0.20. Override these thresholds with
 Run Verbatim first to measure transcription accuracy. Clean and Polished are
 additional transformation checks and can intentionally differ from a verbatim
 reference.
+
+## Noisy corpus
+
+Do not use only clean studio speech for release qualification. Build
+reproducible noisy variants from a licensed clean corpus with:
+
+```sh
+python3 tests/acoustic_e2e/augment.py \
+  --source-manifest dist/manual-acoustic-e2e-v1/manifest.json \
+  --output dist/acoustic-e2e/noisy-corpus-v1
+```
+
+For every source utterance, this produces a clean control, nearby English
+speech at 10 dB and 5 dB signal-to-noise ratios, and deterministic office-like
+HVAC and keyboard noise at 8 dB. The generated manifest records every recipe,
+background speech source, and WAV digest. Generated audio remains under
+`dist/`; do not commit it. Run each manifest case through `run.py` using its
+`wav` and `reference` paths.
+
+These injected variants test the native and transcription pipeline under
+controlled interference. They do not model microphone hardware, room echoes,
+or acoustic playback, so retain a short physical microphone smoke test.
