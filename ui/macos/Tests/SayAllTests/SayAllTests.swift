@@ -5,7 +5,7 @@ import AVFoundation
 import AudioToolbox
 import Darwin
 @testable import SayAll
-import SayAllControl
+@testable import SayAllControl
 
 final class ControlFoundationTests: XCTestCase {
     func testControlProtocolRoundTripsStableState() throws {
