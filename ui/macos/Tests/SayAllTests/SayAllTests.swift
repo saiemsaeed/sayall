@@ -283,10 +283,17 @@ final class AudioFixtureCaptureTests: XCTestCase {
         try makeFixture(at: fixture, seconds: 0.8)
         defer { try? FileManager.default.removeItem(at: fixture) }
         let previous = getenv("SAYALL_TEST_AUDIO_FIXTURE").map { String(cString: $0) }
+        let previousRoot = getenv("SAYALL_TEST_RECORDING_ROOT").map { String(cString: $0) }
+        let testRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("sayall-acoustic-e2e-test-\(UUID().uuidString)", isDirectory: true)
         setenv("SAYALL_TEST_AUDIO_FIXTURE", fixture.path, 1)
+        setenv("SAYALL_TEST_RECORDING_ROOT", testRoot.appendingPathComponent("recordings").path, 1)
         defer {
             if let previous { setenv("SAYALL_TEST_AUDIO_FIXTURE", previous, 1) }
             else { unsetenv("SAYALL_TEST_AUDIO_FIXTURE") }
+            if let previousRoot { setenv("SAYALL_TEST_RECORDING_ROOT", previousRoot, 1) }
+            else { unsetenv("SAYALL_TEST_RECORDING_ROOT") }
+            try? FileManager.default.removeItem(at: testRoot)
         }
 
         let capture = AudioCapture()
