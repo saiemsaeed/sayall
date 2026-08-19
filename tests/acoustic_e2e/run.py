@@ -202,8 +202,9 @@ def execute_once(
     environment["SAYALL_TEST_TRANSCRIPT_PATH"] = str(transcript_path)
     pipeline_metrics_path = transcript_path.with_name(transcript_path.stem + "-pipeline.json")
     startup_metrics_path = transcript_path.with_name(transcript_path.stem + "-startup.json")
-    environment["SAYALL_TEST_PIPELINE_METRICS_PATH"] = str(pipeline_metrics_path)
-    environment["SAYALL_TEST_STARTUP_METRICS_PATH"] = str(startup_metrics_path)
+    if not linux:
+        environment["SAYALL_TEST_PIPELINE_METRICS_PATH"] = str(pipeline_metrics_path)
+        environment["SAYALL_TEST_STARTUP_METRICS_PATH"] = str(startup_metrics_path)
     arguments = [str(executable), "--autostart"] if linux else [str(executable)]
     with log_path.open("wb") as log:
         process = subprocess.Popen(arguments, cwd=ROOT, env=environment, stdout=log, stderr=subprocess.STDOUT)
@@ -232,9 +233,10 @@ def execute_once(
             if not transcript_path.exists():
                 raise RuntimeError("SayAll reported success without producing the test transcript")
             transcript = transcript_path.read_text()
-            deadline = time.monotonic() + 1
-            while not pipeline_metrics_path.exists() and time.monotonic() < deadline:
-                time.sleep(0.01)
+            if not linux:
+                deadline = time.monotonic() + 1
+                while not pipeline_metrics_path.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
             timing = {
                 "start_to_recording_ms": round(start_to_recording_ms, 3),
                 "stop_to_terminal_ms": round(stop_to_terminal_ms, 3),
@@ -300,6 +302,7 @@ def main() -> int:
             "SAYALL_TEST_AUDIO_FIXTURE": str(canonical),
         })
         if platform == "macos":
+            environment["SAYALL_TEST_RECORDING_ROOT"] = str(work / "recordings")
             executable = build_macos(work)
         else:
             executable = build_linux()

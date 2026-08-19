@@ -14,6 +14,11 @@ import wave
 
 
 SAMPLE_RATE = 16_000
+RECIPE_VERSION = 1
+BACKGROUND_OFFSET_SAMPLES = SAMPLE_RATE // 3
+OFFICE_CLICK_INTERVAL_SECONDS = 0.47
+OFFICE_CLICK_DURATION_SAMPLES = 240
+OFFICE_NOISE_SCALE = 6_000
 
 
 def read_wav(path: pathlib.Path) -> list[int]:
@@ -68,7 +73,7 @@ def office_noise(length: int, seed: int) -> list[int]:
     generator = random.Random(seed)
     filtered = 0.0
     samples = []
-    click_interval = int(SAMPLE_RATE * 0.47)
+    click_interval = int(SAMPLE_RATE * OFFICE_CLICK_INTERVAL_SECONDS)
     for index in range(length):
         filtered = 0.94 * filtered + 0.06 * generator.uniform(-1, 1)
         seconds = index / SAMPLE_RATE
@@ -76,9 +81,9 @@ def office_noise(length: int, seed: int) -> list[int]:
         hum += 0.15 * math.sin(2 * math.pi * 120 * seconds)
         click_position = index % click_interval
         click = 0.0
-        if click_position < 240:
-            click = (1 - click_position / 240) * generator.uniform(-1, 1) * 1.8
-        samples.append(round((filtered + hum + click) * 6_000))
+        if click_position < OFFICE_CLICK_DURATION_SAMPLES:
+            click = (1 - click_position / OFFICE_CLICK_DURATION_SAMPLES) * generator.uniform(-1, 1) * 1.8
+        samples.append(round((filtered + hum + click) * OFFICE_NOISE_SCALE))
     return samples
 
 
@@ -92,13 +97,16 @@ def build_corpus(source_manifest: pathlib.Path, output: pathlib.Path) -> pathlib
     if len(clips) < 2:
         raise ValueError("at least two clean clips are required for background speech")
     source_root = source_manifest.parent / "normalized-wav"
-    clean = [(clip, read_wav(source_root / f"{clip['id']}.wav")) for clip in clips]
+    clean = []
+    for clip in clips:
+        source_path = source_root / f"{clip['id']}.wav"
+        clean.append((clip, source_path, read_wav(source_path)))
     output.mkdir(parents=True, exist_ok=True)
     cases = []
-    for index, (clip, target) in enumerate(clean):
+    for index, (clip, source_path, target) in enumerate(clean):
         reference = clip["expected_transcript"]
-        background_clip, background = clean[(index + 1) % len(clean)]
-        background = repeat_with_offset(background, len(target), SAMPLE_RATE // 3)
+        background_clip, background_path, background = clean[(index + 1) % len(clean)]
+        background = repeat_with_offset(background, len(target), BACKGROUND_OFFSET_SAMPLES)
         variants = (
             ("clean", target, None, None),
             ("nearby-speech-10db", mix_at_snr(target, background, 10), 10, background_clip["id"]),
@@ -115,9 +123,11 @@ def build_corpus(source_manifest: pathlib.Path, output: pathlib.Path) -> pathlib
             cases.append({
                 "id": case_id,
                 "source_clip": clip["id"],
+                "source_wav_sha256": sha256(source_path),
                 "condition": condition,
                 "snr_db": snr_db,
                 "background_clip": background_id,
+                "background_wav_sha256": sha256(background_path) if background_id else None,
                 "wav": wav_path.name,
                 "reference": reference_path.name,
                 "wav_sha256": sha256(wav_path),
@@ -125,9 +135,22 @@ def build_corpus(source_manifest: pathlib.Path, output: pathlib.Path) -> pathlib
     manifest_path = output / "manifest.json"
     manifest_path.write_text(json.dumps({
         "schema_version": 1,
+        "generator_sha256": sha256(pathlib.Path(__file__).resolve()),
         "source_manifest": str(source_manifest),
+        "source_manifest_sha256": sha256(source_manifest),
         "source_license": document.get("license"),
         "sample_rate": SAMPLE_RATE,
+        "recipe": {
+            "version": RECIPE_VERSION,
+            "background_offset_samples": BACKGROUND_OFFSET_SAMPLES,
+            "office_seed": "one-based source clip index",
+            "office_filter": "y[n] = 0.94*y[n-1] + 0.06*uniform(-1,1)",
+            "office_hum_hz": [60, 120],
+            "office_click_interval_seconds": OFFICE_CLICK_INTERVAL_SECONDS,
+            "office_click_duration_samples": OFFICE_CLICK_DURATION_SAMPLES,
+            "office_noise_scale": OFFICE_NOISE_SCALE,
+            "mix_peak_limit": 32_000,
+        },
         "cases": cases,
     }, indent=2) + "\n")
     manifest_path.chmod(0o600)

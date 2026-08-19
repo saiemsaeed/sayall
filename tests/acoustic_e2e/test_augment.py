@@ -45,10 +45,16 @@ class AugmentationTests(unittest.TestCase):
             output_manifest = build_corpus(manifest, root / "output")
             result = json.loads(output_manifest.read_text())
             self.assertEqual(len(result["cases"]), 8)
+            self.assertEqual(result["recipe"]["version"], 1)
+            self.assertEqual(len(result["generator_sha256"]), 64)
+            self.assertEqual(len(result["source_manifest_sha256"]), 64)
             self.assertEqual(
                 {case["condition"] for case in result["cases"]},
                 {"clean", "nearby-speech-10db", "nearby-speech-5db", "office-8db"},
             )
             for case in result["cases"]:
+                self.assertEqual(len(case["source_wav_sha256"]), 64)
+                if case["background_clip"]:
+                    self.assertEqual(len(case["background_wav_sha256"]), 64)
                 self.assertTrue((output_manifest.parent / case["wav"]).is_file())
                 self.assertTrue((output_manifest.parent / case["reference"]).is_file())

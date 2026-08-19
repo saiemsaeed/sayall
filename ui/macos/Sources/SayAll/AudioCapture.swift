@@ -164,6 +164,21 @@ final class AudioCapture {
               Array(header[8..<12]) == Array("WAVE".utf8) else { throw CaptureError.format }
         return URL(fileURLWithPath: path)
     }
+
+    static func debugRecordingRoot(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL? {
+        guard debugFixtureConfigured(environment: environment),
+              let path = environment["SAYALL_TEST_RECORDING_ROOT"], path.hasPrefix("/"),
+              !path.utf8.contains(where: { $0 < 0x20 || $0 == 0x7f }) else { return nil }
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard components.count >= 3,
+              !components.dropFirst().contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else { return nil }
+        let url = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+        let parent = url.deletingLastPathComponent()
+        guard url.lastPathComponent == "recordings",
+              parent.lastPathComponent.hasPrefix("sayall-acoustic-e2e-"),
+              parent.deletingLastPathComponent().path == "/tmp" else { return nil }
+        return url
+    }
 #endif
     final class AudioResampler {
         private var sourceFormat: AVAudioFormat?
@@ -254,16 +269,25 @@ final class AudioCapture {
     var levelHandler: ((Double) -> Void)?
     var failureHandler: (() -> Void)?
     var firstPCMWriteHandler: ((UUID, UInt64) -> Void)?
-    private static let root: URL = {
+    private static var root: URL {
+#if DEBUG
+        if let override = debugRecordingRoot() { return override }
+#endif
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return base.appendingPathComponent("SayAll/Recordings", isDirectory: true)
-    }()
+    }
 
     static func removeStaleFiles() {
+#if DEBUG
+        if debugFixtureConfigured() { return }
+#endif
         try? FileManager.default.removeItem(at: root)
     }
 
     func start() throws -> Recording {
+#if DEBUG
+        if Self.debugFixtureConfigured(), Self.debugRecordingRoot() == nil { throw CaptureError.format }
+#endif
         var phaseStarted = DispatchTime.now().uptimeNanoseconds
         Self.removeStaleFiles()
         try FileManager.default.createDirectory(at: Self.root, withIntermediateDirectories: true,

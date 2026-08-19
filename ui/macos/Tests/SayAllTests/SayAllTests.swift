@@ -262,6 +262,22 @@ final class AudioFixtureCaptureTests: XCTestCase {
             environment: ["SAYALL_TEST_AUDIO_FIXTURE": malformed.path]))
     }
 
+    func testFixtureRecordingRootRequiresFixtureAndSafeAbsolutePath() {
+        let fixture = ["SAYALL_TEST_AUDIO_FIXTURE": "/tmp/fixture.wav"]
+        XCTAssertNil(AudioCapture.debugRecordingRoot(environment: [
+            "SAYALL_TEST_RECORDING_ROOT": "/tmp/private-recordings"
+        ]))
+        XCTAssertEqual(AudioCapture.debugRecordingRoot(environment: fixture.merging([
+            "SAYALL_TEST_RECORDING_ROOT": "/tmp/sayall-acoustic-e2e-test/recordings"
+        ]) { _, value in value })?.path, "/tmp/sayall-acoustic-e2e-test/recordings")
+        for path in ["relative", "/", "/tmp/../recordings", "/tmp//recordings",
+                     "/tmp/bad\nrecordings", "/tmp/private-recordings", "/Users/test/Documents"] {
+            XCTAssertNil(AudioCapture.debugRecordingRoot(environment: fixture.merging([
+                "SAYALL_TEST_RECORDING_ROOT": path
+            ]) { _, value in value }))
+        }
+    }
+
     func testFixtureIsPacedAndCanStopWithoutFurtherWrites() throws {
         let fixture = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
         try makeFixture(at: fixture, seconds: 0.8)
