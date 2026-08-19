@@ -306,7 +306,10 @@ final class AudioFixtureCaptureTests: XCTestCase {
         XCTAssertEqual((try Data(contentsOf: initial.pcmURL)).count, 0)
         wait(for: [firstWrite], timeout: 0.3)
         XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started), 0.01)
-        Thread.sleep(forTimeInterval: 0.34)
+        let enoughAudioDeadline = Date().addingTimeInterval(2)
+        while (try Data(contentsOf: initial.pcmURL)).count < 9_600 && Date() < enoughAudioDeadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
         let recording = try capture.stop()
         let sizeAtStop = try Data(contentsOf: recording.pcmURL).count
         XCTAssertGreaterThanOrEqual(sizeAtStop, 9_600)
