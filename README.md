@@ -524,7 +524,7 @@ the process environment):
   "output": { "method": "type", "trailing_space": true },
   "recording": { "max_seconds": 300, "min_ms": 300, "source": "" },
   "metrics": { "enabled": true, "history_max_entries": 1000, "expose_api": true },
-  "hud": { "show_timer": true },
+  "hud": { "show_timer": true, "theme": "omarchy", "shape": "rounded" },
   "notifications": true
 }
 ```
@@ -548,6 +548,24 @@ compatibility path but cannot be selected for Polished mode.
 `hud.show_timer` defaults to `true` and displays recording duration as `mm:ss`.
 Set it to `false` for the centered recording layout without a timer or reserved
 timer space.
+
+On Linux, `hud.theme` defaults to `omarchy`. SayAll reads the active Omarchy
+palette from `~/.local/state/omarchy/current/theme/colors.toml` whenever the HUD
+opens, so stock and user-installed Omarchy themes are adopted automatically;
+it falls back to SayAll's original `dark` palette when Omarchy is unavailable.
+In `omarchy` mode, SayAll also reads Hyprland's effective
+`decoration:rounding` value and ignores `hud.shape`, matching active window
+corners including theme and user overrides. Corner selection affects only the
+outer HUD and settings surfaces; waveform bars and other internal controls stay
+rounded.
+The preconfigured alternatives are `catppuccin`, `gruvbox`, `nord`,
+`tokyo-night`, `rose-pine`, `kanagawa`, `everforest`, `ethereal`, `ristretto`,
+and `matte-black` (plus `dark`). `hud.shape` accepts `rounded`, `soft`, or
+`square` for these preconfigured palettes and applies the selected corner
+treatment to the HUD and Linux settings window. These appearance fields are
+ignored by the macOS UI.
+
+![SayAll Linux HUD theme gallery](docs/images/sayall-theme-gallery.png)
 
 For a Finder-launched macOS app, put literal API keys in this mode-`0600` file.
 References such as `"$DEEPGRAM_API_KEY"` resolve only when that variable is in

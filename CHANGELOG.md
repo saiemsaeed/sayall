@@ -5,6 +5,12 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added Linux HUD and settings themes with ten preconfigured palettes, rounded,
+  soft, and square UI shapes, and automatic adoption of active stock or custom
+  Omarchy theme colors and effective Hyprland window corner radius.
+
 ## [0.3.0] - 2026-08-16
 
 ### Added

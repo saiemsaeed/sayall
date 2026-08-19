@@ -1,4 +1,4 @@
-use crate::{autostart, config, global_shortcut, worker};
+use crate::{autostart, config, global_shortcut, theme, worker};
 use gtk::prelude::*;
 use gtk::{
     Align, Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, Label, Orientation,
@@ -71,53 +71,8 @@ pub fn show(app: &Application, shortcut_status: global_shortcut::Status) {
         .build();
     window.add_css_class("sayall-settings");
     let css = gtk::CssProvider::new();
-    css.load_from_data(
-        ".sayall-settings {
-            background-color: #101116;
-            color: #f7f7fa;
-        }
-        .settings-content {
-            background-color: #17191f;
-            border: 1px solid rgba(255, 255, 255, 0.10);
-            border-radius: 18px;
-            padding: 24px;
-        }
-        .settings-title {
-            color: #ffffff;
-            font-size: 24px;
-            font-weight: 700;
-        }
-        .settings-subtitle, .settings-secondary {
-            color: rgba(255, 255, 255, 0.66);
-        }
-        .settings-status {
-            color: #6beba0;
-            font-weight: 600;
-        }
-        .settings-card {
-            background-color: #20232b;
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 12px;
-            padding: 16px;
-        }
-        .settings-section-title {
-            color: #ffffff;
-            font-size: 15px;
-            font-weight: 700;
-        }
-        .settings-option {
-            padding: 6px 2px;
-        }
-        .settings-actions button {
-            border-radius: 10px;
-            padding: 10px 14px;
-        }
-        .settings-primary {
-            background-color: #fa577a;
-            color: #ffffff;
-            font-weight: 700;
-        }",
-    );
+    let appearance = config::load_hud_appearance().unwrap_or_else(|_| theme::Appearance::default());
+    css.load_from_data(&appearance.settings_css());
     gtk::style_context_add_provider_for_display(
         &gtk::gdk::Display::default().expect("a graphical display"),
         &css,

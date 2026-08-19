@@ -1,3 +1,4 @@
+use crate::theme::{Appearance, Shape, Theme};
 use serde::{Deserialize, Serialize};
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
@@ -112,10 +113,16 @@ pub struct SessionConfig {
 #[serde(default)]
 struct Hud {
     show_timer: bool,
+    theme: Theme,
+    shape: Shape,
 }
 impl Default for Hud {
     fn default() -> Self {
-        Self { show_timer: true }
+        Self {
+            show_timer: true,
+            theme: Theme::default(),
+            shape: Shape::default(),
+        }
     }
 }
 #[derive(Deserialize)]
@@ -394,6 +401,13 @@ fn encode_output_method(bytes: &[u8], method: OutputMethod) -> io::Result<Vec<u8
 pub fn load() -> io::Result<SessionConfig> {
     let (parent, bytes) = read_secure_config()?;
     project_session_config(&bytes, &parent)
+}
+
+pub fn load_hud_appearance() -> io::Result<Appearance> {
+    let (_, bytes) = read_secure_config()?;
+    let config: Config =
+        serde_json::from_slice(&bytes).map_err(|e| invalid(&format!("invalid config: {e}")))?;
+    Ok(Appearance::resolve(config.hud.theme, config.hud.shape))
 }
 
 fn project_session_config(bytes: &[u8], parent: &Path) -> io::Result<SessionConfig> {
@@ -823,7 +837,7 @@ mod tests {
     #[test]
     fn full_config_loads_output_fields() {
         let cfg: Config = serde_json::from_str(
-            r#"{"stt":{"provider":"deepgram"},"llm":{"enabled":true},"recording":{"max_seconds":5,"min_ms":200,"source":"node"},"output":{"method":"type"},"hud":{"show_timer":false}}"#,
+            r#"{"stt":{"provider":"deepgram"},"llm":{"enabled":true},"recording":{"max_seconds":5,"min_ms":200,"source":"node"},"output":{"method":"type"},"hud":{"show_timer":false,"theme":"gruvbox","shape":"square"}}"#,
         )
         .unwrap();
         assert_eq!(cfg.recording.max_seconds, 5);
@@ -832,6 +846,8 @@ mod tests {
         assert_eq!(cfg.output.method, "type");
         assert!(cfg.output.trailing_space);
         assert!(!cfg.hud.show_timer);
+        assert_eq!(cfg.hud.theme, Theme::Gruvbox);
+        assert_eq!(cfg.hud.shape, Shape::Square);
     }
 
     #[test]
@@ -1025,6 +1041,8 @@ mod tests {
         assert_eq!(omitted.llm.provider, "cerebras");
         assert_eq!(omitted.llm.enabled, Some(false));
         assert!(omitted.hud.show_timer);
+        assert_eq!(omitted.hud.theme, Theme::Omarchy);
+        assert_eq!(omitted.hud.shape, Shape::Rounded);
         let explicit: Config = serde_json::from_str(
             r#"{"stt":{"model":"","provider":""},"llm":{"provider":"","model":""}}"#,
         )

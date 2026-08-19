@@ -31,6 +31,10 @@ pub const MetricsConfig = struct {
 
 pub const HudConfig = struct {
     show_timer: bool = true,
+    /// Linux HUD palette. "omarchy" follows the active Omarchy colors.
+    theme: []const u8 = "omarchy",
+    /// Linux HUD corner treatment for non-Omarchy themes.
+    shape: []const u8 = "rounded",
 };
 
 pub const Config = struct {
@@ -319,6 +323,27 @@ pub fn validate(cfg: *const Config) ValidationError!void {
         return invalid("recording.source contains invalid characters");
     if (cfg.metrics.history_max_entries > 100_000)
         return invalid("metrics.history_max_entries must not exceed 100000");
+    if (!allowedValue(cfg.hud.theme, &.{
+        "omarchy",
+        "catppuccin",
+        "gruvbox",
+        "nord",
+        "tokyo-night",
+        "rose-pine",
+        "kanagawa",
+        "everforest",
+        "ethereal",
+        "ristretto",
+        "matte-black",
+        "dark",
+    })) return invalid("hud.theme is not a supported preconfigured theme");
+    if (!allowedValue(cfg.hud.shape, &.{ "rounded", "soft", "square" }))
+        return invalid("hud.shape must be 'rounded', 'soft', or 'square'");
+}
+
+fn allowedValue(value: []const u8, allowed: []const []const u8) bool {
+    for (allowed) |candidate| if (std.mem.eql(u8, value, candidate)) return true;
+    return false;
 }
 
 fn safeSecret(value: []const u8) bool {
@@ -372,6 +397,8 @@ test "defaults are sensible" {
     try std.testing.expect(cfg.output.trailing_space);
     try std.testing.expectEqual(@as(u32, 300), cfg.recording.max_seconds);
     try std.testing.expect(cfg.hud.show_timer);
+    try std.testing.expectEqualStrings("omarchy", cfg.hud.theme);
+    try std.testing.expectEqualStrings("rounded", cfg.hud.shape);
 }
 
 test "default template parses validates and keeps API keys empty" {
@@ -483,6 +510,23 @@ test "HUD timer can be disabled" {
     , .{});
     defer parsed.deinit();
     try std.testing.expect(!parsed.value.hud.show_timer);
+}
+
+test "HUD accepts preconfigured themes and shape variants" {
+    const parsed = try std.json.parseFromSlice(Config, std.testing.allocator,
+        \\{"hud":{"theme":"catppuccin","shape":"square"}}
+    , .{});
+    defer parsed.deinit();
+    try validate(&parsed.value);
+    try std.testing.expectEqualStrings("catppuccin", parsed.value.hud.theme);
+    try std.testing.expectEqualStrings("square", parsed.value.hud.shape);
+
+    var invalid_theme: Config = .{};
+    invalid_theme.hud.theme = "custom";
+    try std.testing.expectError(error.InvalidConfig, validate(&invalid_theme));
+    var invalid_shape: Config = .{};
+    invalid_shape.hud.shape = "pill-ish";
+    try std.testing.expectError(error.InvalidConfig, validate(&invalid_shape));
 }
 
 test "validation rejects unknown output methods" {
