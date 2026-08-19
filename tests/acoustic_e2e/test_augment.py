@@ -44,6 +44,8 @@ class AugmentationTests(unittest.TestCase):
             manifest.write_text(json.dumps({"license": "test", "clips": clips}))
             output_manifest = build_corpus(manifest, root / "output")
             result = json.loads(output_manifest.read_text())
+            self.assertEqual(output_manifest.parent.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(output_manifest.stat().st_mode & 0o777, 0o600)
             self.assertEqual(len(result["cases"]), 8)
             self.assertEqual(result["recipe"]["version"], 1)
             self.assertEqual(len(result["generator_sha256"]), 64)
@@ -58,6 +60,8 @@ class AugmentationTests(unittest.TestCase):
                     self.assertEqual(len(case["background_wav_sha256"]), 64)
                 self.assertTrue((output_manifest.parent / case["wav"]).is_file())
                 self.assertTrue((output_manifest.parent / case["reference"]).is_file())
+                self.assertEqual((output_manifest.parent / case["wav"]).stat().st_mode & 0o777, 0o600)
+                self.assertEqual((output_manifest.parent / case["reference"]).stat().st_mode & 0o777, 0o600)
 
     def test_build_corpus_rejects_clip_ids_that_escape_source_directory(self):
         with tempfile.TemporaryDirectory() as directory:

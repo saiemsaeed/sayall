@@ -132,6 +132,7 @@ impl Capture {
     fn start_fixture(root: &Path, generation: u64, fixture: &Path) -> io::Result<Self> {
         let pcm_data = read_fixture(fixture)?;
         let start_gate = std::env::var_os("SAYALL_TEST_AUDIO_START_GATE").map(PathBuf::from);
+        let eof_path = std::env::var_os("SAYALL_TEST_AUDIO_EOF_PATH").map(PathBuf::from);
         let dir = root.join(format!("session-{generation}"));
         fs::DirBuilder::new().mode(0o700).create(&dir)?;
         let pcm = dir.join("audio.pcm");
@@ -158,7 +159,13 @@ impl Capture {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let thread = std::thread::spawn(move || {
-            stream_fixture(&output, &pcm_data, &thread_stop, start_gate.as_deref())
+            stream_fixture(
+                &output,
+                &pcm_data,
+                &thread_stop,
+                start_gate.as_deref(),
+                eof_path.as_deref(),
+            )
         });
         Ok(Self {
             source: CaptureSource::Fixture {
@@ -351,6 +358,7 @@ fn stream_fixture(
     pcm: &[u8],
     stop: &AtomicBool,
     start_gate: Option<&Path>,
+    eof_path: Option<&Path>,
 ) -> io::Result<()> {
     while start_gate.is_some_and(|gate| !gate.is_file()) {
         if stop.load(Ordering::Acquire) {
@@ -372,6 +380,13 @@ fn stream_fixture(
         if let Some(delay) = deadline.checked_duration_since(Instant::now()) {
             std::thread::sleep(delay);
         }
+    }
+    if let Some(eof_path) = eof_path {
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(eof_path)?;
     }
     while !stop.load(Ordering::Acquire) {
         std::thread::sleep(Duration::from_millis(10));
@@ -561,24 +576,36 @@ mod tests {
         let root = private_root("fixture-gate");
         let pcm = root.join("audio.pcm");
         let gate = root.join("start");
+        let eof = root.join("eof");
         fs::write(&pcm, []).unwrap();
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let thread_pcm = pcm.clone();
         let thread_gate = gate.clone();
+        let thread_eof = eof.clone();
         let thread = std::thread::spawn(move || {
-            stream_fixture(&thread_pcm, &[0x7f; 640], &thread_stop, Some(&thread_gate))
+            stream_fixture(
+                &thread_pcm,
+                &[0x7f; 640],
+                &thread_stop,
+                Some(&thread_gate),
+                Some(&thread_eof),
+            )
         });
         std::thread::sleep(Duration::from_millis(30));
         assert_eq!(fs::metadata(&pcm).unwrap().len(), 0);
         fs::write(&gate, []).unwrap();
         let deadline = Instant::now() + Duration::from_millis(200);
-        while fs::metadata(&pcm).unwrap().len() == 0 && Instant::now() < deadline {
+        while !eof.is_file() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
         stop.store(true, Ordering::Release);
         thread.join().unwrap().unwrap();
         assert!(fs::metadata(&pcm).unwrap().len() > 0);
+        assert_eq!(
+            fs::metadata(&eof).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[test]

@@ -8,6 +8,7 @@ import array
 import hashlib
 import json
 import math
+import os
 import pathlib
 import random
 import re
@@ -47,12 +48,29 @@ def read_wav(path: pathlib.Path) -> list[int]:
 def write_wav(path: pathlib.Path, samples: list[int]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = array.array("h", samples)
-    with wave.open(str(path), "wb") as audio:
-        audio.setnchannels(1)
-        audio.setsampwidth(2)
-        audio.setframerate(SAMPLE_RATE)
-        audio.writeframes(payload.tobytes())
-    path.chmod(0o600)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        os.ftruncate(descriptor, 0)
+        with os.fdopen(descriptor, "wb", closefd=False) as output:
+            with wave.open(output, "wb") as audio:
+                audio.setnchannels(1)
+                audio.setsampwidth(2)
+                audio.setframerate(SAMPLE_RATE)
+                audio.writeframes(payload.tobytes())
+    finally:
+        os.close(descriptor)
+
+
+def write_text(path: pathlib.Path, content: str) -> None:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        os.ftruncate(descriptor, 0)
+        with os.fdopen(descriptor, "w", closefd=False) as output:
+            output.write(content)
+    finally:
+        os.close(descriptor)
 
 
 def rms(samples: list[float] | list[int]) -> float:
@@ -111,7 +129,8 @@ def build_corpus(source_manifest: pathlib.Path, output: pathlib.Path) -> pathlib
         clip = {**clip, "id": identifier}
         source_path = source_root / f"{identifier}.wav"
         clean.append((clip, source_path, read_wav(source_path)))
-    output.mkdir(parents=True, exist_ok=True)
+    output.mkdir(parents=True, exist_ok=True, mode=0o700)
+    output.chmod(0o700)
     cases = []
     for index, (clip, source_path, target) in enumerate(clean):
         reference = clip["expected_transcript"]
@@ -128,8 +147,7 @@ def build_corpus(source_manifest: pathlib.Path, output: pathlib.Path) -> pathlib
             wav_path = output / f"{case_id}.wav"
             reference_path = output / f"{case_id}.txt"
             write_wav(wav_path, samples)
-            reference_path.write_text(reference + "\n")
-            reference_path.chmod(0o600)
+            write_text(reference_path, reference + "\n")
             cases.append({
                 "id": case_id,
                 "source_clip": clip["id"],
@@ -143,7 +161,7 @@ def build_corpus(source_manifest: pathlib.Path, output: pathlib.Path) -> pathlib
                 "wav_sha256": sha256(wav_path),
             })
     manifest_path = output / "manifest.json"
-    manifest_path.write_text(json.dumps({
+    write_text(manifest_path, json.dumps({
         "schema_version": 1,
         "generator_sha256": sha256(pathlib.Path(__file__).resolve()),
         "source_manifest": str(source_manifest),
@@ -163,7 +181,6 @@ def build_corpus(source_manifest: pathlib.Path, output: pathlib.Path) -> pathlib
         },
         "cases": cases,
     }, indent=2) + "\n")
-    manifest_path.chmod(0o600)
     return manifest_path
 
 

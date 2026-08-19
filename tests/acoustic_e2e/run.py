@@ -194,6 +194,17 @@ def wait_for_state(path: pathlib.Path, expected: set[str], timeout: float) -> tu
     raise TimeoutError(f"SayAll did not reach {sorted(expected)}; last response: {latest}")
 
 
+def wait_for_file(path: pathlib.Path, process: subprocess.Popen, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.is_file():
+            return
+        if process.poll() is not None:
+            raise RuntimeError(f"SayAll test app exited with status {process.returncode}")
+        time.sleep(0.01)
+    raise TimeoutError("SayAll fixture playback did not finish")
+
+
 def terminate(process: subprocess.Popen) -> None:
     if process.poll() is not None:
         return
@@ -217,7 +228,9 @@ def execute_once(
     environment = dict(base_environment)
     environment["SAYALL_TEST_TRANSCRIPT_PATH"] = str(transcript_path)
     fixture_gate = transcript_path.with_name(transcript_path.stem + "-fixture-start")
+    fixture_eof = transcript_path.with_name(transcript_path.stem + "-fixture-eof")
     environment["SAYALL_TEST_AUDIO_START_GATE"] = str(fixture_gate)
+    environment["SAYALL_TEST_AUDIO_EOF_PATH"] = str(fixture_eof)
     pipeline_metrics_path = transcript_path.with_name(transcript_path.stem + "-pipeline.json")
     startup_metrics_path = transcript_path.with_name(transcript_path.stem + "-startup.json")
     if not linux:
@@ -239,7 +252,7 @@ def execute_once(
                 raise RuntimeError(f"SayAll failed while starting: {recording}")
             gate_descriptor = os.open(fixture_gate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             os.close(gate_descriptor)
-            time.sleep(duration + 0.15)
+            wait_for_file(fixture_eof, process, duration + 15)
             stop_started = time.monotonic()
             stopped = exchange(control_socket, "toggle")
             stop_request_ms = (time.monotonic() - stop_started) * 1_000
