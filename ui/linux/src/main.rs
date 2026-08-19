@@ -8,6 +8,7 @@ mod protocol;
 mod runtime;
 mod session;
 mod settings;
+mod theme;
 mod worker;
 
 use gtk::cairo;
@@ -38,42 +39,6 @@ const BAR_COUNT: usize = 14;
 const HUD_WIDTH: i32 = 244;
 const HUD_HEIGHT: i32 = 48;
 const PROCESSING_BAR_COUNT: usize = 10;
-
-#[derive(Clone, Copy)]
-struct Palette {
-    shell: (f64, f64, f64, f64),
-    border: (f64, f64, f64, f64),
-    text: (f64, f64, f64, f64),
-    wave: (f64, f64, f64),
-    dot: (f64, f64, f64),
-    processing: (f64, f64, f64),
-    success: (f64, f64, f64),
-    error: (f64, f64, f64),
-}
-
-const PALETTES: [Palette; 2] = [
-    Palette {
-        shell: (14.0 / 255.0, 15.0 / 255.0, 19.0 / 255.0, 0.94),
-        border: (1.0, 1.0, 1.0, 0.10),
-        text: (1.0, 1.0, 1.0, 0.82),
-        wave: (250.0 / 255.0, 87.0 / 255.0, 122.0 / 255.0),
-        dot: (1.0, 64.0 / 255.0, 82.0 / 255.0),
-        processing: (76.0 / 255.0, 214.0 / 255.0, 209.0 / 255.0),
-        success: (107.0 / 255.0, 235.0 / 255.0, 158.0 / 255.0),
-        error: (1.0, 115.0 / 255.0, 115.0 / 255.0),
-    },
-    Palette {
-        shell: (1.0, 1.0, 1.0, 1.0),
-        border: (14.0 / 255.0, 15.0 / 255.0, 19.0 / 255.0, 0.12),
-        text: (52.0 / 255.0, 64.0 / 255.0, 84.0 / 255.0, 1.0),
-        wave: (217.0 / 255.0, 45.0 / 255.0, 94.0 / 255.0),
-        dot: (225.0 / 255.0, 29.0 / 255.0, 72.0 / 255.0),
-        processing: (8.0 / 255.0, 127.0 / 255.0, 140.0 / 255.0),
-        success: (6.0 / 255.0, 118.0 / 255.0, 71.0 / 255.0),
-        error: (217.0 / 255.0, 45.0 / 255.0, 32.0 / 255.0),
-    },
-];
-const DARK: Palette = PALETTES[0];
 
 #[derive(Debug)]
 enum UiMessage {
@@ -482,6 +447,9 @@ fn portal_status() -> global_shortcut::Status {
 
 fn build_ui(app: &Application) {
     let model = Rc::new(RefCell::new(Model::default()));
+    let appearance = Rc::new(RefCell::new(
+        config::load_hud_appearance().unwrap_or_default(),
+    ));
     let window = ApplicationWindow::builder()
         .application(app)
         .title("SayAll")
@@ -516,8 +484,15 @@ fn build_ui(app: &Application) {
     window.set_child(Some(&drawing));
 
     let draw_model = model.clone();
+    let draw_appearance = appearance.clone();
     drawing.set_draw_func(move |_, cr, width, height| {
-        draw_hud(cr, width, height, &draw_model.borrow())
+        draw_hud(
+            cr,
+            width,
+            height,
+            &draw_model.borrow(),
+            *draw_appearance.borrow(),
+        )
     });
 
     let (sender, receiver) = mpsc::channel();
@@ -538,7 +513,7 @@ fn build_ui(app: &Application) {
             });
         }
     }
-    install_tick(&window, &drawing, model, receiver);
+    install_tick(&window, &drawing, model, appearance, receiver);
     window.set_visible(false);
 }
 
@@ -546,10 +521,12 @@ fn install_tick(
     window: &ApplicationWindow,
     drawing: &DrawingArea,
     model: Rc<RefCell<Model>>,
+    appearance: Rc<RefCell<theme::Appearance>>,
     receiver: Receiver<UiMessage>,
 ) {
     let window = window.clone();
     let drawing = drawing.clone();
+    let mut was_visible = false;
     glib::timeout_add_local(Duration::from_millis(16), move || {
         while let Ok(message) = receiver.try_recv() {
             match message {
@@ -580,6 +557,13 @@ fn install_tick(
         }
         model.borrow_mut().animate();
         let visible = model.borrow().visible();
+        if visible
+            && !was_visible
+            && let Ok(updated) = config::load_hud_appearance()
+        {
+            *appearance.borrow_mut() = updated;
+        }
+        was_visible = visible;
         window.set_visible(visible);
         if visible {
             drawing.queue_draw();
@@ -629,26 +613,49 @@ fn validate_socket_path(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn draw_hud(cr: &cairo::Context, width: i32, height: i32, model: &Model) {
+fn draw_hud(
+    cr: &cairo::Context,
+    width: i32,
+    height: i32,
+    model: &Model,
+    appearance: theme::Appearance,
+) {
     let width = f64::from(width);
     let height = f64::from(height);
-    rounded_rect(cr, 0.5, 0.5, width - 1.0, height - 1.0, height / 2.0);
-    set_rgba(cr, DARK.shell);
+    let palette = appearance.palette;
+    rounded_rect(
+        cr,
+        0.5,
+        0.5,
+        width - 1.0,
+        height - 1.0,
+        appearance.shell_radius(height),
+    );
+    set_rgba(cr, palette.shell);
     let _ = cr.fill_preserve();
-    set_rgba(cr, DARK.border);
+    set_rgba(cr, palette.border);
     cr.set_line_width(1.0);
     let _ = cr.stroke();
 
     match model.state {
-        HudState::Recording => draw_recording(cr, width, height, model),
-        HudState::Stopping | HudState::Processing => draw_processing(cr, width, height, model),
-        HudState::Success => draw_success(cr, width, height, &model.success_message),
-        HudState::Error => draw_center_text(cr, width, height, &model.error, DARK.error),
+        HudState::Recording => draw_recording(cr, width, height, model, appearance),
+        HudState::Stopping | HudState::Processing => {
+            draw_processing(cr, width, height, model, appearance)
+        }
+        HudState::Success => draw_success(cr, width, height, &model.success_message, appearance),
+        HudState::Error => draw_center_text(cr, width, height, &model.error, palette.error),
         HudState::Idle => {}
     }
 }
 
-fn draw_recording(cr: &cairo::Context, width: f64, height: f64, model: &Model) {
+fn draw_recording(
+    cr: &cairo::Context,
+    width: f64,
+    height: f64,
+    model: &Model,
+    appearance: theme::Appearance,
+) {
+    let palette = appearance.palette;
     let content_width = 8.0 + 16.0 + 138.0 + if model.show_timer { 16.0 + 34.0 } else { 0.0 };
     let content_x = (width - content_width) / 2.0;
 
@@ -659,13 +666,17 @@ fn draw_recording(cr: &cairo::Context, width: f64, height: f64, model: &Model) {
         0.0,
         std::f64::consts::TAU,
     );
-    set_rgb(cr, DARK.dot);
+    set_rgb(cr, palette.dot);
     let _ = cr.fill();
 
     let clipping = model
         .clipping_until
         .is_some_and(|deadline| deadline > Instant::now());
-    let color = if clipping { DARK.error } else { DARK.wave };
+    let color = if clipping {
+        palette.error
+    } else {
+        palette.wave
+    };
     let start_x = content_x + 24.0;
     let visualizer_width = 138.0;
     let bar_width = 4.5;
@@ -679,7 +690,7 @@ fn draw_recording(cr: &cairo::Context, width: f64, height: f64, model: &Model) {
             (height - bar_height) / 2.0,
             bar_width,
             bar_height,
-            bar_width / 2.0,
+            appearance.element_radius(bar_width),
         );
         set_rgb(cr, color);
         let _ = cr.fill();
@@ -691,13 +702,19 @@ fn draw_recording(cr: &cairo::Context, width: f64, height: f64, model: &Model) {
             .map_or(0, |started| started.elapsed().as_secs());
         let label = format!("{:02}:{:02}", elapsed / 60, elapsed % 60);
         select_bold_font(cr, 12.0);
-        set_rgba(cr, DARK.text);
+        set_rgba(cr, palette.text);
         let timer_x = start_x + visualizer_width + 16.0;
         draw_tracked_text_right_aligned(cr, &label, timer_x, 34.0, height / 2.0 + 4.0, 0.2);
     }
 }
 
-fn draw_processing(cr: &cairo::Context, width: f64, height: f64, model: &Model) {
+fn draw_processing(
+    cr: &cairo::Context,
+    width: f64,
+    height: f64,
+    model: &Model,
+    appearance: theme::Appearance,
+) {
     const REFERENCE_HEIGHTS: [f64; PROCESSING_BAR_COUNT] =
         [6.0, 10.0, 16.0, 22.0, 14.0, 8.0, 18.0, 24.0, 14.0, 8.0];
     let bar_width = 4.5;
@@ -723,14 +740,20 @@ fn draw_processing(cr: &cairo::Context, width: f64, height: f64, model: &Model) 
             (height - bar_height) / 2.0,
             bar_width,
             bar_height,
-            2.0,
+            appearance.element_radius(bar_width),
         );
-        set_rgb(cr, DARK.processing);
+        set_rgb(cr, appearance.palette.processing);
         let _ = cr.fill();
     }
 }
 
-fn draw_success(cr: &cairo::Context, width: f64, height: f64, label: &str) {
+fn draw_success(
+    cr: &cairo::Context,
+    width: f64,
+    height: f64,
+    label: &str,
+    appearance: theme::Appearance,
+) {
     select_bold_font(cr, 13.0);
     let text_width = cr
         .text_extents(label)
@@ -748,7 +771,7 @@ fn draw_success(cr: &cairo::Context, width: f64, height: f64, label: &str) {
     cr.set_line_cap(cairo::LineCap::Round);
     cr.set_line_join(cairo::LineJoin::Round);
     cr.set_line_width(1.8);
-    set_rgb(cr, DARK.success);
+    set_rgb(cr, appearance.palette.success);
     let _ = cr.stroke();
 
     cr.move_to(start_x + check_width + gap, center_y + 4.5);
@@ -822,6 +845,10 @@ fn set_rgba(cr: &cairo::Context, color: (f64, f64, f64, f64)) {
 
 fn rounded_rect(cr: &cairo::Context, x: f64, y: f64, width: f64, height: f64, radius: f64) {
     let radius = radius.min(width / 2.0).min(height / 2.0);
+    if radius <= 0.0 {
+        cr.rectangle(x, y, width, height);
+        return;
+    }
     cr.new_sub_path();
     cr.arc(
         x + width - radius,
@@ -887,7 +914,87 @@ mod tests {
             let surface =
                 cairo::ImageSurface::create(cairo::Format::ARgb32, HUD_WIDTH, HUD_HEIGHT).unwrap();
             let context = cairo::Context::new(&surface).unwrap();
-            draw_hud(&context, HUD_WIDTH, HUD_HEIGHT, &model);
+            draw_hud(
+                &context,
+                HUD_WIDTH,
+                HUD_HEIGHT,
+                &model,
+                theme::Appearance::resolve(theme::Theme::Dark, theme::Shape::Rounded),
+            );
+            surface.flush();
+            let mut file = std::fs::File::create(directory.join(format!("{name}.png"))).unwrap();
+            surface.write_to_png(&mut file).unwrap();
+        }
+
+        let mut model = Model {
+            state: HudState::Recording,
+            show_timer: true,
+            recording_started: Some(Instant::now()),
+            ..Model::default()
+        };
+        model.displayed = [
+            0.0, 0.35, 0.75, 1.0, 0.55, 0.9, 0.7, 1.0, 0.4, 0.7, 0.9, 0.6, 0.3, 0.0,
+        ];
+        for (name, selected_theme, shape) in [
+            ("omarchy-live", theme::Theme::Omarchy, theme::Shape::Rounded),
+            (
+                "catppuccin-rounded",
+                theme::Theme::Catppuccin,
+                theme::Shape::Rounded,
+            ),
+            (
+                "gruvbox-rounded",
+                theme::Theme::Gruvbox,
+                theme::Shape::Rounded,
+            ),
+            ("nord-rounded", theme::Theme::Nord, theme::Shape::Rounded),
+            (
+                "tokyo-night-rounded",
+                theme::Theme::TokyoNight,
+                theme::Shape::Rounded,
+            ),
+            (
+                "rose-pine-rounded",
+                theme::Theme::RosePine,
+                theme::Shape::Rounded,
+            ),
+            (
+                "kanagawa-rounded",
+                theme::Theme::Kanagawa,
+                theme::Shape::Rounded,
+            ),
+            (
+                "everforest-rounded",
+                theme::Theme::Everforest,
+                theme::Shape::Rounded,
+            ),
+            (
+                "ethereal-rounded",
+                theme::Theme::Ethereal,
+                theme::Shape::Rounded,
+            ),
+            (
+                "ristretto-rounded",
+                theme::Theme::Ristretto,
+                theme::Shape::Rounded,
+            ),
+            (
+                "matte-black-rounded",
+                theme::Theme::MatteBlack,
+                theme::Shape::Rounded,
+            ),
+            ("dark-rounded", theme::Theme::Dark, theme::Shape::Rounded),
+        ] {
+            let surface =
+                cairo::ImageSurface::create(cairo::Format::ARgb32, HUD_WIDTH, HUD_HEIGHT).unwrap();
+            let context = cairo::Context::new(&surface).unwrap();
+            draw_hud(
+                &context,
+                HUD_WIDTH,
+                HUD_HEIGHT,
+                &model,
+                theme::Appearance::resolve(selected_theme, shape),
+            );
             surface.flush();
             let mut file = std::fs::File::create(directory.join(format!("{name}.png"))).unwrap();
             surface.write_to_png(&mut file).unwrap();
