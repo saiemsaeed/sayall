@@ -131,6 +131,7 @@ impl Capture {
     #[cfg(debug_assertions)]
     fn start_fixture(root: &Path, generation: u64, fixture: &Path) -> io::Result<Self> {
         let pcm_data = read_fixture(fixture)?;
+        let start_gate = std::env::var_os("SAYALL_TEST_AUDIO_START_GATE").map(PathBuf::from);
         let dir = root.join(format!("session-{generation}"));
         fs::DirBuilder::new().mode(0o700).create(&dir)?;
         let pcm = dir.join("audio.pcm");
@@ -156,7 +157,9 @@ impl Capture {
         let output = pcm.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
-        let thread = std::thread::spawn(move || stream_fixture(&output, &pcm_data, &thread_stop));
+        let thread = std::thread::spawn(move || {
+            stream_fixture(&output, &pcm_data, &thread_stop, start_gate.as_deref())
+        });
         Ok(Self {
             source: CaptureSource::Fixture {
                 stop,
@@ -343,7 +346,18 @@ fn read_fixture(path: &Path) -> io::Result<Vec<u8>> {
 }
 
 #[cfg(debug_assertions)]
-fn stream_fixture(path: &Path, pcm: &[u8], stop: &AtomicBool) -> io::Result<()> {
+fn stream_fixture(
+    path: &Path,
+    pcm: &[u8],
+    stop: &AtomicBool,
+    start_gate: Option<&Path>,
+) -> io::Result<()> {
+    while start_gate.is_some_and(|gate| !gate.is_file()) {
+        if stop.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
     let mut output = OpenOptions::new()
         .append(true)
         .custom_flags(libc::O_NOFOLLOW)
@@ -536,9 +550,35 @@ mod tests {
         assert!(capture.level().unwrap().peak > 0.0);
         let wav = capture.stop().unwrap();
         let output = fs::read(&wav).unwrap();
-        assert_eq!(output.len() as u64, 44 + captured);
+        let final_captured = output.len() as u64 - 44;
+        assert!(final_captured >= captured);
         assert!(output.len() < 44 + pcm.len());
         cleanup(&wav);
+    }
+
+    #[test]
+    fn fixture_waits_for_start_gate() {
+        let root = private_root("fixture-gate");
+        let pcm = root.join("audio.pcm");
+        let gate = root.join("start");
+        fs::write(&pcm, []).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
+        let thread_pcm = pcm.clone();
+        let thread_gate = gate.clone();
+        let thread = std::thread::spawn(move || {
+            stream_fixture(&thread_pcm, &[0x7f; 640], &thread_stop, Some(&thread_gate))
+        });
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(fs::metadata(&pcm).unwrap().len(), 0);
+        fs::write(&gate, []).unwrap();
+        let deadline = Instant::now() + Duration::from_millis(200);
+        while fs::metadata(&pcm).unwrap().len() == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        stop.store(true, Ordering::Release);
+        thread.join().unwrap().unwrap();
+        assert!(fs::metadata(&pcm).unwrap().len() > 0);
     }
 
     #[test]

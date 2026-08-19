@@ -250,6 +250,13 @@ final class AudioFixtureCaptureTests: XCTestCase {
         XCTAssertNil(try AudioCapture.debugFixtureURL(environment: [:]))
         XCTAssertThrowsError(try AudioCapture.debugFixtureURL(
             environment: ["SAYALL_TEST_AUDIO_FIXTURE": "relative.wav"]))
+        XCTAssertNil(try AudioCapture.debugFixtureStartGateURL(environment: [:]))
+        XCTAssertEqual(try AudioCapture.debugFixtureStartGateURL(environment: [
+            "SAYALL_TEST_AUDIO_START_GATE": "/tmp/fixture-start"
+        ])?.path, "/tmp/fixture-start")
+        XCTAssertThrowsError(try AudioCapture.debugFixtureStartGateURL(environment: [
+            "SAYALL_TEST_AUDIO_START_GATE": "relative"
+        ]))
 
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
@@ -284,15 +291,20 @@ final class AudioFixtureCaptureTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: fixture) }
         let previous = getenv("SAYALL_TEST_AUDIO_FIXTURE").map { String(cString: $0) }
         let previousRoot = getenv("SAYALL_TEST_RECORDING_ROOT").map { String(cString: $0) }
+        let previousGate = getenv("SAYALL_TEST_AUDIO_START_GATE").map { String(cString: $0) }
         let testRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
             .appendingPathComponent("sayall-acoustic-e2e-test-\(UUID().uuidString)", isDirectory: true)
+        let startGate = testRoot.appendingPathComponent("fixture-start")
         setenv("SAYALL_TEST_AUDIO_FIXTURE", fixture.path, 1)
         setenv("SAYALL_TEST_RECORDING_ROOT", testRoot.appendingPathComponent("recordings").path, 1)
+        setenv("SAYALL_TEST_AUDIO_START_GATE", startGate.path, 1)
         defer {
             if let previous { setenv("SAYALL_TEST_AUDIO_FIXTURE", previous, 1) }
             else { unsetenv("SAYALL_TEST_AUDIO_FIXTURE") }
             if let previousRoot { setenv("SAYALL_TEST_RECORDING_ROOT", previousRoot, 1) }
             else { unsetenv("SAYALL_TEST_RECORDING_ROOT") }
+            if let previousGate { setenv("SAYALL_TEST_AUDIO_START_GATE", previousGate, 1) }
+            else { unsetenv("SAYALL_TEST_AUDIO_START_GATE") }
             try? FileManager.default.removeItem(at: testRoot)
         }
 
@@ -304,6 +316,9 @@ final class AudioFixtureCaptureTests: XCTestCase {
         let started = Date()
         let initial = try capture.start()
         XCTAssertEqual((try Data(contentsOf: initial.pcmURL)).count, 0)
+        Thread.sleep(forTimeInterval: 0.06)
+        XCTAssertEqual((try Data(contentsOf: initial.pcmURL)).count, 0)
+        try Data().write(to: startGate)
         wait(for: [firstWrite], timeout: 0.3)
         XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started), 0.01)
         let enoughAudioDeadline = Date().addingTimeInterval(2)

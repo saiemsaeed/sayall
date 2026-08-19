@@ -58,3 +58,19 @@ class AugmentationTests(unittest.TestCase):
                     self.assertEqual(len(case["background_wav_sha256"]), 64)
                 self.assertTrue((output_manifest.parent / case["wav"]).is_file())
                 self.assertTrue((output_manifest.parent / case["reference"]).is_file())
+
+    def test_build_corpus_rejects_clip_ids_that_escape_source_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = root / "source"
+            (source / "normalized-wav").mkdir(parents=True)
+            manifest = source / "manifest.json"
+            manifest.write_text(json.dumps({
+                "clips": [
+                    {"id": "../escaped", "expected_transcript": "unsafe"},
+                    {"id": "safe", "expected_transcript": "safe"},
+                ]
+            }))
+            with self.assertRaisesRegex(ValueError, "safe single path components"):
+                build_corpus(manifest, root / "output")
+            self.assertFalse((root / "escaped.wav").exists())

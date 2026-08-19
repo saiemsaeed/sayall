@@ -10,6 +10,7 @@ import json
 import math
 import pathlib
 import random
+import re
 import wave
 
 
@@ -19,6 +20,13 @@ BACKGROUND_OFFSET_SAMPLES = SAMPLE_RATE // 3
 OFFICE_CLICK_INTERVAL_SECONDS = 0.47
 OFFICE_CLICK_DURATION_SAMPLES = 240
 OFFICE_NOISE_SCALE = 6_000
+SAFE_CLIP_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+
+def validate_clip_id(value: object) -> str:
+    if not isinstance(value, str) or not SAFE_CLIP_ID.fullmatch(value) or value in {".", ".."}:
+        raise ValueError("clip IDs must be safe single path components")
+    return value
 
 
 def read_wav(path: pathlib.Path) -> list[int]:
@@ -99,7 +107,9 @@ def build_corpus(source_manifest: pathlib.Path, output: pathlib.Path) -> pathlib
     source_root = source_manifest.parent / "normalized-wav"
     clean = []
     for clip in clips:
-        source_path = source_root / f"{clip['id']}.wav"
+        identifier = validate_clip_id(clip.get("id"))
+        clip = {**clip, "id": identifier}
+        source_path = source_root / f"{identifier}.wav"
         clean.append((clip, source_path, read_wav(source_path)))
     output.mkdir(parents=True, exist_ok=True)
     cases = []

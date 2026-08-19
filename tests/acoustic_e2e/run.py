@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import pathlib
 import plistlib
@@ -18,9 +19,9 @@ import time
 import wave
 
 try:
-    from .scoring import aggregate, score
+    from .scoring import aggregate, normalize, score
 except ImportError:
-    from scoring import aggregate, score
+    from scoring import aggregate, normalize, score
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -58,11 +59,14 @@ def source_config() -> pathlib.Path:
     return base / "sayall" / "config.json"
 
 
-def prepare_config(destination: pathlib.Path, mode: str) -> None:
+def prepare_config(destination: pathlib.Path, mode: str, fixture_duration: float) -> None:
     source = source_config()
     document = json.loads(source.read_text()) if source.exists() else {}
     document.setdefault("stt", {})["streaming"] = True
     document.setdefault("processing", {})["mode"] = mode
+    recording = document.setdefault("recording", {})
+    recording["min_ms"] = 0
+    recording["max_seconds"] = math.ceil(fixture_duration) + 5
     output = document.setdefault("output", {})
     output["method"] = "clipboard"
     output["trailing_space"] = False
@@ -72,6 +76,18 @@ def prepare_config(destination: pathlib.Path, mode: str) -> None:
     destination.parent.mkdir(parents=True, mode=0o700)
     destination.write_text(json.dumps(document, indent=2) + "\n")
     destination.chmod(0o600)
+
+
+def write_private(path: pathlib.Path, content: str) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        os.ftruncate(descriptor, 0)
+        with os.fdopen(descriptor, "w", closefd=False) as output:
+            output.write(content)
+    finally:
+        os.close(descriptor)
 
 
 def build_macos(work: pathlib.Path) -> pathlib.Path:
@@ -200,6 +216,8 @@ def execute_once(
 ) -> tuple[str, dict]:
     environment = dict(base_environment)
     environment["SAYALL_TEST_TRANSCRIPT_PATH"] = str(transcript_path)
+    fixture_gate = transcript_path.with_name(transcript_path.stem + "-fixture-start")
+    environment["SAYALL_TEST_AUDIO_START_GATE"] = str(fixture_gate)
     pipeline_metrics_path = transcript_path.with_name(transcript_path.stem + "-pipeline.json")
     startup_metrics_path = transcript_path.with_name(transcript_path.stem + "-startup.json")
     if not linux:
@@ -219,6 +237,8 @@ def execute_once(
             )
             if not recording.get("ok") or recording.get("state") != "recording":
                 raise RuntimeError(f"SayAll failed while starting: {recording}")
+            gate_descriptor = os.open(fixture_gate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            os.close(gate_descriptor)
             time.sleep(duration + 0.15)
             stop_started = time.monotonic()
             stopped = exchange(control_socket, "toggle")
@@ -273,7 +293,7 @@ def main() -> int:
     fixture = args.fixture.resolve(strict=True)
     reference_path = args.reference.resolve(strict=True)
     reference = reference_path.read_text().strip()
-    if not reference:
+    if not normalize(reference):
         parser.error("reference transcript is empty")
 
     platform = "macos" if sys.platform == "darwin" else "linux" if sys.platform.startswith("linux") else None
@@ -288,7 +308,7 @@ def main() -> int:
         canonical = work / "fixture.wav"
         duration = canonical_fixture(fixture, canonical)
         config_home = work / "config"
-        prepare_config(config_home / "sayall/config.json", args.mode)
+        prepare_config(config_home / "sayall/config.json", args.mode, duration)
         runtime = work / "runtime"
         runtime.mkdir(mode=0o700)
         control_socket = runtime / "control.sock"
@@ -340,8 +360,7 @@ def main() -> int:
             "thresholds": {"max_wer": args.max_wer, "max_cer": args.max_cer},
         }
         report["passed"] = corpus["wer"] <= args.max_wer and corpus["cer"] <= args.max_cer
-        output.write_text(json.dumps(report, indent=2) + "\n")
-        output.chmod(0o600)
+        write_private(output, json.dumps(report, indent=2) + "\n")
         print(f"aggregate word accuracy: {corpus['word_accuracy_percent']:.2f}% (WER {corpus['wer']:.4f})")
         print(f"aggregate character accuracy: {corpus['character_accuracy_percent']:.2f}% (CER {corpus['cer']:.4f})")
         print(f"report: {output}")

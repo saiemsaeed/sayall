@@ -165,6 +165,15 @@ final class AudioCapture {
         return URL(fileURLWithPath: path)
     }
 
+    static func debugFixtureStartGateURL(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> URL? {
+        guard let path = environment["SAYALL_TEST_AUDIO_START_GATE"], !path.isEmpty else { return nil }
+        guard path.hasPrefix("/"), !path.utf8.contains(where: { $0 < 0x20 || $0 == 0x7f })
+        else { throw CaptureError.format }
+        return URL(fileURLWithPath: path)
+    }
+
     static func debugRecordingRoot(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL? {
         guard debugFixtureConfigured(environment: environment),
               let path = environment["SAYALL_TEST_RECORDING_ROOT"], path.hasPrefix("/"),
@@ -471,6 +480,7 @@ final class AudioCapture {
 #if DEBUG
     private func startFixture(url: URL, generation: UUID) throws {
         let source = try AVAudioFile(forReading: url, commonFormat: .pcmFormatInt16, interleaved: true)
+        let startGateURL = try Self.debugFixtureStartGateURL()
         guard source.length > 0,
               source.processingFormat.sampleRate == Self.sampleRate,
               source.processingFormat.channelCount == 1,
@@ -487,6 +497,7 @@ final class AudioCapture {
             repeating: Self.fixtureChunkDuration, leeway: .milliseconds(2))
         timer.setEventHandler { [weak self, weak timer] in
             guard let self, let source = self.fixtureFile else { timer?.cancel(); return }
+            if let startGateURL, !FileManager.default.fileExists(atPath: startGateURL.path) { return }
             let remaining = source.length - source.framePosition
             guard remaining > 0 else { timer?.cancel(); return }
             let requestedFrames = min(chunkFrames, AVAudioFrameCount(remaining))
