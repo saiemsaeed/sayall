@@ -50,10 +50,30 @@ public enum ControlSocket {
     public static let maximumFrameBytes = 64 * 1_024
 
     public static var directoryURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
+#if DEBUG
+        if let override = debugOverrideURL() { return override.deletingLastPathComponent() }
+#endif
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/SayAll/control", isDirectory: true)
     }
-    public static var url: URL { directoryURL.appendingPathComponent("control.sock") }
+    public static var url: URL {
+#if DEBUG
+        if let override = debugOverrideURL() { return override }
+#endif
+        return directoryURL.appendingPathComponent("control.sock")
+    }
+
+#if DEBUG
+    static func debugOverrideURL(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL? {
+        guard let path = environment["SAYALL_SOCKET"], path.hasPrefix("/"),
+              !path.utf8.contains(where: { $0 < 0x20 || $0 == 0x7f }),
+              path.utf8.count < MemoryLayout.size(ofValue: sockaddr_un().sun_path) else { return nil }
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard components.count >= 3,
+              !components.dropFirst().contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else { return nil }
+        return URL(fileURLWithPath: path)
+    }
+#endif
 
     public static func address(path: String) throws -> sockaddr_un {
         guard path.utf8.count < MemoryLayout.size(ofValue: sockaddr_un().sun_path) else {

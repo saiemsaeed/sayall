@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Carbon
+import Darwin
 import OSLog
 
 @MainActor
@@ -117,6 +118,11 @@ enum TextDelivery {
         pasteboard: NSPasteboard = .general,
         client: AccessibilityClient = .live
     ) -> Result {
+#if DEBUG
+        if let path = ProcessInfo.processInfo.environment["SAYALL_TEST_TRANSCRIPT_PATH"] {
+            return debugWriteTestTranscript(text, path: path) ? .copied : .failed
+        }
+#endif
         switch method {
         case .clipboard:
             return copy(text, to: pasteboard) ? .copied : .failed
@@ -132,6 +138,26 @@ enum TextDelivery {
             return .typeCommandPosted
         }
     }
+
+#if DEBUG
+    static func debugWriteTestTranscript(_ text: String, path: String) -> Bool {
+        guard path.hasPrefix("/"), !path.utf8.contains(0) else { return false }
+        let descriptor = Darwin.open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { return false }
+        defer { Darwin.close(descriptor) }
+        let bytes = Array(text.utf8)
+        var written = 0
+        while written < bytes.count {
+            let count = bytes.withUnsafeBytes { buffer in
+                Darwin.write(descriptor, buffer.baseAddress!.advanced(by: written), bytes.count - written)
+            }
+            if count < 0 && errno == EINTR { continue }
+            guard count > 0 else { return false }
+            written += count
+        }
+        return Darwin.fsync(descriptor) == 0
+    }
+#endif
 
     private static func insertionTarget(_ target: Target?, client: AccessibilityClient) -> Target? {
         guard client.isTrusted() else {

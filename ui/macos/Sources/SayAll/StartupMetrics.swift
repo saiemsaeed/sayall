@@ -75,6 +75,13 @@ actor StartupMetricsStore {
         if let url {
             self.url = url
         } else {
+#if DEBUG
+            if let path = ProcessInfo.processInfo.environment["SAYALL_TEST_STARTUP_METRICS_PATH"],
+               path.hasPrefix("/") {
+                self.url = URL(fileURLWithPath: path)
+                return
+            }
+#endif
             let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             self.url = support.appendingPathComponent("SayAll/startup-metrics-v1.json")
         }
@@ -167,6 +174,14 @@ actor PipelineMetricsStore {
     init(url: URL? = nil, maximumBytes: Int = PipelineMetricsStore.maximumBytes) {
         self.maximumBytes = maximumBytes
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+#if DEBUG
+        if url == nil,
+           let path = ProcessInfo.processInfo.environment["SAYALL_TEST_PIPELINE_METRICS_PATH"],
+           path.hasPrefix("/") {
+            self.url = URL(fileURLWithPath: path)
+            return
+        }
+#endif
         self.url = url ?? support.appendingPathComponent("SayAll/pipeline-metrics-v1.json")
     }
 

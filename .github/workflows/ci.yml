@@ -15,6 +15,8 @@ jobs:
         run: pacman -Syu --noconfirm zig rust ruby python gtk4 gtk4-layer-shell
       - name: Test Zig daemon and CLI
         run: zig build test
+      - name: Test acoustic transcript scoring
+        run: python3 -m unittest discover -s tests/acoustic_e2e -p 'test_*.py'
       - name: Compile readiness / unsupported runtime — Darwin core
         run: zig build check-darwin-core
       - name: Compile canonical Zig CLI frontend — Darwin
