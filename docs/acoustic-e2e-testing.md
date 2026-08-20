@@ -6,9 +6,33 @@ worker, Deepgram, the selected processing mode, delivery boundary, and
 transcript scoring without opening a physical microphone or changing the
 clipboard.
 
-This is deterministic pipeline coverage, not a substitute for a physical
-microphone smoke test. Run one physical check for each supported microphone
-class before a stable release.
+This is deterministic product-pipeline coverage, not a substitute for a
+physical microphone smoke test. Run one physical check for each supported
+microphone class before a stable release.
+
+## Test cadence and reported state
+
+Use separate evidence for separate questions; do not publish one WER as if it
+covered all of SayAll:
+
+- **Every pull request:** run offline unit, protocol, capture-fixture, scoring,
+  and transformation tests. Do not expose provider secrets or spend quota.
+- **Every release candidate:** run the frozen human-speech worker canary through
+  Deepgram REST and streaming on the exact commit. This detects integration and
+  external-provider regressions and is enforced by the Release workflow.
+- **Weekly:** run that same frozen provider canary on the default branch. A
+  scheduled result can change without a SayAll commit and therefore represents
+  external-dependency drift rather than a product-code regression.
+- **Major release or explicit qualification:** run this native acoustic runner
+  on Linux and macOS over the clean and noisy human corpus, ideally with three
+  repetitions, followed by physical microphone checks. This measures the full
+  application boundary but requires supported desktop sessions and is too
+  environment-dependent for ordinary hosted pull-request CI.
+
+Report provider WER/CER by transport and corpus condition, native pipeline
+WER/CER by platform, stop-to-result latency, fallback/failure counts, model,
+region, fixture hash, and exact commit. The frozen clean read-speech canary is a
+stable trend line, not a population-wide estimate of spontaneous dictation.
 
 ## Fixture requirements
 

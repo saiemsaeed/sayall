@@ -16,7 +16,10 @@ def report(rest=700, post=250, wer=.1):
 
 class ComparisonTests(unittest.TestCase):
     def test_summary_and_change_table(self):
-        self.assertEqual(summarize(report())["post_stop_ms"], 250)
+        summary = summarize(report())
+        self.assertEqual(summary["post_stop_ms"], 250)
+        self.assertEqual(summary["rest_wer"], .1)
+        self.assertEqual(summary["stream_wer"], .1)
         args = SimpleNamespace(current_run_url="https://current", previous_run_url="https://previous", ui_run_url="https://ui")
         rendered = markdown_report(report(650, 200, .08), report(), args)
         self.assertIn("Stream speech finish → final transcript", rendered)

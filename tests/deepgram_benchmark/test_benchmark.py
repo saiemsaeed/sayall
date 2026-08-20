@@ -46,19 +46,19 @@ class MetricsTests(unittest.TestCase):
         with self.assertRaises(ProtocolError): validate_ready(["not", "an", "object"])
 
     def test_dry_run_needs_no_worker_key_or_synthesis_tools(self):
-        manifest = pathlib.Path(__file__).with_name("manifest-v1.json")
+        manifest = pathlib.Path(__file__).with_name("manifest-v2.json")
         with tempfile.TemporaryDirectory() as directory:
             output = pathlib.Path(directory) / "report.json"
             self.assertEqual(main(["--dry-run", "--manifest", str(manifest), "--output", str(output)]), 0)
             report = json.loads(output.read_text())
         self.assertEqual(report["execution"], "dry_run")
         self.assertIsNone(report["worker_build"])
-        self.assertEqual(len(report["clips"]), 6)
+        self.assertEqual(len(report["clips"]), 8)
         self.assertTrue(all("recipe_sha256" in clip["source"] for clip in report["clips"]))
         self.assertTrue(all("audio_sha256" not in clip for clip in report["clips"]))
 
     def test_dry_run_ignores_enforcement_and_rejects_invalid_numbers(self):
-        manifest = pathlib.Path(__file__).with_name("manifest-v1.json")
+        manifest = pathlib.Path(__file__).with_name("manifest-v2.json")
         with tempfile.TemporaryDirectory() as directory:
             output = pathlib.Path(directory) / "report.json"
             self.assertEqual(main(["--dry-run", "--enforce", "--manifest", str(manifest), "--output", str(output)]), 0)
@@ -71,14 +71,26 @@ class MetricsTests(unittest.TestCase):
             with self.assertRaises(Exception): positive_finite(value)
 
     def test_missing_secret_still_writes_privacy_safe_report(self):
-        manifest = pathlib.Path(__file__).with_name("manifest-v1.json")
+        manifest = pathlib.Path(__file__).with_name("manifest-v2.json")
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {}, clear=True):
             output = pathlib.Path(directory) / "report.json"
             self.assertEqual(main(["--manifest", str(manifest), "--output", str(output)]), 1)
             report = json.loads(output.read_text())
         self.assertEqual(report["harness_error"], "missing_secret")
-        self.assertEqual(len(report["clips"]), 6)
+        self.assertEqual(len(report["clips"]), 8)
         self.assertTrue(all(clip["harness_error"] == "missing_secret" for clip in report["clips"]))
+
+    def test_frozen_human_fixture_is_verified_and_copied_privately(self):
+        root = pathlib.Path(__file__).parent
+        manifest = json.loads((root / "manifest-v2.json").read_text())
+        clip = manifest["clips"][0]
+        with tempfile.TemporaryDirectory() as directory:
+            wav_path, pcm = make_audio(clip, pathlib.Path(directory), root)
+            self.assertGreater(len(pcm), 0)
+            self.assertEqual(wav_path.stat().st_mode & 0o777, 0o600)
+        changed = {**clip, "source": {**clip["source"], "wav_sha256": "0" * 64}}
+        with tempfile.TemporaryDirectory() as directory, self.assertRaises(ValueError):
+            make_audio(changed, pathlib.Path(directory), root)
 
     def test_synthesized_audio_is_private(self):
         clip = {"id":"speech", "source":{"type":"espeak-ng", "voice":"en-us", "text":"private fixture"}}

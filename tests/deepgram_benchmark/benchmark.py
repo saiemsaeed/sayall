@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse, datetime, hashlib, json, math, os, pathlib, selectors
 import struct, subprocess, sys, tempfile, time, unicodedata, wave
 
-HARNESS_VERSION = "1.1.0"
+HARNESS_VERSION = "1.2.0"
 MAX_FRAME_BYTES = 1024 * 1024
 ERROR_CODES = {"invalid_request", "incompatible_version", "invalid_audio", "audio_too_short",
                "audio_too_long", "missing_deepgram_key", "deepgram_unauthorized",
@@ -57,10 +57,27 @@ def thresholds_pass(clips: list[dict], corpus: dict, max_wer=None, max_cer=None)
     if max_cer is not None and (corpus["cer"] is None or corpus["cer"] > max_cer): return False
     return True
 
-def make_audio(clip: dict, directory: pathlib.Path) -> tuple[pathlib.Path, bytes]:
+def make_audio(clip: dict, directory: pathlib.Path, source_root: pathlib.Path | None = None) -> tuple[pathlib.Path, bytes]:
     pcm_path, wav_path = directory/(clip["id"] + ".pcm"), directory/(clip["id"] + ".wav")
     source = clip["source"]
-    if source["type"] == "silence":
+    if source["type"] == "wav":
+        if source_root is None or not isinstance(source.get("path"), str):
+            raise ValueError("WAV source requires a manifest-relative path")
+        root = source_root.resolve()
+        source_path = (root / source["path"]).resolve(strict=True)
+        try:
+            source_path.relative_to(root)
+        except ValueError as error:
+            raise ValueError("WAV source escapes the manifest directory") from error
+        if hashlib.sha256(source_path.read_bytes()).hexdigest() != source.get("wav_sha256"):
+            raise ValueError("WAV source hash does not match the manifest")
+        with wave.open(str(source_path), "rb") as audio:
+            if (audio.getnchannels(), audio.getsampwidth(), audio.getframerate(), audio.getcomptype()) != (1, 2, 16000, "NONE"):
+                raise ValueError("WAV source must be canonical mono 16 kHz signed-16 PCM")
+            pcm = audio.readframes(audio.getnframes())
+        if not pcm:
+            raise ValueError("WAV source is empty")
+    elif source["type"] == "silence":
         pcm = b"\0\0" * int(16000 * source["duration_seconds"])
     elif source["type"] == "noise":
         # Deterministic low-amplitude pseudo-noise without external libraries.
@@ -89,7 +106,7 @@ def make_audio(clip: dict, directory: pathlib.Path) -> tuple[pathlib.Path, bytes
 def source_metadata(clip: dict) -> dict:
     source = clip["source"]
     metadata = {"type": source["type"]}
-    for field in ("voice", "duration_seconds"):
+    for field in ("voice", "duration_seconds", "wav_sha256"):
         if field in source: metadata[field] = source[field]
     metadata["recipe_sha256"] = hashlib.sha256(
         json.dumps(source, sort_keys=True, separators=(",", ":")).encode()
@@ -238,7 +255,7 @@ def failure_clip(clip, mode, metadata, category):
 def main(argv=None):
     here = pathlib.Path(__file__).resolve().parent
     p = argparse.ArgumentParser()
-    p.add_argument("--manifest", type=pathlib.Path, default=here/"manifest-v1.json")
+    p.add_argument("--manifest", type=pathlib.Path, default=here/"manifest-v2.json")
     p.add_argument("--worker", type=pathlib.Path, default=pathlib.Path("zig-out/bin/sayall-process"))
     p.add_argument("--output", type=pathlib.Path, default=pathlib.Path("deepgram-benchmark.json"))
     p.add_argument("--mode", choices=("rest", "stream", "both"), default="both")
@@ -256,7 +273,9 @@ def main(argv=None):
     key = os.environ.get(args.secret_env, "")
     report = {"harness_version": HARNESS_VERSION, "manifest_schema_version": manifest["schema_version"],
               "manifest_sha256": hashlib.sha256(raw).hexdigest(), "corpus_id": manifest["corpus_id"],
-              "synthetic_canary": True, "date_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              "corpus_description": manifest.get("description"),
+              "synthetic_canary": all(c["source"]["type"] != "wav" for c in manifest["clips"]),
+              "date_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
               "execution": "dry_run" if args.dry_run else "live",
               "model": args.model, "region": args.region, "modes": list(modes),
               "worker_build": None, "harness_error": None, "clips": []}
@@ -281,8 +300,10 @@ def main(argv=None):
                     for mode in modes: report["clips"].append(failure_clip(clip, mode, metadata, report["harness_error"]))
                     continue
                 try:
-                    wav_path, pcm = make_audio(clip, pathlib.Path(td))
+                    wav_path, pcm = make_audio(clip, pathlib.Path(td), args.manifest.parent)
                     digest = hashlib.sha256(wav_path.read_bytes()).hexdigest()
+                    if clip["sha256"] != "runtime-generated" and digest != clip["sha256"]:
+                        raise ValueError("canonical audio hash does not match the manifest")
                 except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, wave.Error):
                     for mode in modes: report["clips"].append(failure_clip(clip, mode, metadata, "audio_generation"))
                     continue

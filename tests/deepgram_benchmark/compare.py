@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import argparse, base64, html, json, pathlib, statistics
 
-METRICS = [("WER", "wer", True), ("CER", "cer", True),
+METRICS = [("Combined provider canary WER", "wer", True),
+           ("REST provider canary WER", "rest_wer", True),
+           ("Streaming provider canary WER", "stream_wer", True),
+           ("Combined provider canary CER", "cer", True),
            ("REST speech request → result", "rest_ms", False),
            ("Stream speech connection ready", "stream_ready_ms", False),
            ("Stream speech audio duration", "audio_duration_ms", False),
@@ -18,12 +21,22 @@ def median(values):
     clean = [value for value in values if isinstance(value, (int, float))]
     return round(statistics.median(clean)) if clean else None
 
+def mode_wer(clips):
+    counted = [clip for clip in clips if isinstance(clip.get("word_edits"), int) and isinstance(clip.get("reference_words"), int)]
+    words = sum(clip["reference_words"] for clip in counted)
+    if words:
+        return sum(clip["word_edits"] for clip in counted) / words
+    values = [clip["wer"] for clip in clips if isinstance(clip.get("wer"), (int, float))]
+    return sum(values) / len(values) if values else None
+
 def summarize(report):
     clips = report.get("clips", [])
     rest = [c for c in clips if c.get("mode") == "rest" and c.get("effective_transport") == "rest" and c.get("classification") in ACCEPTED and not c.get("expect_no_speech", False)]
     stream = [c for c in clips if c.get("mode") == "stream" and c.get("effective_transport") == "stream" and c.get("classification") in ACCEPTED and not c.get("expect_no_speech", False)]
     return {
         "wer": report.get("corpus", {}).get("wer"),
+        "rest_wer": mode_wer(rest),
+        "stream_wer": mode_wer(stream),
         "cer": report.get("corpus", {}).get("cer"),
         "rest_ms": median(c.get("request_to_result_ms", c.get("elapsed_ms")) for c in rest),
         "stream_ready_ms": median(c.get("stream_ready_ms") for c in stream if c.get("streaming_active") is True),
@@ -51,7 +64,9 @@ def metadata(report):
     return {"Date": report.get("date_utc") or "—", "Execution": report.get("execution") or "—",
             "Harness": report.get("harness_version") or "—", "Worker": worker.get("build_version") or "—",
             "Model / region": f"{report.get('model') or '—'} / {report.get('region') or '—'}",
-            "Corpus": report.get("corpus_id") or "—", "Manifest": (report.get("manifest_sha256") or "—")[:12],
+            "Corpus": report.get("corpus_id") or "—",
+            "Scope": report.get("corpus_description") or "Provider canary; inspect the versioned manifest for coverage",
+            "Manifest": (report.get("manifest_sha256") or "—")[:12],
             "Thresholds": str((report.get("thresholds") or {}).get("passed", "—")),
             "Harness error": report.get("harness_error") or "none"}
 
@@ -79,8 +94,8 @@ def markdown_report(current, previous, args):
     now, before = summarize(current), summarize(previous) if previous else {}
     comparable, reasons = compatibility(current, previous)
     current_metadata, previous_metadata = metadata(current), metadata(previous or {})
-    lines = ["# SayAll benchmark and HUD evidence", "", links(args), "",
-             "> Lower is better. Streaming total includes real-time audio playback; finish → final transcript is the user-visible post-stop latency.", "",
+    lines = ["# SayAll external-dependency benchmark and HUD evidence", "", links(args), "",
+             "> WER/CER measure the frozen provider canary corpus, not microphone capture or all real-world dictation. Lower is better. Streaming total includes real-time audio playback; finish → final transcript is the user-visible post-stop latency.", "",
              "## Run identity", "", "| Field | Current | Previous |", "| --- | --- | --- |"]
     for key in current_metadata:
         lines.append(f"| {key} | {current_metadata[key]} | {previous_metadata[key]} |")
@@ -138,7 +153,7 @@ def html_report(current, previous, args, screenshot_dir):
                            ("HUD screenshot CI run", args.ui_run_url)) if url)
     return f"""<!doctype html><meta charset="utf-8"><title>SayAll benchmark report</title>
 <style>body{{font:15px system-ui;margin:32px;max-width:1200px;color:#17202a}}table{{border-collapse:collapse;width:100%;margin:18px 0 32px}}th,td{{border:1px solid #d8dee4;padding:9px;text-align:left}}th{{background:#f6f8fa}}.note{{background:#eef6ff;padding:14px;border-radius:8px}}.warning{{background:#fff3cd;padding:14px;border-radius:8px}}.shots{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}}figure{{margin:0;padding:16px;border:1px solid #d8dee4;border-radius:10px}}img{{max-width:100%;image-rendering:auto}}figcaption{{margin-top:10px;font-weight:600}}</style>
-<h1>SayAll benchmark and HUD evidence</h1><p>{link_html}</p><p class="note">Lower is better. Streaming total includes real-time audio playback; finish → final transcript is the user-visible post-stop latency.</p>
+<h1>SayAll external-dependency benchmark and HUD evidence</h1><p>{link_html}</p><p class="note">WER/CER measure the frozen provider canary corpus, not microphone capture or all real-world dictation. Lower is better. Streaming total includes real-time audio playback; finish → final transcript is the user-visible post-stop latency.</p>
 <h2>Run identity</h2><table><thead><tr><th>Field</th><th>Current</th><th>Previous</th></tr></thead><tbody>{metadata_rows}</tbody></table>{warning}
 <h2>Current versus previous</h2><table><thead><tr><th>Metric</th><th>Current</th><th>Previous</th><th>Change</th></tr></thead><tbody>{metric_rows}</tbody></table>
 <p>Failures: <strong>{now['failures']}</strong> current / <strong>{before.get('failures', '—')}</strong> previous.</p>
