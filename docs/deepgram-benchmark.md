@@ -15,7 +15,7 @@ key:
 ```sh
 zig build process -Doptimize=ReleaseSafe
 export SAYALL_DEEPGRAM_BENCHMARK_API_KEY='...'
-python3 tests/deepgram_benchmark/benchmark.py --mode both --output deepgram-benchmark.json
+python3 tests/deepgram_benchmark/benchmark.py --mode both --runs 5 --output deepgram-benchmark.json
 python3 -m unittest discover -s tests/deepgram_benchmark -p 'test_*.py'
 ```
 
@@ -26,8 +26,10 @@ bounded and temporary canonical mono 16 kHz signed-16 WAV/PCM is deleted. Use
 `--dry-run` to validate the manifest and report schema without a key, worker, or
 network. Checked-in fixture hashes are verified before use. A live report
 records audio and manifest hashes but never includes a provider transcript.
-WER/CER normalization ignores Unicode case, punctuation, and spacing. Reports
-show REST and streaming WER separately as well as the combined micro-average;
+WER/CER normalization ignores Unicode case, punctuation, and spacing. The
+harness repeats every clip/transport five times by default so one provider
+result cannot define the release metric. Reports show REST and streaming WER
+separately as well as the combined micro-average;
 the combined value contains both transports and must not be mistaken for a
 larger corpus.
 Thresholds are advisory unless `--enforce` is supplied; for example:

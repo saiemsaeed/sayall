@@ -65,6 +65,7 @@ def metadata(report):
             "Harness": report.get("harness_version") or "—", "Worker": worker.get("build_version") or "—",
             "Model / region": f"{report.get('model') or '—'} / {report.get('region') or '—'}",
             "Corpus": report.get("corpus_id") or "—",
+            "Repetitions per clip/transport": report.get("runs_per_case", 1),
             "Scope": report.get("corpus_description") or "Provider canary; inspect the versioned manifest for coverage",
             "Manifest": (report.get("manifest_sha256") or "—")[:12],
             "Thresholds": str((report.get("thresholds") or {}).get("passed", "—")),
@@ -107,10 +108,10 @@ def markdown_report(current, previous, args):
         lines.append(f"| {label} | {value(now.get(key), percent)} | {value(before.get(key), percent)} | {delta} |")
     lines.extend(["", f"Failures: **{now['failures']}** current / **{before.get('failures', '—')}** previous.", "",
                   "## Per-clip evidence", "",
-                  "| Clip | Mode | Classification | Transport | Total | Audio | Feed | REST result | Stream ready | Post-stop | WER |", "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"])
+                  "| Clip | Run | Mode | Classification | Transport | Total | Audio | Feed | REST result | Stream ready | Post-stop | WER |", "| --- | ---: | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"])
     for clip in current.get("clips", []):
-        lines.append("| {id} | {mode} | {classification} | {transport} | {total} | {audio} | {feed} | {rest} | {ready} | {post} | {wer} |".format(
-            id=clip.get("id", "—"), mode=clip.get("mode", "—"), classification=clip.get("classification", "—"),
+        lines.append("| {id} | {run} | {mode} | {classification} | {transport} | {total} | {audio} | {feed} | {rest} | {ready} | {post} | {wer} |".format(
+            id=clip.get("id", "—"), run=clip.get("run", 1), mode=clip.get("mode", "—"), classification=clip.get("classification", "—"),
             transport=clip.get("effective_transport") or "—", total=value(clip.get("elapsed_ms")),
             audio=value(clip.get("audio_duration_ms")), feed=value(clip.get("audio_feed_ms")),
             rest=value(clip.get("request_to_result_ms")), ready=value(clip.get("stream_ready_ms")),
@@ -131,9 +132,9 @@ def html_report(current, previous, args, screenshot_dir):
     metadata_rows = "".join(f"<tr><td>{html.escape(key)}</td><td>{html.escape(str(current_metadata[key]))}</td><td>{html.escape(str(previous_metadata[key]))}</td></tr>" for key in current_metadata)
     warning = "" if comparable else f'<p class="warning"><strong>No metric delta is calculated:</strong> {html.escape("; ".join(reasons))}.</p>'
     clip_rows = "".join(
-        "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>".format(
+        "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>".format(
             *(html.escape(str(item)) for item in (
-                clip.get("id", "—"), clip.get("mode", "—"), clip.get("classification", "—"),
+                clip.get("id", "—"), clip.get("run", 1), clip.get("mode", "—"), clip.get("classification", "—"),
                 clip.get("effective_transport") or "—", value(clip.get("elapsed_ms")),
                 value(clip.get("audio_duration_ms")), value(clip.get("audio_feed_ms")),
                 value(clip.get("request_to_result_ms")), value(clip.get("stream_ready_ms")),
@@ -157,7 +158,7 @@ def html_report(current, previous, args, screenshot_dir):
 <h2>Run identity</h2><table><thead><tr><th>Field</th><th>Current</th><th>Previous</th></tr></thead><tbody>{metadata_rows}</tbody></table>{warning}
 <h2>Current versus previous</h2><table><thead><tr><th>Metric</th><th>Current</th><th>Previous</th><th>Change</th></tr></thead><tbody>{metric_rows}</tbody></table>
 <p>Failures: <strong>{now['failures']}</strong> current / <strong>{before.get('failures', '—')}</strong> previous.</p>
-<h2>Per-clip evidence</h2><table><thead><tr><th>Clip</th><th>Mode</th><th>Classification</th><th>Transport</th><th>Total</th><th>Audio</th><th>Feed</th><th>REST result</th><th>Stream ready</th><th>Post-stop</th><th>WER</th></tr></thead><tbody>{clip_rows}</tbody></table>
+<h2>Per-clip evidence</h2><table><thead><tr><th>Clip</th><th>Run</th><th>Mode</th><th>Classification</th><th>Transport</th><th>Total</th><th>Audio</th><th>Feed</th><th>REST result</th><th>Stream ready</th><th>Post-stop</th><th>WER</th></tr></thead><tbody>{clip_rows}</tbody></table>
 <h2>Rendered HUD states</h2><div class="shots">{''.join(images) or '<p>No matching CI screenshot artifact was available.</p>'}</div>"""
 
 def main(argv=None):

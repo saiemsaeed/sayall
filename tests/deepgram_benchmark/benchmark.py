@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse, datetime, hashlib, json, math, os, pathlib, selectors
 import struct, subprocess, sys, tempfile, time, unicodedata, wave
 
-HARNESS_VERSION = "1.2.0"
+HARNESS_VERSION = "1.3.0"
 MAX_FRAME_BYTES = 1024 * 1024
 ERROR_CODES = {"invalid_request", "incompatible_version", "invalid_audio", "audio_too_short",
                "audio_too_long", "missing_deepgram_key", "deepgram_unauthorized",
@@ -240,9 +240,9 @@ def nonnegative_finite(value):
         raise argparse.ArgumentTypeError("must be finite and non-negative")
     return number
 
-def failure_clip(clip, mode, metadata, category):
+def failure_clip(clip, mode, run_index, metadata, category):
     counts = error_counts(clip["expected_transcript"], "")
-    return {"id": clip["id"], "language": clip["language"], "mode": mode,
+    return {"id": clip["id"], "language": clip["language"], "mode": mode, "run": run_index,
             "expect_no_speech": clip["expect_no_speech"], "classification": "harness_error",
             "worker_status": None, "worker_error": None, "streaming_active": None,
             "harness_error": category, "effective_transport": None, "elapsed_ms": None,
@@ -262,6 +262,8 @@ def main(argv=None):
     p.add_argument("--model", default="nova-3"); p.add_argument("--region", choices=("global", "eu", "au"), default="global")
     p.add_argument("--secret-env", default="SAYALL_DEEPGRAM_BENCHMARK_API_KEY")
     p.add_argument("--timeout", type=positive_finite, default=60)
+    p.add_argument("--runs", type=int, choices=range(1, 11), default=5,
+                   metavar="1-10", help="repetitions per clip and transport")
     p.add_argument("--max-wer", type=nonnegative_finite); p.add_argument("--max-cer", type=nonnegative_finite)
     p.add_argument("--enforce", action="store_true"); p.add_argument("--dry-run", action="store_true")
     args = p.parse_args(argv)
@@ -278,6 +280,7 @@ def main(argv=None):
               "date_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
               "execution": "dry_run" if args.dry_run else "live",
               "model": args.model, "region": args.region, "modes": list(modes),
+              "runs_per_case": args.runs,
               "worker_build": None, "harness_error": None, "clips": []}
     try:
         if not args.dry_run and not key:
@@ -293,11 +296,15 @@ def main(argv=None):
                             "license": clip["license"], "declared_audio_sha256": clip["sha256"]}
                 if args.dry_run:
                     for mode in modes:
-                        report["clips"].append({"id": clip["id"], "language": clip["language"],
-                            "mode": mode, "expect_no_speech": clip["expect_no_speech"], **metadata})
+                        for run_index in range(1, args.runs + 1):
+                            report["clips"].append({"id": clip["id"], "language": clip["language"],
+                                "mode": mode, "run": run_index,
+                                "expect_no_speech": clip["expect_no_speech"], **metadata})
                     continue
                 if report["harness_error"]:
-                    for mode in modes: report["clips"].append(failure_clip(clip, mode, metadata, report["harness_error"]))
+                    for mode in modes:
+                        for run_index in range(1, args.runs + 1):
+                            report["clips"].append(failure_clip(clip, mode, run_index, metadata, report["harness_error"]))
                     continue
                 try:
                     wav_path, pcm = make_audio(clip, pathlib.Path(td), args.manifest.parent)
@@ -305,39 +312,43 @@ def main(argv=None):
                     if clip["sha256"] != "runtime-generated" and digest != clip["sha256"]:
                         raise ValueError("canonical audio hash does not match the manifest")
                 except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, wave.Error):
-                    for mode in modes: report["clips"].append(failure_clip(clip, mode, metadata, "audio_generation"))
+                    for mode in modes:
+                        for run_index in range(1, args.runs + 1):
+                            report["clips"].append(failure_clip(clip, mode, run_index, metadata, "audio_generation"))
                     continue
                 for mode in modes:
-                    operation_started = time.monotonic()
-                    try:
-                        result, active, timing = run_worker(
-                            args.worker.resolve(), mode,
-                            request(clip, wav_path, pathlib.Path(td)/(clip["id"]+"-grow.pcm"), key, args),
-                            pcm, args.timeout,
-                        )
-                    except (OSError, ValueError, RuntimeError, TimeoutError, subprocess.SubprocessError, json.JSONDecodeError) as error:
-                        result = {"status": "error", "harness_error": error_category(error)}
-                        active = None
-                        timing = {"elapsed_ms": round((time.monotonic()-operation_started)*1000),
-                                  "audio_duration_ms": round(len(pcm) / 32),
-                                  "request_to_result_ms": None, "stream_ready_ms": None,
-                                  "audio_feed_ms": None, "post_stop_ms": None}
-                    counts = error_counts(clip["expected_transcript"], result.get("text") or "")
-                    transport = result.get("transport")
-                    report["clips"].append({"id": clip["id"], "language": clip["language"], "mode": mode,
-                        "expect_no_speech": clip["expect_no_speech"], "classification": classify(clip["expect_no_speech"], result),
-                        "worker_status": result.get("status"),
-                        "worker_error": result.get("error") if result.get("status") == "error" else None,
-                        "streaming_active": active,
-                        "harness_error": result.get("harness_error"), "effective_transport": transport,
-                        **timing, "audio_sha256": digest, **metadata, **counts,
-                        "wer": counts["word_edits"]/counts["reference_words"] if counts["reference_words"] else None,
-                        "cer": counts["char_edits"]/counts["reference_chars"] if counts["reference_chars"] else None})
+                    for run_index in range(1, args.runs + 1):
+                        operation_started = time.monotonic()
+                        try:
+                            result, active, timing = run_worker(
+                                args.worker.resolve(), mode,
+                                request(clip, wav_path, pathlib.Path(td)/(clip["id"]+"-grow.pcm"), key, args),
+                                pcm, args.timeout,
+                            )
+                        except (OSError, ValueError, RuntimeError, TimeoutError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+                            result = {"status": "error", "harness_error": error_category(error)}
+                            active = None
+                            timing = {"elapsed_ms": round((time.monotonic()-operation_started)*1000),
+                                      "audio_duration_ms": round(len(pcm) / 32),
+                                      "request_to_result_ms": None, "stream_ready_ms": None,
+                                      "audio_feed_ms": None, "post_stop_ms": None}
+                        counts = error_counts(clip["expected_transcript"], result.get("text") or "")
+                        transport = result.get("transport")
+                        report["clips"].append({"id": clip["id"], "language": clip["language"],
+                            "mode": mode, "run": run_index,
+                            "expect_no_speech": clip["expect_no_speech"], "classification": classify(clip["expect_no_speech"], result),
+                            "worker_status": result.get("status"),
+                            "worker_error": result.get("error") if result.get("status") == "error" else None,
+                            "streaming_active": active,
+                            "harness_error": result.get("harness_error"), "effective_transport": transport,
+                            **timing, "audio_sha256": digest, **metadata, **counts,
+                            "wer": counts["word_edits"]/counts["reference_words"] if counts["reference_words"] else None,
+                            "cer": counts["char_edits"]/counts["reference_chars"] if counts["reference_chars"] else None})
     finally:
         speech_counts = [{k: c[k] for k in ("word_edits","reference_words","char_edits","reference_chars")}
                          for c in report["clips"] if "word_edits" in c and not c["expect_no_speech"]]
         report["corpus"] = aggregate(speech_counts)
-        expected_count = len(manifest["clips"]) * len(modes)
+        expected_count = len(manifest["clips"]) * len(modes) * args.runs
         passed = (not report["harness_error"] and len(report["clips"]) == expected_count
                   and thresholds_pass(report["clips"], report["corpus"], args.max_wer, args.max_cer)) if not args.dry_run else None
         report["thresholds"] = {"enforced": args.enforce and not args.dry_run,

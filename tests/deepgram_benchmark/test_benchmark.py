@@ -53,7 +53,9 @@ class MetricsTests(unittest.TestCase):
             report = json.loads(output.read_text())
         self.assertEqual(report["execution"], "dry_run")
         self.assertIsNone(report["worker_build"])
-        self.assertEqual(len(report["clips"]), 8)
+        self.assertEqual(report["runs_per_case"], 5)
+        self.assertEqual(len(report["clips"]), 40)
+        self.assertEqual({clip["run"] for clip in report["clips"]}, {1, 2, 3, 4, 5})
         self.assertTrue(all("recipe_sha256" in clip["source"] for clip in report["clips"]))
         self.assertTrue(all("audio_sha256" not in clip for clip in report["clips"]))
 
@@ -77,7 +79,7 @@ class MetricsTests(unittest.TestCase):
             self.assertEqual(main(["--manifest", str(manifest), "--output", str(output)]), 1)
             report = json.loads(output.read_text())
         self.assertEqual(report["harness_error"], "missing_secret")
-        self.assertEqual(len(report["clips"]), 8)
+        self.assertEqual(len(report["clips"]), 40)
         self.assertTrue(all(clip["harness_error"] == "missing_secret" for clip in report["clips"]))
 
     def test_frozen_human_fixture_is_verified_and_copied_privately(self):
