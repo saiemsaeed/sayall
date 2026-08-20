@@ -17,6 +17,12 @@ zig build process -Doptimize=ReleaseSafe
 export SAYALL_DEEPGRAM_BENCHMARK_API_KEY='...'
 python3 tests/deepgram_benchmark/benchmark.py --mode both --runs 5 --output deepgram-benchmark.json
 python3 -m unittest discover -s tests/deepgram_benchmark -p 'test_*.py'
+
+# Explicit extended qualification: eight utterances, seven speakers, clean,
+# deterministic office noise at 10 dB and 5 dB, repeated twice.
+python3 tests/deepgram_benchmark/benchmark.py --mode both --runs 2 \
+  --manifest tests/deepgram_benchmark/manifest-v3.json \
+  --output deepgram-qualification.json
 ```
 
 The key is read only from the named environment variable and sent to the worker
@@ -29,9 +35,10 @@ records audio and manifest hashes but never includes a provider transcript.
 WER/CER normalization ignores Unicode case, punctuation, and spacing. The
 harness repeats every clip/transport five times by default so one provider
 result cannot define the release metric. Reports show REST and streaming WER
-separately as well as the combined micro-average;
-the combined value contains both transports and must not be mistaken for a
-larger corpus.
+separately as well as the combined micro-average; the combined value contains
+both transports and must not be mistaken for a larger corpus. Extended
+qualification reports also break WER/CER down by clean, 10 dB office-noise, and
+5 dB office-noise conditions.
 Thresholds are advisory unless `--enforce` is supplied; for example:
 
 ```sh
@@ -73,8 +80,9 @@ SayAll commit. Latency remains measured and advisory until enough history exists
 to establish a stable threshold. Ordinary pushes and pull requests do not run
 the live benchmark or receive its provider secret. To evaluate a branch
 separately, manually run **Live Deepgram worker benchmark** from the Actions tab
-and select that branch. Manual runs are advisory by default but can enable the
-same enforcement.
+and select that branch. Select **qualification** for the extended clean and
+noise corpus. Manual runs are advisory by default but can enable enforcement
+with thresholds chosen for that corpus.
 
 Download the `deepgram-benchmark-<run>-<attempt>` artifact and open
 `benchmark-report.html` for the same tables plus every macOS and Linux HUD PNG

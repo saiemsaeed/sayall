@@ -12,4 +12,5 @@ __pycache__/
 *.pcm
 *.wav
 !tests/deepgram_benchmark/fixtures-v2/*.wav
+!tests/deepgram_benchmark/fixtures-v3/*.wav
 *.tmp

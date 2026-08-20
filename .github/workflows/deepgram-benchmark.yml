@@ -28,6 +28,10 @@ on:
         description: Fail on connectivity, protocol, transport, or quality threshold failures
         type: boolean
         default: false
+      qualification:
+        description: Run the extended clean, 10 dB, and 5 dB human-speech corpus twice
+        type: boolean
+        default: false
       max_wer:
         description: Maximum aggregate word error rate for the frozen clean-speech canary
         type: number
@@ -47,7 +51,7 @@ concurrency:
 jobs:
   benchmark:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 35
     env:
       BENCHMARK_SHA: ${{ inputs.benchmark_sha || github.sha }}
     permissions:
@@ -137,7 +141,11 @@ jobs:
           if [[ '${{ inputs.enforce }}' == 'true' || '${{ github.event_name }}' == 'schedule' ]]; then enforce=--enforce; fi
           max_wer='${{ inputs.max_wer }}'; [[ -n "$max_wer" ]] || max_wer=0.10
           max_cer='${{ inputs.max_cer }}'; [[ -n "$max_cer" ]] || max_cer=0.08
-          python3 tests/deepgram_benchmark/benchmark.py --mode both $enforce \
+          corpus_args=(--runs 5)
+          if [[ '${{ inputs.qualification }}' == 'true' ]]; then
+            corpus_args=(--manifest tests/deepgram_benchmark/manifest-v3.json --runs 2)
+          fi
+          python3 tests/deepgram_benchmark/benchmark.py --mode both $enforce "${corpus_args[@]}" \
             --max-wer "$max_wer" --max-cer "$max_cer" \
             --output deepgram-benchmark.json
       - name: Build current-versus-previous report

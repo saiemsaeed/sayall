@@ -2,7 +2,7 @@
 """Privacy-safe live benchmark for the shipped sayall-process worker."""
 from __future__ import annotations
 
-import argparse, datetime, hashlib, json, math, os, pathlib, selectors
+import argparse, datetime, hashlib, json, math, os, pathlib, random, selectors
 import struct, subprocess, sys, tempfile, time, unicodedata, wave
 
 HARNESS_VERSION = "1.3.0"
@@ -57,6 +57,33 @@ def thresholds_pass(clips: list[dict], corpus: dict, max_wer=None, max_cer=None)
     if max_cer is not None and (corpus["cer"] is None or corpus["cer"] > max_cer): return False
     return True
 
+def add_office_noise(pcm: bytes, snr_db: float, seed: int) -> bytes:
+    if len(pcm) % 2:
+        raise ValueError("PCM must contain complete signed-16 samples")
+    target = struct.unpack(f"<{len(pcm) // 2}h", pcm)
+    generator = random.Random(seed)
+    filtered = 0.0
+    noise = []
+    click_interval, click_duration = round(16000 * 0.47), 240
+    for index in range(len(target)):
+        filtered = 0.94 * filtered + 0.06 * generator.uniform(-1, 1)
+        seconds = index / 16000
+        hum = 0.35 * math.sin(2 * math.pi * 60 * seconds) + 0.15 * math.sin(2 * math.pi * 120 * seconds)
+        click_position = index % click_interval
+        click = ((1 - click_position / click_duration) * generator.uniform(-1, 1) * 1.8
+                 if click_position < click_duration else 0.0)
+        noise.append(round((filtered + hum + click) * 6000))
+    target_rms = math.sqrt(sum(sample * sample for sample in target) / len(target))
+    noise_rms = math.sqrt(sum(sample * sample for sample in noise) / len(noise))
+    if target_rms == 0 or noise_rms == 0:
+        raise ValueError("noise mixing requires non-silent signals")
+    noise_gain = target_rms / (noise_rms * 10 ** (snr_db / 20))
+    mixed = [target[index] + noise[index] * noise_gain for index in range(len(target))]
+    peak = max(abs(sample) for sample in mixed)
+    output_gain = min(1.0, 32000 / peak) if peak else 1.0
+    values = [round(sample * output_gain) for sample in mixed]
+    return struct.pack(f"<{len(values)}h", *values)
+
 def make_audio(clip: dict, directory: pathlib.Path, source_root: pathlib.Path | None = None) -> tuple[pathlib.Path, bytes]:
     pcm_path, wav_path = directory/(clip["id"] + ".pcm"), directory/(clip["id"] + ".wav")
     source = clip["source"]
@@ -96,6 +123,15 @@ def make_audio(clip: dict, directory: pathlib.Path, source_root: pathlib.Path | 
         raw.unlink()
         with wave.open(str(wav_path), "rb") as w: pcm = w.readframes(w.getnframes())
     else: raise ValueError("unsupported source type: " + source["type"])
+    condition = clip.get("condition", "clean")
+    if condition.startswith("office-"):
+        snr_db = clip.get("snr_db")
+        seed = clip.get("noise_seed")
+        if not isinstance(snr_db, (int, float)) or not isinstance(seed, int):
+            raise ValueError("office-noise clips require numeric snr_db and integer noise_seed")
+        pcm = add_office_noise(pcm, snr_db, seed)
+    elif condition not in ("clean", "silence"):
+        raise ValueError("unsupported acoustic condition: " + str(condition))
     pcm_path.write_bytes(pcm); os.chmod(pcm_path, 0o600)
     if not wav_path.exists():
         with wave.open(str(wav_path), "wb") as w:
@@ -242,7 +278,8 @@ def nonnegative_finite(value):
 
 def failure_clip(clip, mode, run_index, metadata, category):
     counts = error_counts(clip["expected_transcript"], "")
-    return {"id": clip["id"], "language": clip["language"], "mode": mode, "run": run_index,
+    return {"id": clip["id"], "language": clip["language"],
+            "condition": clip.get("condition", "clean"), "mode": mode, "run": run_index,
             "expect_no_speech": clip["expect_no_speech"], "classification": "harness_error",
             "worker_status": None, "worker_error": None, "streaming_active": None,
             "harness_error": category, "effective_transport": None, "elapsed_ms": None,
@@ -298,7 +335,7 @@ def main(argv=None):
                     for mode in modes:
                         for run_index in range(1, args.runs + 1):
                             report["clips"].append({"id": clip["id"], "language": clip["language"],
-                                "mode": mode, "run": run_index,
+                                "condition": clip.get("condition", "clean"), "mode": mode, "run": run_index,
                                 "expect_no_speech": clip["expect_no_speech"], **metadata})
                     continue
                 if report["harness_error"]:
@@ -335,7 +372,7 @@ def main(argv=None):
                         counts = error_counts(clip["expected_transcript"], result.get("text") or "")
                         transport = result.get("transport")
                         report["clips"].append({"id": clip["id"], "language": clip["language"],
-                            "mode": mode, "run": run_index,
+                            "condition": clip.get("condition", "clean"), "mode": mode, "run": run_index,
                             "expect_no_speech": clip["expect_no_speech"], "classification": classify(clip["expect_no_speech"], result),
                             "worker_status": result.get("status"),
                             "worker_error": result.get("error") if result.get("status") == "error" else None,
@@ -348,6 +385,18 @@ def main(argv=None):
         speech_counts = [{k: c[k] for k in ("word_edits","reference_words","char_edits","reference_chars")}
                          for c in report["clips"] if "word_edits" in c and not c["expect_no_speech"]]
         report["corpus"] = aggregate(speech_counts)
+        report["conditions"] = {}
+        for condition in sorted({c.get("condition", "clean") for c in report["clips"]}):
+            condition_results = {}
+            for transport in (None, "rest", "stream"):
+                counts = [{k: c[k] for k in ("word_edits","reference_words","char_edits","reference_chars")}
+                          for c in report["clips"] if "word_edits" in c and not c["expect_no_speech"]
+                          and c.get("condition", "clean") == condition
+                          and (transport is None or c.get("mode") == transport)]
+                if counts:
+                    condition_results[transport or "combined"] = aggregate(counts)
+            if condition_results:
+                report["conditions"][condition] = condition_results
         expected_count = len(manifest["clips"]) * len(modes) * args.runs
         passed = (not report["harness_error"] and len(report["clips"]) == expected_count
                   and thresholds_pass(report["clips"], report["corpus"], args.max_wer, args.max_cer)) if not args.dry_run else None

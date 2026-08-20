@@ -75,6 +75,15 @@ def value(value, percent=False):
     if value is None: return "—"
     return f"{value * 100:.2f}%" if percent else f"{value:.0f} ms"
 
+def condition_rows(report):
+    rows = []
+    for condition, transports in sorted((report.get("conditions") or {}).items()):
+        combined = transports.get("combined", {})
+        rows.append((condition, combined.get("reference_words"),
+                     combined.get("wer"), transports.get("rest", {}).get("wer"),
+                     transports.get("stream", {}).get("wer"), combined.get("cer")))
+    return rows
+
 def change(current, previous, percent=False):
     if current is None or previous is None: return "—"
     difference = current - previous
@@ -106,6 +115,13 @@ def markdown_report(current, previous, args):
     for label, key, percent in METRICS:
         delta = change(now.get(key), before.get(key), percent) if comparable else "not comparable"
         lines.append(f"| {label} | {value(now.get(key), percent)} | {value(before.get(key), percent)} | {delta} |")
+    conditions = condition_rows(current)
+    if conditions:
+        lines.extend(["", "## Accuracy by acoustic condition", "",
+                      "| Condition | Scored reference words | Combined WER | REST WER | Stream WER | Combined CER |",
+                      "| --- | ---: | ---: | ---: | ---: | ---: |"])
+        for condition, words, combined_wer, rest_wer, stream_wer, combined_cer in conditions:
+            lines.append(f"| {condition} | {words or 0} | {value(combined_wer, True)} | {value(rest_wer, True)} | {value(stream_wer, True)} | {value(combined_cer, True)} |")
     lines.extend(["", f"Failures: **{now['failures']}** current / **{before.get('failures', '—')}** previous.", "",
                   "## Per-clip evidence", "",
                   "| Clip | Run | Mode | Classification | Transport | Total | Audio | Feed | REST result | Stream ready | Post-stop | WER |", "| --- | ---: | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"])
@@ -141,6 +157,11 @@ def html_report(current, previous, args, screenshot_dir):
                 value(clip.get("post_stop_ms")), value(clip.get("wer"), True))))
         for clip in current.get("clips", [])
     )
+    condition_table = ""
+    conditions = condition_rows(current)
+    if conditions:
+        rows = "".join(f"<tr><td>{html.escape(condition)}</td><td>{words or 0}</td><td>{value(combined_wer, True)}</td><td>{value(rest_wer, True)}</td><td>{value(stream_wer, True)}</td><td>{value(combined_cer, True)}</td></tr>" for condition, words, combined_wer, rest_wer, stream_wer, combined_cer in conditions)
+        condition_table = f'<h2>Accuracy by acoustic condition</h2><table><thead><tr><th>Condition</th><th>Scored reference words</th><th>Combined WER</th><th>REST WER</th><th>Stream WER</th><th>Combined CER</th></tr></thead><tbody>{rows}</tbody></table>'
     images = []
     if screenshot_dir and screenshot_dir.exists():
         for path in sorted(screenshot_dir.rglob("*.png")):
@@ -157,7 +178,7 @@ def html_report(current, previous, args, screenshot_dir):
 <h1>SayAll external-dependency benchmark and HUD evidence</h1><p>{link_html}</p><p class="note">WER/CER measure the frozen provider canary corpus, not microphone capture or all real-world dictation. Lower is better. Streaming total includes real-time audio playback; finish → final transcript is the user-visible post-stop latency.</p>
 <h2>Run identity</h2><table><thead><tr><th>Field</th><th>Current</th><th>Previous</th></tr></thead><tbody>{metadata_rows}</tbody></table>{warning}
 <h2>Current versus previous</h2><table><thead><tr><th>Metric</th><th>Current</th><th>Previous</th><th>Change</th></tr></thead><tbody>{metric_rows}</tbody></table>
-<p>Failures: <strong>{now['failures']}</strong> current / <strong>{before.get('failures', '—')}</strong> previous.</p>
+{condition_table}<p>Failures: <strong>{now['failures']}</strong> current / <strong>{before.get('failures', '—')}</strong> previous.</p>
 <h2>Per-clip evidence</h2><table><thead><tr><th>Clip</th><th>Run</th><th>Mode</th><th>Classification</th><th>Transport</th><th>Total</th><th>Audio</th><th>Feed</th><th>REST result</th><th>Stream ready</th><th>Post-stop</th><th>WER</th></tr></thead><tbody>{clip_rows}</tbody></table>
 <h2>Rendered HUD states</h2><div class="shots">{''.join(images) or '<p>No matching CI screenshot artifact was available.</p>'}</div>"""
 

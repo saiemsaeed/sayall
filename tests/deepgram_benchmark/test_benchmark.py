@@ -2,6 +2,7 @@ import json
 import os
 import pathlib
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -9,7 +10,7 @@ import time
 import unittest
 import wave
 from unittest import mock
-from benchmark import ProtocolError, aggregate, classify, edit_distance, error_counts, main, make_audio, nonnegative_finite, normalize, positive_finite, read_line, run_worker, thresholds_pass, validate_ready, validate_result, worker_identity
+from benchmark import ProtocolError, add_office_noise, aggregate, classify, edit_distance, error_counts, main, make_audio, nonnegative_finite, normalize, positive_finite, read_line, run_worker, thresholds_pass, validate_ready, validate_result, worker_identity
 
 class MetricsTests(unittest.TestCase):
     def test_normalize(self): self.assertEqual(normalize(" HéLLo,\tWORLD! "), "héllo world")
@@ -81,6 +82,15 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual(report["harness_error"], "missing_secret")
         self.assertEqual(len(report["clips"]), 40)
         self.assertTrue(all(clip["harness_error"] == "missing_secret" for clip in report["clips"]))
+
+    def test_office_noise_is_deterministic_and_snr_changes_output(self):
+        pcm = struct.pack("<16000h", *([1000, -1000] * 8000))
+        ten_a = add_office_noise(pcm, 10, 7)
+        ten_b = add_office_noise(pcm, 10, 7)
+        five = add_office_noise(pcm, 5, 7)
+        self.assertEqual(ten_a, ten_b)
+        self.assertNotEqual(ten_a, five)
+        self.assertEqual(len(ten_a), len(pcm))
 
     def test_frozen_human_fixture_is_verified_and_copied_privately(self):
         root = pathlib.Path(__file__).parent

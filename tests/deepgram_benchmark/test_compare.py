@@ -21,8 +21,15 @@ class ComparisonTests(unittest.TestCase):
         self.assertEqual(summary["rest_wer"], .1)
         self.assertEqual(summary["stream_wer"], .1)
         args = SimpleNamespace(current_run_url="https://current", previous_run_url="https://previous", ui_run_url="https://ui")
-        rendered = markdown_report(report(650, 200, .08), report(), args)
+        current = report(650, 200, .08)
+        current["conditions"] = {"office-5db": {
+            "combined": {"reference_words": 20, "wer": .2, "cer": .1},
+            "rest": {"wer": .1}, "stream": {"wer": .3},
+        }}
+        rendered = markdown_report(current, report(), args)
         self.assertIn("Stream speech finish → final transcript", rendered)
+        self.assertIn("Accuracy by acoustic condition", rendered)
+        self.assertIn("| office-5db | 20 | 20.00% | 10.00% | 30.00% | 10.00% |", rendered)
         self.assertIn("-50.00 ms better", rendered)
         self.assertIn("-2.00 pp better", rendered)
 
