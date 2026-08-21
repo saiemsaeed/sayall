@@ -10,7 +10,7 @@ import time
 import unittest
 import wave
 from unittest import mock
-from benchmark import ProtocolError, add_office_noise, aggregate, classify, edit_distance, error_counts, main, make_audio, nonnegative_finite, normalize, positive_finite, read_line, run_worker, thresholds_pass, validate_ready, validate_result, worker_identity
+from benchmark import ProtocolError, add_office_noise, aggregate, classify, edit_distance, error_counts, main, make_audio, nonnegative_finite, normalize, parse_profiles, positive_finite, read_line, reference_for, run_worker, thresholds_pass, validate_ready, validate_result, worker_identity
 
 class MetricsTests(unittest.TestCase):
     def test_normalize(self): self.assertEqual(normalize(" HéLLo,\tWORLD! "), "héllo world")
@@ -20,6 +20,15 @@ class MetricsTests(unittest.TestCase):
     def test_aggregate_is_micro_average(self):
         got = aggregate([error_counts("a b", "a"), error_counts("c", "x")])
         self.assertEqual(got["word_edits"], 2); self.assertAlmostEqual(got["wer"], 2/3)
+    def test_processing_profiles_use_distinct_references(self):
+        clip = {"id":"dictation", "expect_no_speech":False,
+                "verbatim_reference":"the the main aim", "clean_reference":"the main aim"}
+        self.assertEqual(reference_for(clip, "verbatim"), "the the main aim")
+        self.assertEqual(reference_for(clip, "clean"), "the main aim")
+        self.assertEqual(parse_profiles("verbatim,clean"), ("verbatim", "clean"))
+        with self.assertRaises(Exception): parse_profiles("clean,clean")
+        with self.assertRaises(ValueError): reference_for({"id":"bad", "expect_no_speech":False}, "clean")
+
     def test_classification(self):
         self.assertEqual(classify(False, {"status":"success", "text":"Hi."}), "speech_ok")
         self.assertEqual(classify(True, {"status":"success", "text":"ghost"}), "false_speech")
@@ -32,6 +41,7 @@ class MetricsTests(unittest.TestCase):
         self.assertFalse(thresholds_pass(clips, {"wer":.4,"cer":.1}, .3, .2))
         self.assertFalse(thresholds_pass([{"classification":"missing_speech"}], {"wer":0,"cer":0}))
         self.assertFalse(thresholds_pass([{"classification":"speech_ok", "mode":"stream", "effective_transport":"rest"}], {"wer":0,"cer":0}))
+        self.assertFalse(thresholds_pass([{"classification":"speech_ok", "processing_profile":"clean", "protected_term_errors":1}], {"wer":0,"cer":0}))
     def test_protocol_validation_requires_authoritative_transport(self):
         base = {"version":3, "processing_profile":"verbatim"}
         validate_ready({"version":3, "event":"ready", "streaming":True})

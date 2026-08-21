@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse, datetime, hashlib, json, math, os, pathlib, random, selectors
 import struct, subprocess, sys, tempfile, time, unicodedata, wave
 
-HARNESS_VERSION = "1.3.0"
+HARNESS_VERSION = "1.4.0"
 MAX_FRAME_BYTES = 1024 * 1024
 ERROR_CODES = {"invalid_request", "incompatible_version", "invalid_audio", "audio_too_short",
                "audio_too_long", "missing_deepgram_key", "deepgram_unauthorized",
@@ -53,6 +53,7 @@ def classify(expect_no_speech: bool, result: dict) -> str:
 def thresholds_pass(clips: list[dict], corpus: dict, max_wer=None, max_cer=None) -> bool:
     if any(c["classification"] not in ("speech_ok", "expected_no_speech") for c in clips): return False
     if any(c.get("mode") == "stream" and c.get("effective_transport") != "stream" for c in clips): return False
+    if any(c.get("processing_profile") == "clean" and c.get("protected_term_errors", 0) > 0 for c in clips): return False
     if max_wer is not None and (corpus["wer"] is None or corpus["wer"] > max_wer): return False
     if max_cer is not None and (corpus["cer"] is None or corpus["cer"] > max_cer): return False
     return True
@@ -149,11 +150,28 @@ def source_metadata(clip: dict) -> dict:
     ).hexdigest()
     return metadata
 
-def request(clip, wav_path, pcm_path, key, args):
+def reference_for(clip: dict, profile: str) -> str:
+    if profile == "clean":
+        reference = clip.get("clean_reference")
+        if not isinstance(reference, str) or (not clip.get("expect_no_speech") and not normalize(reference)):
+            raise ValueError(f"clip {clip.get('id')} requires a clean_reference")
+        return reference
+    reference = clip.get("verbatim_reference", clip.get("expected_transcript"))
+    if not isinstance(reference, str) or (not clip.get("expect_no_speech") and not normalize(reference)):
+        raise ValueError(f"clip {clip.get('id')} requires a verbatim reference")
+    return reference
+
+def parse_profiles(value: str) -> tuple[str, ...]:
+    profiles = tuple(part.strip() for part in value.split(",") if part.strip())
+    if not profiles or len(set(profiles)) != len(profiles) or any(p not in ("verbatim", "clean") for p in profiles):
+        raise argparse.ArgumentTypeError("profiles must be a unique comma-separated subset of verbatim,clean")
+    return profiles
+
+def request(clip, wav_path, pcm_path, key, args, profile):
     return {"version": 3, "wav_path": str(wav_path), "pcm_path": str(pcm_path),
             "deepgram_api_key": key, "deepgram_model": args.model, "deepgram_language": clip["language"],
             "deepgram_region": args.region, "deepgram_keyterms": [], "stream_finalize_timeout_ms": 5000,
-            "llm_api_key": "", "processing_profile": "verbatim"}
+            "llm_api_key": "", "processing_profile": profile}
 
 def read_line(proc, timeout):
     deadline, frame = time.monotonic() + timeout, bytearray()
@@ -276,16 +294,24 @@ def nonnegative_finite(value):
         raise argparse.ArgumentTypeError("must be finite and non-negative")
     return number
 
-def failure_clip(clip, mode, run_index, metadata, category):
-    counts = error_counts(clip["expected_transcript"], "")
+def protected_term_counts(clip: dict, hypothesis: str) -> tuple[int, int]:
+    terms = clip.get("protected_terms", [])
+    normalized = normalize(hypothesis)
+    return sum(normalize(term) not in normalized for term in terms), len(terms)
+
+def failure_clip(clip, mode, profile, run_index, metadata, category):
+    counts = error_counts(reference_for(clip, profile), "")
+    protected_errors, protected_count = protected_term_counts(clip, "")
     return {"id": clip["id"], "language": clip["language"],
-            "condition": clip.get("condition", "clean"), "mode": mode, "run": run_index,
+            "condition": clip.get("condition", "clean"), "processing_profile": profile,
+            "mode": mode, "run": run_index,
             "expect_no_speech": clip["expect_no_speech"], "classification": "harness_error",
             "worker_status": None, "worker_error": None, "streaming_active": None,
             "harness_error": category, "effective_transport": None, "elapsed_ms": None,
             "audio_duration_ms": None, "request_to_result_ms": None, "stream_ready_ms": None,
             "audio_feed_ms": None, "post_stop_ms": None,
-            "audio_sha256": None, **metadata, **counts,
+            "audio_sha256": None, "protected_term_errors": protected_errors,
+            "protected_term_count": protected_count, **metadata, **counts,
             "wer": counts["word_edits"]/counts["reference_words"] if counts["reference_words"] else None,
             "cer": counts["char_edits"]/counts["reference_chars"] if counts["reference_chars"] else None}
 
@@ -296,6 +322,8 @@ def main(argv=None):
     p.add_argument("--worker", type=pathlib.Path, default=pathlib.Path("zig-out/bin/sayall-process"))
     p.add_argument("--output", type=pathlib.Path, default=pathlib.Path("deepgram-benchmark.json"))
     p.add_argument("--mode", choices=("rest", "stream", "both"), default="both")
+    p.add_argument("--processing-profiles", type=parse_profiles, default=("verbatim",),
+                   help="comma-separated processing profiles: verbatim,clean")
     p.add_argument("--model", default="nova-3"); p.add_argument("--region", choices=("global", "eu", "au"), default="global")
     p.add_argument("--secret-env", default="SAYALL_DEEPGRAM_BENCHMARK_API_KEY")
     p.add_argument("--timeout", type=positive_finite, default=60)
@@ -306,9 +334,13 @@ def main(argv=None):
     args = p.parse_args(argv)
     raw = args.manifest.read_bytes(); manifest = json.loads(raw)
     for c in manifest["clips"]:
-        for field in ("id", "source", "expected_transcript", "language", "expect_no_speech", "provenance", "license", "sha256"):
+        for field in ("id", "source", "language", "expect_no_speech", "provenance", "license", "sha256"):
             if field not in c: raise ValueError(f"clip missing {field}")
     modes = ("rest", "stream") if args.mode == "both" else (args.mode,)
+    profiles = args.processing_profiles
+    for clip in manifest["clips"]:
+        for profile in profiles:
+            reference_for(clip, profile)
     key = os.environ.get(args.secret_env, "")
     report = {"harness_version": HARNESS_VERSION, "manifest_schema_version": manifest["schema_version"],
               "manifest_sha256": hashlib.sha256(raw).hexdigest(), "corpus_id": manifest["corpus_id"],
@@ -317,6 +349,8 @@ def main(argv=None):
               "date_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
               "execution": "dry_run" if args.dry_run else "live",
               "model": args.model, "region": args.region, "modes": list(modes),
+              "processing_profiles": list(profiles),
+              "primary_profile": "clean" if "clean" in profiles else profiles[0],
               "runs_per_case": args.runs,
               "worker_build": None, "harness_error": None, "clips": []}
     try:
@@ -332,16 +366,19 @@ def main(argv=None):
                 metadata = {"source": source_metadata(clip), "provenance": clip["provenance"],
                             "license": clip["license"], "declared_audio_sha256": clip["sha256"]}
                 if args.dry_run:
-                    for mode in modes:
-                        for run_index in range(1, args.runs + 1):
-                            report["clips"].append({"id": clip["id"], "language": clip["language"],
-                                "condition": clip.get("condition", "clean"), "mode": mode, "run": run_index,
-                                "expect_no_speech": clip["expect_no_speech"], **metadata})
+                    for profile in profiles:
+                        for mode in modes:
+                            for run_index in range(1, args.runs + 1):
+                                report["clips"].append({"id": clip["id"], "language": clip["language"],
+                                    "condition": clip.get("condition", "clean"), "processing_profile": profile,
+                                    "mode": mode, "run": run_index,
+                                    "expect_no_speech": clip["expect_no_speech"], **metadata})
                     continue
                 if report["harness_error"]:
-                    for mode in modes:
-                        for run_index in range(1, args.runs + 1):
-                            report["clips"].append(failure_clip(clip, mode, run_index, metadata, report["harness_error"]))
+                    for profile in profiles:
+                        for mode in modes:
+                            for run_index in range(1, args.runs + 1):
+                                report["clips"].append(failure_clip(clip, mode, profile, run_index, metadata, report["harness_error"]))
                     continue
                 try:
                     wav_path, pcm = make_audio(clip, pathlib.Path(td), args.manifest.parent)
@@ -349,42 +386,61 @@ def main(argv=None):
                     if clip["sha256"] != "runtime-generated" and digest != clip["sha256"]:
                         raise ValueError("canonical audio hash does not match the manifest")
                 except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, wave.Error):
+                    for profile in profiles:
+                        for mode in modes:
+                            for run_index in range(1, args.runs + 1):
+                                report["clips"].append(failure_clip(clip, mode, profile, run_index, metadata, "audio_generation"))
+                    continue
+                for profile in profiles:
+                    reference = reference_for(clip, profile)
                     for mode in modes:
                         for run_index in range(1, args.runs + 1):
-                            report["clips"].append(failure_clip(clip, mode, run_index, metadata, "audio_generation"))
-                    continue
-                for mode in modes:
-                    for run_index in range(1, args.runs + 1):
-                        operation_started = time.monotonic()
-                        try:
-                            result, active, timing = run_worker(
-                                args.worker.resolve(), mode,
-                                request(clip, wav_path, pathlib.Path(td)/(clip["id"]+"-grow.pcm"), key, args),
-                                pcm, args.timeout,
-                            )
-                        except (OSError, ValueError, RuntimeError, TimeoutError, subprocess.SubprocessError, json.JSONDecodeError) as error:
-                            result = {"status": "error", "harness_error": error_category(error)}
-                            active = None
-                            timing = {"elapsed_ms": round((time.monotonic()-operation_started)*1000),
-                                      "audio_duration_ms": round(len(pcm) / 32),
-                                      "request_to_result_ms": None, "stream_ready_ms": None,
-                                      "audio_feed_ms": None, "post_stop_ms": None}
-                        counts = error_counts(clip["expected_transcript"], result.get("text") or "")
-                        transport = result.get("transport")
-                        report["clips"].append({"id": clip["id"], "language": clip["language"],
-                            "condition": clip.get("condition", "clean"), "mode": mode, "run": run_index,
-                            "expect_no_speech": clip["expect_no_speech"], "classification": classify(clip["expect_no_speech"], result),
-                            "worker_status": result.get("status"),
-                            "worker_error": result.get("error") if result.get("status") == "error" else None,
-                            "streaming_active": active,
-                            "harness_error": result.get("harness_error"), "effective_transport": transport,
-                            **timing, "audio_sha256": digest, **metadata, **counts,
-                            "wer": counts["word_edits"]/counts["reference_words"] if counts["reference_words"] else None,
-                            "cer": counts["char_edits"]/counts["reference_chars"] if counts["reference_chars"] else None})
+                            operation_started = time.monotonic()
+                            try:
+                                result, active, timing = run_worker(
+                                    args.worker.resolve(), mode,
+                                    request(clip, wav_path, pathlib.Path(td)/(clip["id"]+"-grow.pcm"), key, args, profile),
+                                    pcm, args.timeout,
+                                )
+                            except (OSError, ValueError, RuntimeError, TimeoutError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+                                result = {"status": "error", "harness_error": error_category(error)}
+                                active = None
+                                timing = {"elapsed_ms": round((time.monotonic()-operation_started)*1000),
+                                          "audio_duration_ms": round(len(pcm) / 32),
+                                          "request_to_result_ms": None, "stream_ready_ms": None,
+                                          "audio_feed_ms": None, "post_stop_ms": None}
+                            hypothesis = result.get("text") or ""
+                            counts = error_counts(reference, hypothesis)
+                            protected_errors, protected_count = protected_term_counts(clip, hypothesis)
+                            transport = result.get("transport")
+                            report["clips"].append({"id": clip["id"], "language": clip["language"],
+                                "condition": clip.get("condition", "clean"), "processing_profile": profile,
+                                "mode": mode, "run": run_index,
+                                "expect_no_speech": clip["expect_no_speech"], "classification": classify(clip["expect_no_speech"], result),
+                                "worker_status": result.get("status"),
+                                "worker_error": result.get("error") if result.get("status") == "error" else None,
+                                "streaming_active": active,
+                                "harness_error": result.get("harness_error"), "effective_transport": transport,
+                                **timing, "audio_sha256": digest,
+                                "protected_term_errors": protected_errors,
+                                "protected_term_count": protected_count, **metadata, **counts,
+                                "wer": counts["word_edits"]/counts["reference_words"] if counts["reference_words"] else None,
+                                "cer": counts["char_edits"]/counts["reference_chars"] if counts["reference_chars"] else None})
     finally:
-        speech_counts = [{k: c[k] for k in ("word_edits","reference_words","char_edits","reference_chars")}
-                         for c in report["clips"] if "word_edits" in c and not c["expect_no_speech"]]
-        report["corpus"] = aggregate(speech_counts)
+        report["profile_results"] = {}
+        for profile in profiles:
+            counts = [{k: c[k] for k in ("word_edits","reference_words","char_edits","reference_chars")}
+                      for c in report["clips"] if "word_edits" in c and not c["expect_no_speech"]
+                      and c.get("processing_profile") == profile]
+            report["profile_results"][profile] = aggregate(counts)
+            report["profile_results"][profile]["protected_term_errors"] = sum(
+                c.get("protected_term_errors", 0) for c in report["clips"]
+                if c.get("processing_profile") == profile)
+            report["profile_results"][profile]["protected_term_count"] = sum(
+                c.get("protected_term_count", 0) for c in report["clips"]
+                if c.get("processing_profile") == profile)
+        primary_profile = report["primary_profile"]
+        report["corpus"] = report["profile_results"][primary_profile]
         report["conditions"] = {}
         for condition in sorted({c.get("condition", "clean") for c in report["clips"]}):
             condition_results = {}
@@ -392,12 +448,13 @@ def main(argv=None):
                 counts = [{k: c[k] for k in ("word_edits","reference_words","char_edits","reference_chars")}
                           for c in report["clips"] if "word_edits" in c and not c["expect_no_speech"]
                           and c.get("condition", "clean") == condition
+                          and c.get("processing_profile") == primary_profile
                           and (transport is None or c.get("mode") == transport)]
                 if counts:
                     condition_results[transport or "combined"] = aggregate(counts)
             if condition_results:
                 report["conditions"][condition] = condition_results
-        expected_count = len(manifest["clips"]) * len(modes) * args.runs
+        expected_count = len(manifest["clips"]) * len(modes) * len(profiles) * args.runs
         passed = (not report["harness_error"] and len(report["clips"]) == expected_count
                   and thresholds_pass(report["clips"], report["corpus"], args.max_wer, args.max_cer)) if not args.dry_run else None
         report["thresholds"] = {"enforced": args.enforce and not args.dry_run,

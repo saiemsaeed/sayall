@@ -33,6 +33,8 @@ Report provider WER/CER by transport and corpus condition, native pipeline
 WER/CER by platform, stop-to-result latency, fallback/failure counts, model,
 region, fixture hash, and exact commit. The frozen clean read-speech canary is a
 stable trend line, not a population-wide estimate of spontaneous dictation.
+The primary in-domain gate uses the consented 2,000-word recording policy and
+dual Verbatim/Clean references in [`tests/dictation_corpus/`](../tests/dictation_corpus/README.md).
 
 ## Fixture requirements
 
