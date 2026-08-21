@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import argparse, base64, html, json, pathlib, statistics
 
-METRICS = [("WER", "wer", True), ("CER", "cer", True),
+METRICS = [("Combined provider canary WER", "wer", True),
+           ("REST provider canary WER", "rest_wer", True),
+           ("Streaming provider canary WER", "stream_wer", True),
+           ("Combined provider canary CER", "cer", True),
            ("REST speech request → result", "rest_ms", False),
            ("Stream speech connection ready", "stream_ready_ms", False),
            ("Stream speech audio duration", "audio_duration_ms", False),
@@ -12,18 +15,29 @@ METRICS = [("WER", "wer", True), ("CER", "cer", True),
            ("Stream speech finish → final transcript", "post_stop_ms", False),
            ("Stream speech total including paced audio", "stream_total_ms", False)]
 ACCEPTED = ("speech_ok", "expected_no_speech")
-IDENTITY_FIELDS = ("model", "region", "corpus_id", "manifest_schema_version", "manifest_sha256")
+IDENTITY_FIELDS = ("model", "region", "corpus_id", "manifest_schema_version", "manifest_sha256", "processing_profiles", "primary_profile")
 
 def median(values):
     clean = [value for value in values if isinstance(value, (int, float))]
     return round(statistics.median(clean)) if clean else None
 
+def mode_wer(clips):
+    counted = [clip for clip in clips if isinstance(clip.get("word_edits"), int) and isinstance(clip.get("reference_words"), int)]
+    words = sum(clip["reference_words"] for clip in counted)
+    if words:
+        return sum(clip["word_edits"] for clip in counted) / words
+    values = [clip["wer"] for clip in clips if isinstance(clip.get("wer"), (int, float))]
+    return sum(values) / len(values) if values else None
+
 def summarize(report):
     clips = report.get("clips", [])
-    rest = [c for c in clips if c.get("mode") == "rest" and c.get("effective_transport") == "rest" and c.get("classification") in ACCEPTED and not c.get("expect_no_speech", False)]
-    stream = [c for c in clips if c.get("mode") == "stream" and c.get("effective_transport") == "stream" and c.get("classification") in ACCEPTED and not c.get("expect_no_speech", False)]
+    primary = report.get("primary_profile", "verbatim")
+    rest = [c for c in clips if c.get("processing_profile", "verbatim") == primary and c.get("mode") == "rest" and c.get("effective_transport") == "rest" and c.get("classification") in ACCEPTED and not c.get("expect_no_speech", False)]
+    stream = [c for c in clips if c.get("processing_profile", "verbatim") == primary and c.get("mode") == "stream" and c.get("effective_transport") == "stream" and c.get("classification") in ACCEPTED and not c.get("expect_no_speech", False)]
     return {
         "wer": report.get("corpus", {}).get("wer"),
+        "rest_wer": mode_wer(rest),
+        "stream_wer": mode_wer(stream),
         "cer": report.get("corpus", {}).get("cer"),
         "rest_ms": median(c.get("request_to_result_ms", c.get("elapsed_ms")) for c in rest),
         "stream_ready_ms": median(c.get("stream_ready_ms") for c in stream if c.get("streaming_active") is True),
@@ -51,13 +65,26 @@ def metadata(report):
     return {"Date": report.get("date_utc") or "—", "Execution": report.get("execution") or "—",
             "Harness": report.get("harness_version") or "—", "Worker": worker.get("build_version") or "—",
             "Model / region": f"{report.get('model') or '—'} / {report.get('region') or '—'}",
-            "Corpus": report.get("corpus_id") or "—", "Manifest": (report.get("manifest_sha256") or "—")[:12],
+            "Corpus": report.get("corpus_id") or "—",
+            "Processing profiles / primary": f"{','.join(report.get('processing_profiles', ['verbatim']))} / {report.get('primary_profile', 'verbatim')}",
+            "Repetitions per clip/transport/profile": report.get("runs_per_case", 1),
+            "Scope": report.get("corpus_description") or "Provider canary; inspect the versioned manifest for coverage",
+            "Manifest": (report.get("manifest_sha256") or "—")[:12],
             "Thresholds": str((report.get("thresholds") or {}).get("passed", "—")),
             "Harness error": report.get("harness_error") or "none"}
 
 def value(value, percent=False):
     if value is None: return "—"
     return f"{value * 100:.2f}%" if percent else f"{value:.0f} ms"
+
+def condition_rows(report):
+    rows = []
+    for condition, transports in sorted((report.get("conditions") or {}).items()):
+        combined = transports.get("combined", {})
+        rows.append((condition, combined.get("reference_words"),
+                     combined.get("wer"), transports.get("rest", {}).get("wer"),
+                     transports.get("stream", {}).get("wer"), combined.get("cer")))
+    return rows
 
 def change(current, previous, percent=False):
     if current is None or previous is None: return "—"
@@ -79,8 +106,8 @@ def markdown_report(current, previous, args):
     now, before = summarize(current), summarize(previous) if previous else {}
     comparable, reasons = compatibility(current, previous)
     current_metadata, previous_metadata = metadata(current), metadata(previous or {})
-    lines = ["# SayAll benchmark and HUD evidence", "", links(args), "",
-             "> Lower is better. Streaming total includes real-time audio playback; finish → final transcript is the user-visible post-stop latency.", "",
+    lines = ["# SayAll external-dependency benchmark and HUD evidence", "", links(args), "",
+             "> WER/CER measure the frozen provider canary corpus, not microphone capture or all real-world dictation. Lower is better. Streaming total includes real-time audio playback; finish → final transcript is the user-visible post-stop latency.", "",
              "## Run identity", "", "| Field | Current | Previous |", "| --- | --- | --- |"]
     for key in current_metadata:
         lines.append(f"| {key} | {current_metadata[key]} | {previous_metadata[key]} |")
@@ -90,12 +117,27 @@ def markdown_report(current, previous, args):
     for label, key, percent in METRICS:
         delta = change(now.get(key), before.get(key), percent) if comparable else "not comparable"
         lines.append(f"| {label} | {value(now.get(key), percent)} | {value(before.get(key), percent)} | {delta} |")
+    profile_results = current.get("profile_results") or {}
+    if profile_results:
+        lines.extend(["", "## Accuracy by processing profile", "",
+                      "| Profile | Scored reference words | WER | CER | Protected-term errors |",
+                      "| --- | ---: | ---: | ---: | ---: |"])
+        for profile, result in sorted(profile_results.items()):
+            protected = f"{result.get('protected_term_errors', 0)} / {result.get('protected_term_count', 0)}"
+            lines.append(f"| {profile} | {result.get('reference_words', 0)} | {value(result.get('wer'), True)} | {value(result.get('cer'), True)} | {protected} |")
+    conditions = condition_rows(current)
+    if conditions:
+        lines.extend(["", "## Accuracy by acoustic condition", "",
+                      "| Condition | Scored reference words | Combined WER | REST WER | Stream WER | Combined CER |",
+                      "| --- | ---: | ---: | ---: | ---: | ---: |"])
+        for condition, words, combined_wer, rest_wer, stream_wer, combined_cer in conditions:
+            lines.append(f"| {condition} | {words or 0} | {value(combined_wer, True)} | {value(rest_wer, True)} | {value(stream_wer, True)} | {value(combined_cer, True)} |")
     lines.extend(["", f"Failures: **{now['failures']}** current / **{before.get('failures', '—')}** previous.", "",
                   "## Per-clip evidence", "",
-                  "| Clip | Mode | Classification | Transport | Total | Audio | Feed | REST result | Stream ready | Post-stop | WER |", "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"])
+                  "| Clip | Run | Profile | Mode | Classification | Transport | Total | Audio | Feed | REST result | Stream ready | Post-stop | WER |", "| --- | ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"])
     for clip in current.get("clips", []):
-        lines.append("| {id} | {mode} | {classification} | {transport} | {total} | {audio} | {feed} | {rest} | {ready} | {post} | {wer} |".format(
-            id=clip.get("id", "—"), mode=clip.get("mode", "—"), classification=clip.get("classification", "—"),
+        lines.append("| {id} | {run} | {profile} | {mode} | {classification} | {transport} | {total} | {audio} | {feed} | {rest} | {ready} | {post} | {wer} |".format(
+            id=clip.get("id", "—"), run=clip.get("run", 1), profile=clip.get("processing_profile", "verbatim"), mode=clip.get("mode", "—"), classification=clip.get("classification", "—"),
             transport=clip.get("effective_transport") or "—", total=value(clip.get("elapsed_ms")),
             audio=value(clip.get("audio_duration_ms")), feed=value(clip.get("audio_feed_ms")),
             rest=value(clip.get("request_to_result_ms")), ready=value(clip.get("stream_ready_ms")),
@@ -116,15 +158,25 @@ def html_report(current, previous, args, screenshot_dir):
     metadata_rows = "".join(f"<tr><td>{html.escape(key)}</td><td>{html.escape(str(current_metadata[key]))}</td><td>{html.escape(str(previous_metadata[key]))}</td></tr>" for key in current_metadata)
     warning = "" if comparable else f'<p class="warning"><strong>No metric delta is calculated:</strong> {html.escape("; ".join(reasons))}.</p>'
     clip_rows = "".join(
-        "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>".format(
+        "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>".format(
             *(html.escape(str(item)) for item in (
-                clip.get("id", "—"), clip.get("mode", "—"), clip.get("classification", "—"),
+                clip.get("id", "—"), clip.get("run", 1), clip.get("processing_profile", "verbatim"), clip.get("mode", "—"), clip.get("classification", "—"),
                 clip.get("effective_transport") or "—", value(clip.get("elapsed_ms")),
                 value(clip.get("audio_duration_ms")), value(clip.get("audio_feed_ms")),
                 value(clip.get("request_to_result_ms")), value(clip.get("stream_ready_ms")),
                 value(clip.get("post_stop_ms")), value(clip.get("wer"), True))))
         for clip in current.get("clips", [])
     )
+    profile_table = ""
+    profile_results = current.get("profile_results") or {}
+    if profile_results:
+        rows = "".join(f"<tr><td>{html.escape(profile)}</td><td>{result.get('reference_words', 0)}</td><td>{value(result.get('wer'), True)}</td><td>{value(result.get('cer'), True)}</td><td>{result.get('protected_term_errors', 0)} / {result.get('protected_term_count', 0)}</td></tr>" for profile, result in sorted(profile_results.items()))
+        profile_table = f'<h2>Accuracy by processing profile</h2><table><thead><tr><th>Profile</th><th>Scored reference words</th><th>WER</th><th>CER</th><th>Protected-term errors</th></tr></thead><tbody>{rows}</tbody></table>'
+    condition_table = ""
+    conditions = condition_rows(current)
+    if conditions:
+        rows = "".join(f"<tr><td>{html.escape(condition)}</td><td>{words or 0}</td><td>{value(combined_wer, True)}</td><td>{value(rest_wer, True)}</td><td>{value(stream_wer, True)}</td><td>{value(combined_cer, True)}</td></tr>" for condition, words, combined_wer, rest_wer, stream_wer, combined_cer in conditions)
+        condition_table = f'<h2>Accuracy by acoustic condition</h2><table><thead><tr><th>Condition</th><th>Scored reference words</th><th>Combined WER</th><th>REST WER</th><th>Stream WER</th><th>Combined CER</th></tr></thead><tbody>{rows}</tbody></table>'
     images = []
     if screenshot_dir and screenshot_dir.exists():
         for path in sorted(screenshot_dir.rglob("*.png")):
@@ -138,11 +190,11 @@ def html_report(current, previous, args, screenshot_dir):
                            ("HUD screenshot CI run", args.ui_run_url)) if url)
     return f"""<!doctype html><meta charset="utf-8"><title>SayAll benchmark report</title>
 <style>body{{font:15px system-ui;margin:32px;max-width:1200px;color:#17202a}}table{{border-collapse:collapse;width:100%;margin:18px 0 32px}}th,td{{border:1px solid #d8dee4;padding:9px;text-align:left}}th{{background:#f6f8fa}}.note{{background:#eef6ff;padding:14px;border-radius:8px}}.warning{{background:#fff3cd;padding:14px;border-radius:8px}}.shots{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}}figure{{margin:0;padding:16px;border:1px solid #d8dee4;border-radius:10px}}img{{max-width:100%;image-rendering:auto}}figcaption{{margin-top:10px;font-weight:600}}</style>
-<h1>SayAll benchmark and HUD evidence</h1><p>{link_html}</p><p class="note">Lower is better. Streaming total includes real-time audio playback; finish → final transcript is the user-visible post-stop latency.</p>
+<h1>SayAll external-dependency benchmark and HUD evidence</h1><p>{link_html}</p><p class="note">WER/CER measure the frozen provider canary corpus, not microphone capture or all real-world dictation. Lower is better. Streaming total includes real-time audio playback; finish → final transcript is the user-visible post-stop latency.</p>
 <h2>Run identity</h2><table><thead><tr><th>Field</th><th>Current</th><th>Previous</th></tr></thead><tbody>{metadata_rows}</tbody></table>{warning}
 <h2>Current versus previous</h2><table><thead><tr><th>Metric</th><th>Current</th><th>Previous</th><th>Change</th></tr></thead><tbody>{metric_rows}</tbody></table>
-<p>Failures: <strong>{now['failures']}</strong> current / <strong>{before.get('failures', '—')}</strong> previous.</p>
-<h2>Per-clip evidence</h2><table><thead><tr><th>Clip</th><th>Mode</th><th>Classification</th><th>Transport</th><th>Total</th><th>Audio</th><th>Feed</th><th>REST result</th><th>Stream ready</th><th>Post-stop</th><th>WER</th></tr></thead><tbody>{clip_rows}</tbody></table>
+{profile_table}{condition_table}<p>Failures: <strong>{now['failures']}</strong> current / <strong>{before.get('failures', '—')}</strong> previous.</p>
+<h2>Per-clip evidence</h2><table><thead><tr><th>Clip</th><th>Run</th><th>Profile</th><th>Mode</th><th>Classification</th><th>Transport</th><th>Total</th><th>Audio</th><th>Feed</th><th>REST result</th><th>Stream ready</th><th>Post-stop</th><th>WER</th></tr></thead><tbody>{clip_rows}</tbody></table>
 <h2>Rendered HUD states</h2><div class="shots">{''.join(images) or '<p>No matching CI screenshot artifact was available.</p>'}</div>"""
 
 def main(argv=None):

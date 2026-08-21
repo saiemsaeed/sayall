@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "purpose": "Scenario cards for spontaneous, non-sensitive personal-computer dictation",
+  "categories": {
+    "everyday": [
+      "Dictate an email arranging a meeting, including a date, time, location, and one correction.",
+      "Dictate a message explaining a delayed task and proposing two next steps.",
+      "Dictate personal notes summarizing what you learned today and what remains unclear.",
+      "Dictate a shopping or packing list as natural prose, then revise one item.",
+      "Dictate a short request for help that includes context, urgency, and a polite closing."
+    ],
+    "long_form": [
+      "Dictate a 60 to 90 second project update with background, progress, risks, and next actions.",
+      "Dictate a 60 to 90 second explanation of a difficult decision and the alternatives considered.",
+      "Dictate a structured retrospective covering what worked, what failed, and what should change.",
+      "Dictate a detailed set of instructions for completing a familiar computer task.",
+      "Dictate a multi-paragraph article draft with a beginning, supporting details, and conclusion."
+    ],
+    "technical": [
+      "Dictate a bug report containing an application name, version, operating system, expected behavior, and actual behavior.",
+      "Dictate developer notes containing a file path, command, API name, model name, and numeric result.",
+      "Dictate a code-review comment that identifies a failure scenario and suggests a bounded fix.",
+      "Dictate a release note containing semantic versions, percentages, dates, and platform names.",
+      "Dictate an explanation of a technical concept using several uncommon but non-sensitive terms."
+    ],
+    "disfluent": [
+      "Dictate an email while thinking aloud; naturally repeat or restart at least two fragments, then finish the intended sentence.",
+      "Dictate a task list with fillers, one abandoned phrase, and one explicit self-correction.",
+      "Dictate a project update that includes repeated words such as 'the the' or 'we should we should' where natural.",
+      "Dictate a message, change your mind about a date or number, and state the corrected value.",
+      "Dictate a paragraph with pauses and hesitation while preserving names and technical terms exactly."
+    ]
+  }
+}

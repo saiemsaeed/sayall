@@ -2,6 +2,7 @@ import json
 import os
 import pathlib
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -9,7 +10,7 @@ import time
 import unittest
 import wave
 from unittest import mock
-from benchmark import ProtocolError, aggregate, classify, edit_distance, error_counts, main, make_audio, nonnegative_finite, normalize, positive_finite, read_line, run_worker, thresholds_pass, validate_ready, validate_result, worker_identity
+from benchmark import ProtocolError, add_office_noise, aggregate, classify, edit_distance, error_counts, main, make_audio, nonnegative_finite, normalize, parse_profiles, positive_finite, read_line, reference_for, run_worker, thresholds_pass, validate_ready, validate_result, worker_identity
 
 class MetricsTests(unittest.TestCase):
     def test_normalize(self): self.assertEqual(normalize(" HéLLo,\tWORLD! "), "héllo world")
@@ -19,6 +20,15 @@ class MetricsTests(unittest.TestCase):
     def test_aggregate_is_micro_average(self):
         got = aggregate([error_counts("a b", "a"), error_counts("c", "x")])
         self.assertEqual(got["word_edits"], 2); self.assertAlmostEqual(got["wer"], 2/3)
+    def test_processing_profiles_use_distinct_references(self):
+        clip = {"id":"dictation", "expect_no_speech":False,
+                "verbatim_reference":"the the main aim", "clean_reference":"the main aim"}
+        self.assertEqual(reference_for(clip, "verbatim"), "the the main aim")
+        self.assertEqual(reference_for(clip, "clean"), "the main aim")
+        self.assertEqual(parse_profiles("verbatim,clean"), ("verbatim", "clean"))
+        with self.assertRaises(Exception): parse_profiles("clean,clean")
+        with self.assertRaises(ValueError): reference_for({"id":"bad", "expect_no_speech":False}, "clean")
+
     def test_classification(self):
         self.assertEqual(classify(False, {"status":"success", "text":"Hi."}), "speech_ok")
         self.assertEqual(classify(True, {"status":"success", "text":"ghost"}), "false_speech")
@@ -31,6 +41,7 @@ class MetricsTests(unittest.TestCase):
         self.assertFalse(thresholds_pass(clips, {"wer":.4,"cer":.1}, .3, .2))
         self.assertFalse(thresholds_pass([{"classification":"missing_speech"}], {"wer":0,"cer":0}))
         self.assertFalse(thresholds_pass([{"classification":"speech_ok", "mode":"stream", "effective_transport":"rest"}], {"wer":0,"cer":0}))
+        self.assertFalse(thresholds_pass([{"classification":"speech_ok", "processing_profile":"clean", "protected_term_errors":1}], {"wer":0,"cer":0}))
     def test_protocol_validation_requires_authoritative_transport(self):
         base = {"version":3, "processing_profile":"verbatim"}
         validate_ready({"version":3, "event":"ready", "streaming":True})
@@ -46,19 +57,21 @@ class MetricsTests(unittest.TestCase):
         with self.assertRaises(ProtocolError): validate_ready(["not", "an", "object"])
 
     def test_dry_run_needs_no_worker_key_or_synthesis_tools(self):
-        manifest = pathlib.Path(__file__).with_name("manifest-v1.json")
+        manifest = pathlib.Path(__file__).with_name("manifest-v2.json")
         with tempfile.TemporaryDirectory() as directory:
             output = pathlib.Path(directory) / "report.json"
             self.assertEqual(main(["--dry-run", "--manifest", str(manifest), "--output", str(output)]), 0)
             report = json.loads(output.read_text())
         self.assertEqual(report["execution"], "dry_run")
         self.assertIsNone(report["worker_build"])
-        self.assertEqual(len(report["clips"]), 6)
+        self.assertEqual(report["runs_per_case"], 5)
+        self.assertEqual(len(report["clips"]), 40)
+        self.assertEqual({clip["run"] for clip in report["clips"]}, {1, 2, 3, 4, 5})
         self.assertTrue(all("recipe_sha256" in clip["source"] for clip in report["clips"]))
         self.assertTrue(all("audio_sha256" not in clip for clip in report["clips"]))
 
     def test_dry_run_ignores_enforcement_and_rejects_invalid_numbers(self):
-        manifest = pathlib.Path(__file__).with_name("manifest-v1.json")
+        manifest = pathlib.Path(__file__).with_name("manifest-v2.json")
         with tempfile.TemporaryDirectory() as directory:
             output = pathlib.Path(directory) / "report.json"
             self.assertEqual(main(["--dry-run", "--enforce", "--manifest", str(manifest), "--output", str(output)]), 0)
@@ -71,14 +84,35 @@ class MetricsTests(unittest.TestCase):
             with self.assertRaises(Exception): positive_finite(value)
 
     def test_missing_secret_still_writes_privacy_safe_report(self):
-        manifest = pathlib.Path(__file__).with_name("manifest-v1.json")
+        manifest = pathlib.Path(__file__).with_name("manifest-v2.json")
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {}, clear=True):
             output = pathlib.Path(directory) / "report.json"
             self.assertEqual(main(["--manifest", str(manifest), "--output", str(output)]), 1)
             report = json.loads(output.read_text())
         self.assertEqual(report["harness_error"], "missing_secret")
-        self.assertEqual(len(report["clips"]), 6)
+        self.assertEqual(len(report["clips"]), 40)
         self.assertTrue(all(clip["harness_error"] == "missing_secret" for clip in report["clips"]))
+
+    def test_office_noise_is_deterministic_and_snr_changes_output(self):
+        pcm = struct.pack("<16000h", *([1000, -1000] * 8000))
+        ten_a = add_office_noise(pcm, 10, 7)
+        ten_b = add_office_noise(pcm, 10, 7)
+        five = add_office_noise(pcm, 5, 7)
+        self.assertEqual(ten_a, ten_b)
+        self.assertNotEqual(ten_a, five)
+        self.assertEqual(len(ten_a), len(pcm))
+
+    def test_frozen_human_fixture_is_verified_and_copied_privately(self):
+        root = pathlib.Path(__file__).parent
+        manifest = json.loads((root / "manifest-v2.json").read_text())
+        clip = manifest["clips"][0]
+        with tempfile.TemporaryDirectory() as directory:
+            wav_path, pcm = make_audio(clip, pathlib.Path(directory), root)
+            self.assertGreater(len(pcm), 0)
+            self.assertEqual(wav_path.stat().st_mode & 0o777, 0o600)
+        changed = {**clip, "source": {**clip["source"], "wav_sha256": "0" * 64}}
+        with tempfile.TemporaryDirectory() as directory, self.assertRaises(ValueError):
+            make_audio(changed, pathlib.Path(directory), root)
 
     def test_synthesized_audio_is_private(self):
         clip = {"id":"speech", "source":{"type":"espeak-ng", "voice":"en-us", "text":"private fixture"}}

@@ -12,13 +12,13 @@ on:
         type: boolean
         default: true
       max_wer:
-        description: Maximum aggregate word error rate
+        description: Maximum aggregate word error rate for the frozen clean-speech canary
         type: number
-        default: 0.35
+        default: 0.10
       max_cer:
-        description: Maximum aggregate character error rate
+        description: Maximum aggregate character error rate for the frozen clean-speech canary
         type: number
-        default: 0.20
+        default: 0.08
     secrets:
       SAYALL_DEEPGRAM_BENCHMARK_API_KEY:
         required: true
@@ -28,14 +28,25 @@ on:
         description: Fail on connectivity, protocol, transport, or quality threshold failures
         type: boolean
         default: false
+      qualification:
+        description: Run the extended clean, 10 dB, and 5 dB human-speech corpus twice
+        type: boolean
+        default: false
+      representative:
+        description: Build and run the 2,000-word AMI workplace-speech corpus in Verbatim and Clean modes
+        type: boolean
+        default: false
       max_wer:
-        description: Maximum aggregate word error rate
+        description: Maximum aggregate word error rate for the frozen clean-speech canary
         type: number
-        default: 0.35
+        default: 0.10
       max_cer:
-        description: Maximum aggregate character error rate
+        description: Maximum aggregate character error rate for the frozen clean-speech canary
         type: number
-        default: 0.20
+        default: 0.08
+  schedule:
+    # Provider models can change independently of SayAll releases.
+    - cron: '17 8 * * 1'
 
 concurrency:
   group: deepgram-live-benchmark
@@ -44,7 +55,7 @@ concurrency:
 jobs:
   benchmark:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 60
     env:
       BENCHMARK_SHA: ${{ inputs.benchmark_sha || github.sha }}
     permissions:
@@ -54,10 +65,6 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ env.BENCHMARK_SHA }}
-      - name: Install pinned fixture tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends espeak-ng=1.51+dfsg-12build1 sox=14.4.2+git20190427-4build4
       - name: Install Zig 0.16.0
         uses: mlugg/setup-zig@8d6198c65fb0feaa111df26e6b467fea8345e46f # v2.0.5
         with:
@@ -65,6 +72,7 @@ jobs:
       - name: Unit tests and worker build
         run: |
           python3 -m unittest discover -s tests/deepgram_benchmark -p 'test_*.py'
+          python3 -m unittest discover -s tests/dictation_corpus -p 'test_*.py'
           zig build process -Doptimize=ReleaseSafe
       - name: Download previous benchmark and matching HUD renders
         env:
@@ -135,9 +143,20 @@ jobs:
           SAYALL_DEEPGRAM_BENCHMARK_API_KEY: ${{ secrets.SAYALL_DEEPGRAM_BENCHMARK_API_KEY }}
         run: |
           enforce=''
-          if [[ '${{ inputs.enforce }}' == 'true' ]]; then enforce=--enforce; fi
-          python3 tests/deepgram_benchmark/benchmark.py --mode both $enforce \
-            --max-wer '${{ inputs.max_wer }}' --max-cer '${{ inputs.max_cer }}' \
+          if [[ '${{ inputs.enforce }}' == 'true' || '${{ github.event_name }}' == 'schedule' ]]; then enforce=--enforce; fi
+          max_wer='${{ inputs.max_wer }}'; [[ -n "$max_wer" ]] || max_wer=0.10
+          max_cer='${{ inputs.max_cer }}'; [[ -n "$max_cer" ]] || max_cer=0.08
+          corpus_args=(--runs 5)
+          if [[ '${{ inputs.qualification }}' == 'true' ]]; then
+            corpus_args=(--manifest tests/deepgram_benchmark/manifest-v3.json --runs 2)
+          fi
+          if [[ '${{ inputs.representative }}' == 'true' ]]; then
+            python3 tests/dictation_corpus/build_ami.py --output dist/ami-dictation-v1 --max-rows 6000
+            python3 tests/dictation_corpus/validate.py dist/ami-dictation-v1/manifest.json
+            corpus_args=(--manifest dist/ami-dictation-v1/manifest.json --processing-profiles verbatim,clean --runs 1)
+          fi
+          python3 tests/deepgram_benchmark/benchmark.py --mode both $enforce "${corpus_args[@]}" \
+            --max-wer "$max_wer" --max-cer "$max_cer" \
             --output deepgram-benchmark.json
       - name: Build current-versus-previous report
         id: report
@@ -172,4 +191,4 @@ jobs:
             benchmark-report.html
             hud-renders
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 90
