@@ -40,7 +40,7 @@ def contained(root: pathlib.Path, relative: object) -> pathlib.Path:
 
 
 def validate(document: dict, root: pathlib.Path, minimum_words: int = 2000,
-             minimum_speakers: int = 3) -> dict:
+             minimum_speakers: int = 2) -> dict:
     clips = document.get("clips")
     if not isinstance(clips, list) or not clips:
         raise ValueError("manifest clips must be a nonempty array")
@@ -97,7 +97,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", type=pathlib.Path)
     parser.add_argument("--minimum-words", type=int, default=2000)
-    parser.add_argument("--minimum-speakers", type=int, default=3)
+    parser.add_argument("--minimum-speakers", type=int, default=2)
     args = parser.parse_args(argv)
     if args.minimum_words < 1 or args.minimum_speakers < 1:
         parser.error("minimums must be positive")

@@ -5,10 +5,23 @@ import tempfile
 import unittest
 import wave
 
-from validate import validate
+from validate import normalize, validate
 
 
 class CorpusValidationTests(unittest.TestCase):
+    def test_recording_pack_exceeds_target_and_balances_two_characters(self):
+        pack = json.loads(pathlib.Path(__file__).with_name("recording-scripts-v1.json").read_text())
+        totals = {}
+        for script in pack["scripts"]:
+            totals[script["character"]] = totals.get(script["character"], 0) + len(normalize(script["verbatim_reference"]).split())
+            clean = normalize(script["clean_reference"])
+            for term in script["protected_terms"]:
+                self.assertIn(normalize(term), clean)
+        self.assertGreaterEqual(sum(totals.values()), 2000)
+        self.assertEqual(set(totals), {"Maya", "Daniel"})
+        self.assertLess(abs(totals["Maya"] - totals["Daniel"]), 100)
+        self.assertTrue(any(s["verbatim_reference"] != s["clean_reference"] for s in pack["scripts"]))
+
     def fixture(self, root: pathlib.Path) -> dict:
         audio = root / "sample.wav"
         with wave.open(str(audio), "wb") as output:

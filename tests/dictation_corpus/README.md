@@ -6,14 +6,21 @@ and stress evidence; they are not substitutes for this corpus.
 
 ## Recording target
 
-Record at least **2,000 unique verbatim words** across at least three consenting
-speakers. A word is counted once per clean source recording; generated 10 dB and
-5 dB noise variants do not increase corpus size.
+Record at least **2,000 unique verbatim words** across at least two consenting
+speakers; three or more remains preferable for broader coverage. A word is
+counted once per clean source recording; generated 10 dB and 5 dB noise variants
+do not increase corpus size.
 
-Use the scenario cards in `scenarios-v1.json`. Speakers should dictate naturally
-rather than memorize scripts. Include pauses, fillers, repeated fragments, and
-self-corrections where they occur. Do not include private names, credentials,
-customer information, or other sensitive content.
+For the initial two-speaker corpus, use `recording-scripts-v1.json`: one female
+speaker records every Maya entry and one male speaker records every Daniel entry,
+with each entry saved as a separate file. The pack contains 2,399 normalized
+verbatim words, leaving room for an unusable take while retaining the 2,000-word
+minimum. Read intentional fillers and repetitions exactly. Do not perform both
+characters in one file or have one person imitate both speakers.
+
+`scenarios-v1.json` remains available for later spontaneous additions. Do not
+include private names, credentials, customer information, or other sensitive
+content.
 
 For every recording, create:
 
@@ -35,7 +42,7 @@ python3 tests/dictation_corpus/validate.py path/to/manifest.json
 ```
 
 The validator rejects fewer than 2,000 normalized verbatim words, fewer than
-three speakers, missing scenario categories, unsafe paths, noncanonical audio,
+two speakers, missing scenario categories, unsafe paths, noncanonical audio,
 hash mismatches, missing dual references, and unprotected Clean references.
 
 The live benchmark supports both product modes:
