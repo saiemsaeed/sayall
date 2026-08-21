@@ -5,10 +5,20 @@ import tempfile
 import unittest
 import wave
 
+from build_ami import category_for, clean_reference, group_rows, normalized_word_count
 from validate import normalize, validate
 
 
 class CorpusValidationTests(unittest.TestCase):
+    def test_ami_cleanup_and_grouping_are_deterministic(self):
+        transcript = "UM WE SHOULD WE SHOULD KEEP THE THE JAVA FILE"
+        self.assertEqual(clean_reference(transcript), "we should keep the the java file")
+        self.assertEqual(category_for(transcript), "technical")
+        self.assertEqual(normalized_word_count("DON'T CHANGE S. S. H."), 6)
+        rows = [{"begin_time": index * 10, "end_time": index * 10 + 8} for index in range(7)]
+        groups = group_rows(rows)
+        self.assertEqual([len(group) for group in groups], [4, 3])
+
     def test_recording_pack_exceeds_target_and_balances_two_characters(self):
         pack = json.loads(pathlib.Path(__file__).with_name("recording-scripts-v1.json").read_text())
         totals = {}
@@ -33,7 +43,7 @@ class CorpusValidationTests(unittest.TestCase):
             clips.append({"id":f"clip-{index}", "speaker_id":f"speaker-{index}",
                 "category":category, "consent":True, "license":"CC BY 4.0",
                 "verbatim_reference":"the the protected term", "clean_reference":"the protected term",
-                "protected_terms":["protected term"],
+                "protected_terms":["protected term"], "sha256":digest,
                 "source":{"type":"wav", "path":"sample.wav", "wav_sha256":digest}})
         return {"clips":clips}
 
@@ -54,6 +64,10 @@ class CorpusValidationTests(unittest.TestCase):
                 validate(document, root, minimum_words=1, minimum_speakers=1)
             document = self.fixture(root); document["clips"][0]["source"]["wav_sha256"] = "0" * 64
             with self.assertRaisesRegex(ValueError, "hash does not match"):
+                validate(document, root, minimum_words=1, minimum_speakers=1)
+            document = self.fixture(root)
+            document["session_policy"] = {"minimum_seconds": 20, "maximum_seconds": 40}
+            with self.assertRaisesRegex(ValueError, "between 20 and 40 seconds"):
                 validate(document, root, minimum_words=1, minimum_speakers=1)
 
 

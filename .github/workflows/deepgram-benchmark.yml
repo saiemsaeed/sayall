@@ -32,6 +32,10 @@ on:
         description: Run the extended clean, 10 dB, and 5 dB human-speech corpus twice
         type: boolean
         default: false
+      representative:
+        description: Build and run the 2,000-word AMI workplace-speech corpus in Verbatim and Clean modes
+        type: boolean
+        default: false
       max_wer:
         description: Maximum aggregate word error rate for the frozen clean-speech canary
         type: number
@@ -51,7 +55,7 @@ concurrency:
 jobs:
   benchmark:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 60
     env:
       BENCHMARK_SHA: ${{ inputs.benchmark_sha || github.sha }}
     permissions:
@@ -68,6 +72,7 @@ jobs:
       - name: Unit tests and worker build
         run: |
           python3 -m unittest discover -s tests/deepgram_benchmark -p 'test_*.py'
+          python3 -m unittest discover -s tests/dictation_corpus -p 'test_*.py'
           zig build process -Doptimize=ReleaseSafe
       - name: Download previous benchmark and matching HUD renders
         env:
@@ -144,6 +149,11 @@ jobs:
           corpus_args=(--runs 5)
           if [[ '${{ inputs.qualification }}' == 'true' ]]; then
             corpus_args=(--manifest tests/deepgram_benchmark/manifest-v3.json --runs 2)
+          fi
+          if [[ '${{ inputs.representative }}' == 'true' ]]; then
+            python3 tests/dictation_corpus/build_ami.py --output dist/ami-dictation-v1 --max-rows 6000
+            python3 tests/dictation_corpus/validate.py dist/ami-dictation-v1/manifest.json
+            corpus_args=(--manifest dist/ami-dictation-v1/manifest.json --processing-profiles verbatim,clean --runs 1)
           fi
           python3 tests/deepgram_benchmark/benchmark.py --mode both $enforce "${corpus_args[@]}" \
             --max-wer "$max_wer" --max-cer "$max_cer" \

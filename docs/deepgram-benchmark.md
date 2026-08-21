@@ -23,6 +23,13 @@ python3 -m unittest discover -s tests/deepgram_benchmark -p 'test_*.py'
 python3 tests/deepgram_benchmark/benchmark.py --mode both --runs 2 \
   --manifest tests/deepgram_benchmark/manifest-v3.json \
   --output deepgram-qualification.json
+
+# Representative workplace speech: 2,000+ words, two speakers, 20–40 seconds.
+python3 tests/dictation_corpus/build_ami.py --output dist/ami-dictation-v1 --max-rows 6000
+python3 tests/dictation_corpus/validate.py dist/ami-dictation-v1/manifest.json
+python3 tests/deepgram_benchmark/benchmark.py --mode both --runs 1 \
+  --manifest dist/ami-dictation-v1/manifest.json \
+  --processing-profiles verbatim,clean --output deepgram-ami.json
 ```
 
 The key is read only from the named environment variable and sent to the worker
@@ -81,8 +88,10 @@ to establish a stable threshold. Ordinary pushes and pull requests do not run
 the live benchmark or receive its provider secret. To evaluate a branch
 separately, manually run **Live Deepgram worker benchmark** from the Actions tab
 and select that branch. Select **qualification** for the extended clean and
-noise corpus. Manual runs are advisory by default but can enable enforcement
-with thresholds chosen for that corpus.
+noise corpus, or **representative** to download and run the pinned AMI workplace
+corpus in both Verbatim and Clean modes. The two options should be run
+separately. Manual runs are advisory by default but can enable enforcement with
+thresholds chosen for that corpus.
 
 Download the `deepgram-benchmark-<run>-<attempt>` artifact and open
 `benchmark-report.html` for the same tables plus every macOS and Linux HUD PNG

@@ -20,12 +20,13 @@ def normalize(text: str) -> str:
     return " ".join(text.split())
 
 
-def canonical_wav(path: pathlib.Path) -> None:
+def canonical_wav(path: pathlib.Path) -> float:
     with wave.open(str(path), "rb") as audio:
         if (audio.getnchannels(), audio.getsampwidth(), audio.getframerate(), audio.getcomptype()) != (1, 2, 16000, "NONE"):
             raise ValueError(f"{path} must be mono 16 kHz signed-16 PCM WAV")
         if audio.getnframes() < 4800:
             raise ValueError(f"{path} must contain at least 300 ms of audio")
+        return audio.getnframes() / audio.getframerate()
 
 
 def contained(root: pathlib.Path, relative: object) -> pathlib.Path:
@@ -46,6 +47,7 @@ def validate(document: dict, root: pathlib.Path, minimum_words: int = 2000,
         raise ValueError("manifest clips must be a nonempty array")
     identifiers, speakers, categories = set(), set(), set()
     word_count = 0
+    durations = []
     for clip in clips:
         identifier = clip.get("id")
         if not isinstance(identifier, str) or not SAFE_ID.fullmatch(identifier) or identifier in identifiers:
@@ -78,9 +80,9 @@ def validate(document: dict, root: pathlib.Path, minimum_words: int = 2000,
         if not isinstance(source, dict) or source.get("type") != "wav":
             raise ValueError(f"clip {identifier} source must be a WAV object")
         path = contained(root, source.get("path"))
-        canonical_wav(path)
+        durations.append(canonical_wav(path))
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        if source.get("wav_sha256") != digest:
+        if source.get("wav_sha256") != digest or clip.get("sha256") != digest:
             raise ValueError(f"clip {identifier} WAV hash does not match")
     if word_count < minimum_words:
         raise ValueError(f"corpus has {word_count} verbatim words; at least {minimum_words} are required")
@@ -89,7 +91,19 @@ def validate(document: dict, root: pathlib.Path, minimum_words: int = 2000,
     missing = REQUIRED_CATEGORIES - categories
     if missing:
         raise ValueError("corpus is missing categories: " + ", ".join(sorted(missing)))
+    policy = document.get("session_policy")
+    if policy is not None:
+        if not isinstance(policy, dict):
+            raise ValueError("session_policy must be an object")
+        minimum, maximum = policy.get("minimum_seconds"), policy.get("maximum_seconds")
+        if (not isinstance(minimum, (int, float)) or not isinstance(maximum, (int, float))
+                or minimum <= 0 or maximum < minimum):
+            raise ValueError("session_policy requires valid minimum_seconds and maximum_seconds")
+        if any(duration < minimum or duration > maximum for duration in durations):
+            raise ValueError(f"all corpus clips must be between {minimum} and {maximum} seconds")
     return {"clips": len(clips), "speakers": len(speakers), "verbatim_words": word_count,
+            "audio_seconds": round(sum(durations), 3),
+            "average_clip_seconds": round(sum(durations) / len(durations), 3),
             "categories": sorted(categories)}
 
 
