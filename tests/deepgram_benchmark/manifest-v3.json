@@ -1,0 +1,413 @@
+{
+  "schema_version": 1,
+  "corpus_id": "sayall-librispeech-extended-noise-v3",
+  "description": "Extended frozen human read-speech qualification corpus: eight LibriSpeech utterances from seven speakers, including five long/complex passages, with clean, deterministic office-noise 10 dB, and office-noise 5 dB conditions.",
+  "clips": [
+    {
+      "id": "librispeech-2277-149896-0000--clean",
+      "source": {
+        "type": "wav",
+        "path": "fixtures-v2/2277-149896-0000.wav",
+        "wav_sha256": "d75d742a8da3dbd2c43da919965b51fd9a3435551326eda58aa2a36c2aa37014"
+      },
+      "condition": "clean",
+      "expected_transcript": "HE WAS IN A FEVERED STATE OF MIND OWING TO THE BLIGHT HIS WIFE'S ACTION THREATENED TO CAST UPON HIS ENTIRE FUTURE",
+      "language": "en-US",
+      "expect_no_speech": false,
+      "provenance": "LibriSpeech ASR clean validation row 0, speaker 2277, chapter 149896.",
+      "license": "CC BY 4.0",
+      "sha256": "20e10e583b4918e05cea91316f7bde65a345d2756e64abc7f7ee133e2a0547f5"
+    },
+    {
+      "id": "librispeech-2277-149896-0000--office-10db",
+      "source": {
+        "type": "wav",
+        "path": "fixtures-v2/2277-149896-0000.wav",
+        "wav_sha256": "d75d742a8da3dbd2c43da919965b51fd9a3435551326eda58aa2a36c2aa37014"
+      },
+      "condition": "office-10db",
+      "expected_transcript": "HE WAS IN A FEVERED STATE OF MIND OWING TO THE BLIGHT HIS WIFE'S ACTION THREATENED TO CAST UPON HIS ENTIRE FUTURE",
+      "language": "en-US",
+      "expect_no_speech": false,
+      "provenance": "LibriSpeech ASR clean validation row 0, speaker 2277, chapter 149896.",
+      "license": "CC BY 4.0",
+      "sha256": "65e9ba3b6a9b1ad0364f4a981143128d02070005b4aacfc39f5521ceb46ed141",
+      "snr_db": 10,
+      "noise_seed": 1
+    },
+    {
+      "id": "librispeech-2277-149896-0000--office-5db",
+      "source": {
+        "type": "wav",
+        "path": "fixtures-v2/2277-149896-0000.wav",
+        "wav_sha256": "d75d742a8da3dbd2c43da919965b51fd9a3435551326eda58aa2a36c2aa37014"
+      },
+      "condition": "office-5db",
+      "expected_transcript": "HE WAS IN A FEVERED STATE OF MIND OWING TO THE BLIGHT HIS WIFE'S ACTION THREATENED TO CAST UPON HIS ENTIRE FUTURE",
+      "language": "en-US",
+      "expect_no_speech": false,
+      "provenance": "LibriSpeech ASR clean validation row 0, speaker 2277, chapter 149896.",
+      "license": "CC BY 4.0",
+      "sha256": "b272673fcab6f4df6a159a62ff41a8dbac70d1bd86157096b9fdaeca22931ca6",
+      "snr_db": 5,
+      "noise_seed": 1
+    },
+    {
+      "id": "librispeech-2277-149896-0032--clean",
+      "source": {
+        "type": "wav",
+        "path": "fixtures-v2/2277-149896-0032.wav",
+        "wav_sha256": "68dc81efa4f15d9704ec6e30399724f8f8adb6500a104bdb532d705e96261495"
+      },
+      "condition": "clean",
+      "expected_transcript": "BY THE TIME HE REACHED HIS OWN STREET HE WAS KEENLY ALIVE TO THE DIFFICULTIES OF HIS SITUATION AND WISHED OVER AND OVER THAT SOME SOLUTION WOULD OFFER ITSELF THAT HE COULD SEE HIS WAY OUT",
+      "language": "en-US",
+      "expect_no_speech": false,
+      "provenance": "LibriSpeech ASR clean validation row 32, speaker 2277, chapter 149896.",
+      "license": "CC BY 4.0",
+      "sha256": "fd1ef8864b5fdf0f75cc7d33ec93266709843447183f5883e98dda8686110821"
+    },
+    {
+      "id": "librispeech-2277-149896-0032--office-10db",
+      "source": {
+        "type": "wav",
+        "path": "fixtures-v2/2277-149896-0032.wav",
+        "wav_sha256": "68dc81efa4f15d9704ec6e30399724f8f8adb6500a104bdb532d705e96261495"
+      },
+      "condition": "office-10db",
+      "expected_transcript": "BY THE TIME HE REACHED HIS OWN STREET HE WAS KEENLY ALIVE TO THE DIFFICULTIES OF HIS SITUATION AND WISHED OVER AND OVER THAT SOME SOLUTION WOULD OFFER ITSELF THAT HE COULD SEE HIS WAY OUT",
+      "language": "en-US",
+      "expect_no_speech": false,
+      "provenance": "LibriSpeech ASR clean validation row 32, speaker 2277, chapter 149896.",
+      "license": "CC BY 4.0",
+      "sha256": "4b9369b3e280a0a21ca803ebc3ac8aa258db0ea4c556086aeb9ef7390c27577b",
+      "snr_db": 10,
+      "noise_seed": 2
+    },
+    {
+      "id": "librispeech-2277-149896-0032--office-5db",
+      "source": {
+        "type": "wav",
+        "path": "fixtures-v2/2277-149896-0032.wav",
+        "wav_sha256": "68dc81efa4f15d9704ec6e30399724f8f8adb6500a104bdb532d705e96261495"
+      },
+      "condition": "office-5db",
+      "expected_transcript": "BY THE TIME HE REACHED HIS OWN STREET HE WAS KEENLY ALIVE TO THE DIFFICULTIES OF HIS SITUATION AND WISHED OVER AND OVER THAT SOME SOLUTION WOULD OFFER ITSELF THAT HE COULD SEE HIS WAY OUT",
+      "language": "en-US",
+      "expect_no_speech": false,
+      "provenance": "LibriSpeech ASR clean validation row 32, speaker 2277, chapter 149896.",
+      "license": "CC BY 4.0",
+      "sha256": "9356dbff0daeb9589a83f6292cef5667105c647050e6097b8b66b4ec7c653734",
+      "snr_db": 5,
+      "noise_seed": 2
+    },
+    {
+      "id": "librispeech-2035-147960-0000--clean",
+      "source": {
+        "type": "wav",
+        "path": "fixtures-v2/2035-147960-0000.wav",
+        "wav_sha256": "f6f396c989e91d41c309b95aec9b24a902742288c165511234ecfeade587f5ff"
+      },
+      "condition": "clean",
+      "expected_transcript": "SHE WAS FOUR YEARS OLDER THAN I TO BE SURE AND HAD SEEN MORE OF THE WORLD BUT I WAS A BOY AND SHE WAS A GIRL AND I RESENTED HER PROTECTING MANNER",
+      "language": "en-US",
+      "expect_no_speech": false,
+      "provenance": "LibriSpeech ASR clean validation row 95, speaker 2035, chapter 147960.",
+      "license": "CC BY 4.0",
+      "sha256": "b0bef79e65f00b31149169b5b9087eb378472a4251806dd6b1fabb998573813b"
+    },
+    {
+      "id": "librispeech-2035-147960-0000--office-10db",
+      "source": {
+        "type": "wav",
+        "path": "fixtures-v2/2035-147960-0000.wav",
+        "wav_sha256": "f6f396c989e91d41c309b95aec9b24a902742288c165511234ecfeade587f5ff"
+      },
+      "condition": "office-10db",
+      "expected_transcript": "SHE WAS FOUR YEARS OLDER THAN I TO BE SURE AND HAD SEEN MORE OF THE WORLD BUT I WAS A BOY AND SHE WAS A GIRL AND I RESENTED HER PROTECTING MANNER",
+      "language": "en-US",
+      "expect_no_speech": false,
+      "provenance": "LibriSpeech ASR clean validation row 95, speaker 2035, chapter 147960.",
+      "license": "CC BY 4.0",
+      "sha256": "fb55400ba63f61dcfa9e6ba6a36b6acd017d2450abbe31e99412d4c3e91593c1",
+      "snr_db": 10,
+      "noise_seed": 3
+    },
+    {
+      "id": "librispeech-2035-147960-0000--office-5db",
+      "source": {
+        "type": "wav",
+        "path": "fixtures-v2/2035-147960-0000.wav",
+        "wav_sha256": "f6f396c989e91d41c309b95aec9b24a902742288c165511234ecfeade587f5ff"
+      },
+      "condition": "office-5db",
+      "expected_transcript": "SHE WAS FOUR YEARS OLDER THAN I TO BE SURE AND HAD SEEN MORE OF THE WORLD BUT I WAS A BOY AND SHE WAS A GIRL AND I RESENTED HER PROTECTING MANNER",
+      "language": "en-US",
+      "expect_no_speech": false,
+      "provenance": "LibriSpeech ASR clean validation row 95, speaker 2035, chapter 147960.",
+      "license": "CC BY 4.0",
+      "sha256": "03246468c0ee57d035fdafe886b5ee624490a62f749d9e7e26d54bb3df047754",
+      "snr_db": 5,
+      "noise_seed": 3
+    },
+    {
+      "id": "librispeech-1993-147149-0006--clean",
+      "source": {
+        "type": "wav",
+        "path": "fixtures-v3/1993-147149-0006.wav",
+        "wav_sha256": "1faacd0a03f1f7a1d95ebbf1fac0d541b447a057d9883e97f0bd2191b59bc2b4"
+      },
+      "condition": "clean",
+      "expected_transcript": "SHE OPENED THE DOOR SOFTLY THERE SAT MISSUS WILSON IN THE OLD ROCKING CHAIR WITH ONE SICK DEATH LIKE BOY LYING ON HER KNEE CRYING WITHOUT LET OR PAUSE BUT SOFTLY GENTLY AS FEARING TO DISTURB THE TROUBLED GASPING CHILD WHILE BEHIND HER OLD ALICE LET HER FAST DROPPING TEARS FALL DOWN ON THE DEAD BODY OF THE OTHER TWIN WHICH SHE WAS LAYING OUT ON A BOARD PLACED ON A SORT OF SOFA SETTEE IN A CORNER OF THE ROOM",
+      "language": "en-US",
+      "expect_no_speech": false,
+      "provenance": "LibriSpeech ASR clean validation row 1090, speaker 1993, chapter 147149.",
+      "license": "CC BY 4.0",
+      "sha256": "6f4716f2e561625892f877b5dd962882070c4c2e77342c3dd8b4e768dd7f87bc"
+    },
+    {
+      "id": "librispeech-1993-147149-0006--office-10db",
+      "source": {
+        "type": "wav",
+        "path": "fixtures-v3/1993-147149-0006.wav",
+        "wav_sha256": "1faacd0a03f1f7a1d95ebbf1fac0d541b447a057d9883e97f0bd2191b59bc2b4"
+      },
+      "condition": "office-10db",
+      "expected_transcript": "SHE OPENED THE DOOR SOFTLY THERE SAT MISSUS WILSON IN THE OLD ROCKING CHAIR WITH ONE SICK DEATH LIKE BOY LYING ON HER KNEE CRYING WITHOUT LET OR PAUSE BUT SOFTLY GENTLY AS FEARING TO DISTURB THE TROUBLED GASPING CHILD WHILE BEHIND HER OLD ALICE LET HER FAST DROPPING TEARS FALL DOWN ON THE DEAD BODY OF THE OTHER TWIN WHICH SHE WAS LAYING OUT ON A BOARD PLACED ON A SORT OF SOFA SETTEE IN A CORNER OF THE ROOM",
+      "language": "en-US",
+      "expect_no_speech": false,
+      "provenance": "LibriSpeech ASR clean validation row 1090, speaker 1993, chapter 147149.",
+      "license": "CC BY 4.0",
+      "sha256": "d11ab3b4c0e06cfd956d3553b5c584d6ff32dc839c9b3f8f3b44023ae047317f",
+      "snr_db": 10,
+      "noise_seed": 4
+    },
+    {
+      "id": "librispeech-1993-147149-0006--office-5db",
+      "source": {
+        "type": "wav",
+        "path": "fixtures-v3/1993-147149-0006.wav",
+        "wav_sha256": "1faacd0a03f1f7a1d95ebbf1fac0d541b447a057d9883e97f0bd2191b59bc2b4"
+      },
+      "condition": "office-5db",
+      "expected_transcript": "SHE OPENED THE DOOR SOFTLY THERE SAT MISSUS WILSON IN THE OLD ROCKING CHAIR WITH ONE SICK DEATH LIKE BOY LYING ON HER KNEE CRYING WITHOUT LET OR PAUSE BUT SOFTLY GENTLY AS FEARING TO DISTURB THE TROUBLED GASPING CHILD WHILE BEHIND HER OLD ALICE LET HER FAST DROPPING TEARS FALL DOWN ON THE DEAD BODY OF THE OTHER TWIN WHICH SHE WAS LAYING OUT ON A BOARD PLACED ON A SORT OF SOFA SETTEE IN A CORNER OF THE ROOM",
+      "language": "en-US",
+      "expect_no_speech": false,
+      "provenance": "LibriSpeech ASR clean validation row 1090, speaker 1993, chapter 147149.",
+      "license": "CC BY 4.0",
+      "sha256": "b077c6204b26dd574615ed251145a023fedb620c7bce0517dfa331488accae54",
+      "snr_db": 5,
+      "noise_seed": 4
+    },
+    {
+      "id": "librispeech-2902-9006-0015--clean",
+      "source": {
+        "type": "wav",
+        "path": "fixtures-v3/2902-9006-0015.wav",
+        "wav_sha256": "3811a707f98cc9dcc6ca80951a6271b75a5b0d6959be960e1767f5b6f21888cd"
+      },
+      "condition": "clean",
+      "expected_transcript": "THE COUNTLESS TREASURES WHICH FIVE CENTURIES OF RAPINE HAD ACCUMULATED ROUND THE CAPITOL HAD BECOME THE PREY OF MEN CLOTHED IN SHEEPSKINS AND HORSE HIDE AND THE SISTER OF AN EMPEROR HAD FOUND HER BEAUTY VIRTUE AND PRIDE OF RACE WORTHILY MATCHED BY THOSE OF THE HARD HANDED NORTHERN HERO WHO LED HER AWAY FROM ITALY AS HIS CAPTIVE AND HIS BRIDE TO FOUND NEW KINGDOMS IN SOUTH FRANCE AND SPAIN AND TO DRIVE THE NEWLY ARRIVED VANDALS ACROSS THE STRAITS OF GIBRALTAR INTO THE THEN BLOOMING COAST LAND OF NORTHERN AFRICA",
+      "language": "en-US",
+      "expect_no_speech": false,
+      "provenance": "LibriSpeech ASR clean validation row 1450, speaker 2902, chapter 9006.",
+      "license": "CC BY 4.0",
+      "sha256": "daa9f6a2aeba240627b06b40dbd7a9b00cdb862de7888879da9409979215537c"
+    },
+    {
+      "id": "librispeech-2902-9006-0015--office-10db",
+      "source": {
+        "type": "wav",
+        "path": "fixtures-v3/2902-9006-0015.wav",
+        "wav_sha256": "3811a707f98cc9dcc6ca80951a6271b75a5b0d6959be960e1767f5b6f21888cd"
+      },
+      "condition": "office-10db",
+      "expected_transcript": "THE COUNTLESS TREASURES WHICH FIVE CENTURIES OF RAPINE HAD ACCUMULATED ROUND THE CAPITOL HAD BECOME THE PREY OF MEN CLOTHED IN SHEEPSKINS AND HORSE HIDE AND THE SISTER OF AN EMPEROR HAD FOUND HER BEAUTY VIRTUE AND PRIDE OF RACE WORTHILY MATCHED BY THOSE OF THE HARD HANDED NORTHERN HERO WHO LED HER AWAY FROM ITALY AS HIS CAPTIVE AND HIS BRIDE TO FOUND NEW KINGDOMS IN SOUTH FRANCE AND SPAIN AND TO DRIVE THE NEWLY ARRIVED VANDALS ACROSS THE STRAITS OF GIBRALTAR INTO THE THEN BLOOMING COAST LAND OF NORTHERN AFRICA",
+      "language": "en-US",
+      "expect_no_speech": false,
+      "provenance": "LibriSpeech ASR clean validation row 1450, speaker 2902, chapter 9006.",
+      "license": "CC BY 4.0",
+      "sha256": "6c01d092edf4789fb3b5f8d2e2481d63f932163c4d0844d6f38ec664c355752b",
+      "snr_db": 10,
+      "noise_seed": 5
+    },
+    {
+      "id": "librispeech-2902-9006-0015--office-5db",
+      "source": {
+        "type": "wav",
+        "path": "fixtures-v3/2902-9006-0015.wav",
+        "wav_sha256": "3811a707f98cc9dcc6ca80951a6271b75a5b0d6959be960e1767f5b6f21888cd"
+      },
+      "condition": "office-5db",
+      "expected_transcript": "THE COUNTLESS TREASURES WHICH FIVE CENTURIES OF RAPINE HAD ACCUMULATED ROUND THE CAPITOL HAD BECOME THE PREY OF MEN CLOTHED IN SHEEPSKINS AND HORSE HIDE AND THE SISTER OF AN EMPEROR HAD FOUND HER BEAUTY VIRTUE AND PRIDE OF RACE WORTHILY MATCHED BY THOSE OF THE HARD HANDED NORTHERN HERO WHO LED HER AWAY FROM ITALY AS HIS CAPTIVE AND HIS BRIDE TO FOUND NEW KINGDOMS IN SOUTH FRANCE AND SPAIN AND TO DRIVE THE NEWLY ARRIVED VANDALS ACROSS THE STRAITS OF GIBRALTAR INTO THE THEN BLOOMING COAST LAND OF NORTHERN AFRICA",
+      "language": "en-US",
+      "expect_no_speech": false,
+      "provenance": "LibriSpeech ASR clean validation row 1450, speaker 2902, chapter 9006.",
+      "license": "CC BY 4.0",
+      "sha256": "1748d43002e3dd6979e4397562b50cc38443f633cd6a4549dec20fb710d621b4",
+      "snr_db": 5,
+      "noise_seed": 5
+    },
+    {
+      "id": "librispeech-3000-15664-0041--clean",
+      "source": {
+        "type": "wav",
+        "path": "fixtures-v3/3000-15664-0041.wav",
+        "wav_sha256": "eca27f502b56c12e85ca271ee6c8474fd2d2fa195c4557dd8f6c417525734a2f"
+      },
+      "condition": "clean",
+      "expected_transcript": "TRACING THE MC CLOUD TO ITS HIGHEST SPRINGS AND OVER THE DIVIDE TO THE FOUNTAINS OF FALL RIVER NEAR FORT CROOK THENCE DOWN THAT RIVER TO ITS CONFLUENCE WITH THE PITT ON FROM THERE TO THE VOLCANIC REGION ABOUT LASSEN'S BUTTE THROUGH THE BIG MEADOWS AMONG THE SOURCES OF THE FEATHER RIVER AND DOWN THROUGH FORESTS OF SUGAR PINE TO THE FERTILE PLAINS OF CHICO THIS IS A GLORIOUS SAUNTER AND IMPOSES NO HARDSHIP",
+      "language": "en-US",
+      "expect_no_speech": false,
+      "provenance": "LibriSpeech ASR clean validation row 2010, speaker 3000, chapter 15664.",
+      "license": "CC BY 4.0",
+      "sha256": "229ff17d8364a69827a0c9df2a5a992c27ee5441460c320d12fcaa5598adca90"
+    },
+    {
+      "id": "librispeech-3000-15664-0041--office-10db",
+      "source": {
+        "type": "wav",
+        "path": "fixtures-v3/3000-15664-0041.wav",
+        "wav_sha256": "eca27f502b56c12e85ca271ee6c8474fd2d2fa195c4557dd8f6c417525734a2f"
+      },
+      "condition": "office-10db",
+      "expected_transcript": "TRACING THE MC CLOUD TO ITS HIGHEST SPRINGS AND OVER THE DIVIDE TO THE FOUNTAINS OF FALL RIVER NEAR FORT CROOK THENCE DOWN THAT RIVER TO ITS CONFLUENCE WITH THE PITT ON FROM THERE TO THE VOLCANIC REGION ABOUT LASSEN'S BUTTE THROUGH THE BIG MEADOWS AMONG THE SOURCES OF THE FEATHER RIVER AND DOWN THROUGH FORESTS OF SUGAR PINE TO THE FERTILE PLAINS OF CHICO THIS IS A GLORIOUS SAUNTER AND IMPOSES NO HARDSHIP",
+      "language": "en-US",
+      "expect_no_speech": false,
+      "provenance": "LibriSpeech ASR clean validation row 2010, speaker 3000, chapter 15664.",
+      "license": "CC BY 4.0",
+      "sha256": "1613d1f0efa52905ae71eb3aa8a6655fc4daf394c70fad35271a20648746bf33",
+      "snr_db": 10,
+      "noise_seed": 6
+    },
+    {
+      "id": "librispeech-3000-15664-0041--office-5db",
+      "source": {
+        "type": "wav",
+        "path": "fixtures-v3/3000-15664-0041.wav",
+        "wav_sha256": "eca27f502b56c12e85ca271ee6c8474fd2d2fa195c4557dd8f6c417525734a2f"
+      },
+      "condition": "office-5db",
+      "expected_transcript": "TRACING THE MC CLOUD TO ITS HIGHEST SPRINGS AND OVER THE DIVIDE TO THE FOUNTAINS OF FALL RIVER NEAR FORT CROOK THENCE DOWN THAT RIVER TO ITS CONFLUENCE WITH THE PITT ON FROM THERE TO THE VOLCANIC REGION ABOUT LASSEN'S BUTTE THROUGH THE BIG MEADOWS AMONG THE SOURCES OF THE FEATHER RIVER AND DOWN THROUGH FORESTS OF SUGAR PINE TO THE FERTILE PLAINS OF CHICO THIS IS A GLORIOUS SAUNTER AND IMPOSES NO HARDSHIP",
+      "language": "en-US",
+      "expect_no_speech": false,
+      "provenance": "LibriSpeech ASR clean validation row 2010, speaker 3000, chapter 15664.",
+      "license": "CC BY 4.0",
+      "sha256": "2cc5e859ebc6c7a03545f043c864ae589a0cab7c140c5708e900f6547a7a903b",
+      "snr_db": 5,
+      "noise_seed": 6
+    },
+    {
+      "id": "librispeech-5536-43363-0009--clean",
+      "source": {
+        "type": "wav",
+        "path": "fixtures-v3/5536-43363-0009.wav",
+        "wav_sha256": "0a4c553c33127034f407c83bd73067191e8336e9dbcef563e6c65d26b82a1521"
+      },
+      "condition": "clean",
+      "expected_transcript": "IT IS WELL KNOWN THAT THE AMERICAN INDIAN HAD SOMEHOW DEVELOPED OCCULT POWER AND ALTHOUGH IN THE LATTER DAYS THERE HAVE BEEN MANY IMPOSTORS AND ALLOWING FOR THE VANITY AND WEAKNESS OF HUMAN NATURE IT IS FAIR TO ASSUME THAT THERE MUST HAVE BEEN SOME EVEN IN THE OLD DAYS YET THERE ARE WELL ATTESTED INSTANCES OF REMARKABLE PROPHECIES AND OTHER MYSTIC PRACTICE",
+      "language": "en-US",
+      "expect_no_speech": false,
+      "provenance": "LibriSpeech ASR clean validation row 692, speaker 5536, chapter 43363.",
+      "license": "CC BY 4.0",
+      "sha256": "c2d43cd3027687edf2e84f8250d9b6cfe0a000ba47685fe16f0a8b1600fd728b"
+    },
+    {
+      "id": "librispeech-5536-43363-0009--office-10db",
+      "source": {
+        "type": "wav",
+        "path": "fixtures-v3/5536-43363-0009.wav",
+        "wav_sha256": "0a4c553c33127034f407c83bd73067191e8336e9dbcef563e6c65d26b82a1521"
+      },
+      "condition": "office-10db",
+      "expected_transcript": "IT IS WELL KNOWN THAT THE AMERICAN INDIAN HAD SOMEHOW DEVELOPED OCCULT POWER AND ALTHOUGH IN THE LATTER DAYS THERE HAVE BEEN MANY IMPOSTORS AND ALLOWING FOR THE VANITY AND WEAKNESS OF HUMAN NATURE IT IS FAIR TO ASSUME THAT THERE MUST HAVE BEEN SOME EVEN IN THE OLD DAYS YET THERE ARE WELL ATTESTED INSTANCES OF REMARKABLE PROPHECIES AND OTHER MYSTIC PRACTICE",
+      "language": "en-US",
+      "expect_no_speech": false,
+      "provenance": "LibriSpeech ASR clean validation row 692, speaker 5536, chapter 43363.",
+      "license": "CC BY 4.0",
+      "sha256": "31b4fad7557a260dcd39e6e2aeb10d6affc5243220fd12ede2d6f2fb656108f2",
+      "snr_db": 10,
+      "noise_seed": 7
+    },
+    {
+      "id": "librispeech-5536-43363-0009--office-5db",
+      "source": {
+        "type": "wav",
+        "path": "fixtures-v3/5536-43363-0009.wav",
+        "wav_sha256": "0a4c553c33127034f407c83bd73067191e8336e9dbcef563e6c65d26b82a1521"
+      },
+      "condition": "office-5db",
+      "expected_transcript": "IT IS WELL KNOWN THAT THE AMERICAN INDIAN HAD SOMEHOW DEVELOPED OCCULT POWER AND ALTHOUGH IN THE LATTER DAYS THERE HAVE BEEN MANY IMPOSTORS AND ALLOWING FOR THE VANITY AND WEAKNESS OF HUMAN NATURE IT IS FAIR TO ASSUME THAT THERE MUST HAVE BEEN SOME EVEN IN THE OLD DAYS YET THERE ARE WELL ATTESTED INSTANCES OF REMARKABLE PROPHECIES AND OTHER MYSTIC PRACTICE",
+      "language": "en-US",
+      "expect_no_speech": false,
+      "provenance": "LibriSpeech ASR clean validation row 692, speaker 5536, chapter 43363.",
+      "license": "CC BY 4.0",
+      "sha256": "4ba32f2883985d23efebcd92a4814d8e0f5fb1867f17e8850f5ad7793f5e6cab",
+      "snr_db": 5,
+      "noise_seed": 7
+    },
+    {
+      "id": "librispeech-7976-110523-0012--clean",
+      "source": {
+        "type": "wav",
+        "path": "fixtures-v3/7976-110523-0012.wav",
+        "wav_sha256": "7bfc53519f8dc855ee6afe1cf57d3f501b0f4ce5bcbde2bd54b69535c5daa094"
+      },
+      "condition": "clean",
+      "expected_transcript": "THE OLD WOMAN BEHAVED VERY KINDLY TO THEM BUT IN REALITY SHE WAS A WICKED OLD WITCH WHO WAY LAID CHILDREN AND BUILT THE BREADHOUSE IN ORDER TO ENTICE THEM IN BUT AS SOON AS THEY WERE IN HER POWER SHE KILLED THEM COOKED AND ATE THEM AND MADE A GREAT FESTIVAL OF THE DAY",
+      "language": "en-US",
+      "expect_no_speech": false,
+      "provenance": "LibriSpeech ASR clean validation row 295, speaker 7976, chapter 110523.",
+      "license": "CC BY 4.0",
+      "sha256": "9313436d8d23e5e08d900a43823ef3311b7003ce22e78931cbc29037d81d9dbb"
+    },
+    {
+      "id": "librispeech-7976-110523-0012--office-10db",
+      "source": {
+        "type": "wav",
+        "path": "fixtures-v3/7976-110523-0012.wav",
+        "wav_sha256": "7bfc53519f8dc855ee6afe1cf57d3f501b0f4ce5bcbde2bd54b69535c5daa094"
+      },
+      "condition": "office-10db",
+      "expected_transcript": "THE OLD WOMAN BEHAVED VERY KINDLY TO THEM BUT IN REALITY SHE WAS A WICKED OLD WITCH WHO WAY LAID CHILDREN AND BUILT THE BREADHOUSE IN ORDER TO ENTICE THEM IN BUT AS SOON AS THEY WERE IN HER POWER SHE KILLED THEM COOKED AND ATE THEM AND MADE A GREAT FESTIVAL OF THE DAY",
+      "language": "en-US",
+      "expect_no_speech": false,
+      "provenance": "LibriSpeech ASR clean validation row 295, speaker 7976, chapter 110523.",
+      "license": "CC BY 4.0",
+      "sha256": "3bafd6d364e4165efbc3e7bda91904eecf51895f576bfbee2f053c02785d3d30",
+      "snr_db": 10,
+      "noise_seed": 8
+    },
+    {
+      "id": "librispeech-7976-110523-0012--office-5db",
+      "source": {
+        "type": "wav",
+        "path": "fixtures-v3/7976-110523-0012.wav",
+        "wav_sha256": "7bfc53519f8dc855ee6afe1cf57d3f501b0f4ce5bcbde2bd54b69535c5daa094"
+      },
+      "condition": "office-5db",
+      "expected_transcript": "THE OLD WOMAN BEHAVED VERY KINDLY TO THEM BUT IN REALITY SHE WAS A WICKED OLD WITCH WHO WAY LAID CHILDREN AND BUILT THE BREADHOUSE IN ORDER TO ENTICE THEM IN BUT AS SOON AS THEY WERE IN HER POWER SHE KILLED THEM COOKED AND ATE THEM AND MADE A GREAT FESTIVAL OF THE DAY",
+      "language": "en-US",
+      "expect_no_speech": false,
+      "provenance": "LibriSpeech ASR clean validation row 295, speaker 7976, chapter 110523.",
+      "license": "CC BY 4.0",
+      "sha256": "8c62f6be7b541fcc0ed5329ebda4562e5683838cddf2a8cffec66ec210e3abba",
+      "snr_db": 5,
+      "noise_seed": 8
+    },
+    {
+      "id": "synthetic-silence",
+      "source": {
+        "type": "silence",
+        "duration_seconds": 1.0
+      },
+      "condition": "silence",
+      "expected_transcript": "",
+      "language": "en-US",
+      "expect_no_speech": true,
+      "provenance": "Zero-valued PCM generated by this harness.",
+      "license": "CC0-1.0",
+      "sha256": "runtime-generated"
+    }
+  ]
+}
