@@ -65,6 +65,7 @@ assert_service_migration() {
   cat >"$expected" <<'EOF'
 --user daemon-reload
 --user enable sayall-hud.service
+--user show sayall.service --property=LoadState --value
 --user stop sayall.service
 --user is-active sayall.service
 --user disable sayall.service
@@ -101,6 +102,21 @@ grep -q 'leaving the existing binding unchanged' "$output"
 assert_service_migration
 
 : >"$systemctl_log"
+SAYALL_TEST_SYSTEMCTL_LOG=$systemctl_log \
+SAYALL_TEST_LEGACY_STATE=missing \
+HOME=$test_dir/home \
+XDG_CONFIG_HOME=$test_dir/config \
+PATH=$test_dir/bin:$PATH \
+env -u HYPRLAND_INSTANCE_SIGNATURE "$sayall" setup >"$output" 2>&1
+cat >"$test_dir/systemctl-missing.expected" <<'EOF'
+--user daemon-reload
+--user enable sayall-hud.service
+--user show sayall.service --property=LoadState --value
+--user restart sayall-hud.service
+EOF
+cmp "$test_dir/systemctl-missing.expected" "$systemctl_log"
+
+: >"$systemctl_log"
 if SAYALL_TEST_SYSTEMCTL_LOG=$systemctl_log \
     SAYALL_TEST_LEGACY_STATE=active \
     HOME=$test_dir/home \
@@ -113,6 +129,7 @@ fi
 cat >"$test_dir/systemctl-active.expected" <<'EOF'
 --user daemon-reload
 --user enable sayall-hud.service
+--user show sayall.service --property=LoadState --value
 --user stop sayall.service
 --user is-active sayall.service
 EOF

@@ -1,5 +1,10 @@
 #!/bin/sh
 printf '%s\n' "$*" >>"$SAYALL_TEST_SYSTEMCTL_LOG"
+if [ "$*" = '--user show sayall.service --property=LoadState --value' ]; then
+  state=${SAYALL_TEST_LEGACY_STATE:-inactive}
+  [ "$state" = missing ] && printf '%s\n' 'not-found' || printf '%s\n' 'loaded'
+  exit 0
+fi
 if [ "$*" = '--user is-active sayall.service' ]; then
   state=${SAYALL_TEST_LEGACY_STATE:-inactive}
   printf '%s\n' "$state"
