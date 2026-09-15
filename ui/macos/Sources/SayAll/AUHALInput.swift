@@ -52,6 +52,7 @@ final class AUHALInput {
     private let healthArmed = Atomic<Bool>(false)
     private let renderFailed = Atomic<Bool>(false)
     private let callbacksInFlight = Atomic<Int>(0)
+    private let stopFailed = Atomic<Bool>(false)
     private let disposed = Atomic<Bool>(false)
     private let queue = DispatchQueue(label: "pro.leets.sayall.auhal-processing", qos: .userInitiated)
     private var timer: DispatchSourceTimer?
@@ -161,7 +162,9 @@ final class AUHALInput {
     func stop() -> Bool {
         healthArmed.store(false, ordering: .releasing)
         let wasRunning = running.exchange(false, ordering: .acquiringAndReleasing)
-        if wasRunning { AudioOutputUnitStop(unit) }
+        if wasRunning, AudioOutputUnitStop(unit) != noErr {
+            stopFailed.store(true, ordering: .releasing)
+        }
         var attempts = 0
         while callbacksInFlight.load(ordering: .acquiring) != 0, attempts < 2_000 {
             usleep(1_000)
@@ -171,7 +174,7 @@ final class AUHALInput {
         timer?.cancel()
         timer = nil
         queue.sync { drain() }
-        return quiesced
+        return quiesced && !stopFailed.load(ordering: .acquiring)
     }
 
     private func dispose() {
