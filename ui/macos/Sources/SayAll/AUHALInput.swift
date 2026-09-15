@@ -127,15 +127,18 @@ final class AUHALInput {
     }
 
     deinit {
-        if stop() {
+        let quiesced = stop()
+        dispose()
+        if quiesced {
             bufferLists.forEach { free($0.unsafeMutablePointer) }
             storage.forEach { $0.deallocate() }
         }
     }
 
     func start() throws {
+        guard !disposed.load(ordering: .acquiring) else { throw Failure.unavailable }
         renderFailed.store(false, ordering: .relaxed)
-        lastObservedWrite = 0
+        lastObservedWrite = produced.load(ordering: .acquiring)
         stalledPolls = 0
         failureDelivered = false
         running.store(true, ordering: .releasing)
@@ -159,10 +162,6 @@ final class AUHALInput {
         healthArmed.store(false, ordering: .releasing)
         let wasRunning = running.exchange(false, ordering: .acquiringAndReleasing)
         if wasRunning { AudioOutputUnitStop(unit) }
-        if !disposed.exchange(true, ordering: .acquiringAndReleasing) {
-            AudioUnitUninitialize(unit)
-            AudioComponentInstanceDispose(unit)
-        }
         var attempts = 0
         while callbacksInFlight.load(ordering: .acquiring) != 0, attempts < 2_000 {
             usleep(1_000)
@@ -173,6 +172,12 @@ final class AUHALInput {
         timer = nil
         queue.sync { drain() }
         return quiesced
+    }
+
+    private func dispose() {
+        guard !disposed.exchange(true, ordering: .acquiringAndReleasing) else { return }
+        AudioUnitUninitialize(unit)
+        AudioComponentInstanceDispose(unit)
     }
 
     private func drain() {

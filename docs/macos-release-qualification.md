@@ -81,8 +81,9 @@ At minimum, qualify:
 - [ ] Normal streaming without REST, final PCM drain, network loss during
   recording with REST fallback, helper exit, and EU/global regional behavior.
 - [ ] Minimum-duration rejection, five-minute cap, helper 45-second timeout,
-  app quit during recording/processing, raw-audio cleanup on every terminal path, and
-  startup scavenging after simulated interruption.
+  immediate restart after HUD dismissal without losing opening words, app quit
+  during recording/processing, raw-audio cleanup on every terminal path, and startup
+  scavenging after simulated interruption.
 - [ ] No transcript/audio/key leakage in argv, logs, defaults, or persistent
   history; the plaintext shared config is mode `0600` and never logged.
 - [ ] Manual update and complete uninstall, including deliberate shared-config

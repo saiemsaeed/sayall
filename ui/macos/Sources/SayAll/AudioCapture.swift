@@ -258,6 +258,7 @@ final class AudioCapture {
     private static let maximumFrames: AVAudioFramePosition = 4_800_000
     private let resampler = AudioResampler()
     private var inputUnit: AUHALInput?
+    private var inputDeviceID: AudioDeviceID?
 #if DEBUG
     private var fixtureTimer: DispatchSourceTimer?
     private var fixtureFile: AVAudioFile?
@@ -355,11 +356,18 @@ final class AudioCapture {
             let deviceResolutionMs = Self.elapsedMilliseconds(since: phaseStarted)
             phaseStarted = DispatchTime.now().uptimeNanoseconds
             let inputUnit: AUHALInput
-            do { inputUnit = try AUHALInput(deviceID: deviceID) }
-            catch AUHALInput.Failure.unavailable { throw CaptureError.deviceUnavailable }
-            catch { throw CaptureError.format }
+            if let reusableInput = self.inputUnit, inputDeviceID == deviceID {
+                inputUnit = reusableInput
+            } else {
+                self.inputUnit = nil
+                inputDeviceID = nil
+                do { inputUnit = try AUHALInput(deviceID: deviceID) }
+                catch AUHALInput.Failure.unavailable { throw CaptureError.deviceUnavailable }
+                catch { throw CaptureError.format }
+                self.inputUnit = inputUnit
+                inputDeviceID = deviceID
+            }
             let inputInitializationMs = Self.elapsedMilliseconds(since: phaseStarted)
-            self.inputUnit = inputUnit
             let generation = UUID()
             captureGeneration = generation
             inputUnit.framesHandler = { [weak self] samples, frames, channels, frameStride, rate in
@@ -386,6 +394,8 @@ final class AudioCapture {
                 streamSourceFailed: false, startTiming: timing, captureGeneration: generation)
         } catch {
             cleanup(deleteFile: true)
+            inputUnit = nil
+            inputDeviceID = nil
             throw error
         }
     }
@@ -430,13 +440,17 @@ final class AudioCapture {
         activeInput?.stop()
         resampler.reset()
         lock.lock()
+        let discardInput = captureFailed
         file = nil
         try? pcmFile?.synchronize()
         try? pcmFile?.close()
         pcmFile = nil
         let directory = directoryURL
         lock.unlock()
-        inputUnit = nil
+        if discardInput {
+            inputUnit = nil
+            inputDeviceID = nil
+        }
         lock.withLock { captureGeneration = nil }
         if deleteFile, let directory { try? FileManager.default.removeItem(at: directory) }
     }
