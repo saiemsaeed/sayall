@@ -232,6 +232,17 @@ impl Controller {
                 | State::Cancelled
         ) || (current.state == State::Recording
             && is_finish_admission(self.0.admitted.load(Ordering::Acquire)));
+        if current.generation == generation && current.state == State::Idle {
+            if self
+                .0
+                .restart_requested
+                .compare_exchange(pending, 0, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return self.toggle();
+            }
+            return Err(ToggleError::Busy);
+        }
         if current.generation == generation && queueable {
             if self
                 .0
@@ -1141,6 +1152,53 @@ mod tests {
         ));
         assert_eq!(restart_requested.load(Ordering::Acquire), 0);
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn restart_reserved_during_terminal_expiry_retries_as_idle_start() {
+        let (tx, rx) = mpsc::channel();
+        let snapshot = Arc::new(Mutex::new(Snapshot {
+            state: State::Success,
+            generation: 7,
+            ..Snapshot::default()
+        }));
+        let restart_requested = Arc::new(AtomicU64::new(0));
+        let controller = Controller(Arc::new(Inner {
+            tx,
+            snapshot: snapshot.clone(),
+            admitted: Arc::new(AtomicU64::new(ADMISSION_NONE)),
+            next_admission: Arc::new(AtomicU64::new(FIRST_ADMISSION)),
+            restart_requested: restart_requested.clone(),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            join: Mutex::new(None),
+        }));
+        let mut locked_snapshot = snapshot.lock().unwrap();
+        let queued_controller = controller.clone();
+        let queued = std::thread::spawn(move || queued_controller.queue_restart(7));
+        while restart_requested.load(Ordering::Acquire) == 0 {
+            std::thread::yield_now();
+        }
+        *locked_snapshot = Snapshot {
+            state: State::Idle,
+            generation: 7,
+            ..Snapshot::default()
+        };
+        drop(locked_snapshot);
+
+        let Command::Toggle(State::Idle, reply) = rx.recv().unwrap() else {
+            panic!()
+        };
+        let started = Snapshot {
+            state: State::Recording,
+            generation: 8,
+            ..Snapshot::default()
+        };
+        reply.send(Ok(started.clone())).unwrap();
+
+        let result = queued.join().unwrap().unwrap();
+        assert_eq!(result.state, started.state);
+        assert_eq!(result.generation, started.generation);
+        assert_eq!(restart_requested.load(Ordering::Acquire), 0);
     }
 
     #[test]
