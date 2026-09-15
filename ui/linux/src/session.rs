@@ -2,7 +2,7 @@ use crate::{capture, config, desktop, worker};
 use serde::Serialize;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -80,6 +80,7 @@ impl fmt::Display for ToggleError {
 
 enum Command {
     Toggle(State, mpsc::Sender<Result<Snapshot, ToggleError>>),
+    RestartReady,
     Reload(mpsc::Sender<Result<Snapshot, ToggleError>>),
     SetProcessingMode(
         config::ProcessingMode,
@@ -91,12 +92,29 @@ enum Command {
     ),
     Shutdown,
 }
+const ADMISSION_NONE: u64 = 0;
+const ADMISSION_FINISH_BIT: u64 = 1;
+const FIRST_ADMISSION: u64 = 2;
+const RESTART_READY_BIT: u64 = 1;
+
+fn is_finish_admission(owner: u64) -> bool {
+    owner != ADMISSION_NONE && owner & ADMISSION_FINISH_BIT != 0
+}
+
 struct Inner {
     tx: mpsc::Sender<Command>,
     snapshot: Arc<Mutex<Snapshot>>,
-    admitted: Arc<AtomicBool>,
+    admitted: Arc<AtomicU64>,
+    next_admission: Arc<AtomicU64>,
+    restart_requested: Arc<AtomicU64>,
     shutdown: Arc<AtomicBool>,
     join: Mutex<Option<JoinHandle<()>>>,
+}
+struct RunSignals {
+    admitted: Arc<AtomicU64>,
+    next_admission: Arc<AtomicU64>,
+    restart_requested: Arc<AtomicU64>,
+    shutdown: Arc<AtomicBool>,
 }
 #[derive(Clone)]
 pub struct Controller(Arc<Inner>);
@@ -105,25 +123,24 @@ impl Controller {
         let (tx, rx) = mpsc::channel();
         let snapshot = Arc::new(Mutex::new(Snapshot::default()));
         let shared = snapshot.clone();
-        let admitted = Arc::new(AtomicBool::new(false));
-        let worker_admitted = admitted.clone();
+        let admitted = Arc::new(AtomicU64::new(ADMISSION_NONE));
+        let next_admission = Arc::new(AtomicU64::new(FIRST_ADMISSION));
+        let restart_requested = Arc::new(AtomicU64::new(0));
         let shutdown = Arc::new(AtomicBool::new(false));
-        let worker_shutdown = shutdown.clone();
-        let join = std::thread::spawn(move || {
-            run(
-                rx,
-                shared,
-                worker_admitted,
-                worker_shutdown,
-                root,
-                Box::new(delivery),
-                updates,
-            )
-        });
+        let signals = RunSignals {
+            admitted: admitted.clone(),
+            next_admission: next_admission.clone(),
+            restart_requested: restart_requested.clone(),
+            shutdown: shutdown.clone(),
+        };
+        let join =
+            std::thread::spawn(move || run(rx, shared, signals, root, Box::new(delivery), updates));
         Self(Arc::new(Inner {
             tx,
             snapshot,
             admitted,
+            next_admission,
+            restart_requested,
             shutdown,
             join: Mutex::new(Some(join)),
         }))
@@ -132,50 +149,167 @@ impl Controller {
         self.0.snapshot.lock().unwrap().clone()
     }
     pub fn toggle(&self) -> Result<Snapshot, ToggleError> {
-        let expected = self.status().state;
-        if !matches!(expected, State::Idle | State::Recording) {
+        let expected = self.status();
+        if matches!(
+            expected.state,
+            State::Stopping
+                | State::Processing
+                | State::Delivering
+                | State::Success
+                | State::Error
+                | State::Cancelled
+        ) || (expected.state == State::Recording
+            && is_finish_admission(self.0.admitted.load(Ordering::Acquire)))
+        {
+            return self.queue_restart(expected.generation);
+        }
+        if !matches!(expected.state, State::Idle | State::Recording) {
             return Err(ToggleError::Busy);
         }
+        let admission = self.next_admission(expected.state == State::Recording);
+        if let Err(current) = self.0.admitted.compare_exchange(
+            ADMISSION_NONE,
+            admission,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            if expected.state == State::Recording && is_finish_admission(current) {
+                return self.queue_restart(expected.generation);
+            }
+            return Err(ToggleError::Busy);
+        }
+        let current = self.status();
+        if current.state != expected.state || current.generation != expected.generation {
+            let _ = self.0.admitted.compare_exchange(
+                admission,
+                ADMISSION_NONE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            return Err(ToggleError::Busy);
+        }
+        let (tx, rx) = mpsc::channel();
+        if self.0.tx.send(Command::Toggle(expected.state, tx)).is_err() {
+            let _ = self.0.admitted.compare_exchange(
+                admission,
+                ADMISSION_NONE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            return Err(ToggleError::Unavailable);
+        }
+        let result = rx.recv().unwrap_or(Err(ToggleError::Unavailable));
+        let _ = self.0.admitted.compare_exchange(
+            admission,
+            ADMISSION_NONE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        result
+    }
+    fn next_admission(&self, finishing: bool) -> u64 {
+        self.0.next_admission.fetch_add(2, Ordering::AcqRel)
+            | if finishing { ADMISSION_FINISH_BIT } else { 0 }
+    }
+    fn queue_restart(&self, generation: u64) -> Result<Snapshot, ToggleError> {
+        let pending = (generation + 1) << 1;
         if self
             .0
-            .admitted
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .restart_requested
+            .compare_exchange(0, pending, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
             return Err(ToggleError::Busy);
         }
-        if self.status().state != expected {
-            self.0.admitted.store(false, Ordering::Release);
+        let current = self.status();
+        let queueable = matches!(
+            current.state,
+            State::Stopping
+                | State::Processing
+                | State::Delivering
+                | State::Success
+                | State::Error
+                | State::Cancelled
+        ) || (current.state == State::Recording
+            && is_finish_admission(self.0.admitted.load(Ordering::Acquire)));
+        if current.generation == generation && current.state == State::Idle {
+            if self
+                .0
+                .restart_requested
+                .compare_exchange(pending, 0, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return self.toggle();
+            }
             return Err(ToggleError::Busy);
         }
-        let (tx, rx) = mpsc::channel();
-        if self.0.tx.send(Command::Toggle(expected, tx)).is_err() {
-            self.0.admitted.store(false, Ordering::Release);
-            return Err(ToggleError::Unavailable);
+        if current.generation == generation && queueable {
+            if self
+                .0
+                .restart_requested
+                .compare_exchange(
+                    pending,
+                    pending | RESTART_READY_BIT,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                if self.0.tx.send(Command::RestartReady).is_err() {
+                    let _ = self.0.restart_requested.compare_exchange(
+                        pending | RESTART_READY_BIT,
+                        0,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    );
+                    return Err(ToggleError::Unavailable);
+                }
+                return Ok(current);
+            }
         }
-        let result = rx.recv().unwrap_or(Err(ToggleError::Unavailable));
-        self.0.admitted.store(false, Ordering::Release);
-        result
+        let _ = self.0.restart_requested.compare_exchange(
+            pending,
+            0,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        Err(ToggleError::Busy)
     }
     pub fn reload(&self) -> Result<Snapshot, ToggleError> {
         if self.status().state != State::Idle {
             return Err(ToggleError::Busy);
         }
+        let admission = self.next_admission(false);
         if self
             .0
             .admitted
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .compare_exchange(
+                ADMISSION_NONE,
+                admission,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
             .is_err()
         {
             return Err(ToggleError::Busy);
         }
         let (tx, rx) = mpsc::channel();
         if self.0.tx.send(Command::Reload(tx)).is_err() {
-            self.0.admitted.store(false, Ordering::Release);
+            let _ = self.0.admitted.compare_exchange(
+                admission,
+                ADMISSION_NONE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
             return Err(ToggleError::Unavailable);
         }
         let result = rx.recv().unwrap_or(Err(ToggleError::Unavailable));
-        self.0.admitted.store(false, Ordering::Release);
+        let _ = self.0.admitted.compare_exchange(
+            admission,
+            ADMISSION_NONE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
         result
     }
     pub fn set_processing_mode(
@@ -185,10 +319,16 @@ impl Controller {
         if self.status().state != State::Idle {
             return Err(ToggleError::Busy);
         }
+        let admission = self.next_admission(false);
         if self
             .0
             .admitted
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .compare_exchange(
+                ADMISSION_NONE,
+                admission,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
             .is_err()
         {
             return Err(ToggleError::Busy);
@@ -200,21 +340,37 @@ impl Controller {
             .send(Command::SetProcessingMode(mode, tx))
             .is_err()
         {
-            self.0.admitted.store(false, Ordering::Release);
+            let _ = self.0.admitted.compare_exchange(
+                admission,
+                ADMISSION_NONE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
             return Err(ToggleError::Unavailable);
         }
         let result = rx.recv().unwrap_or(Err(ToggleError::Unavailable));
-        self.0.admitted.store(false, Ordering::Release);
+        let _ = self.0.admitted.compare_exchange(
+            admission,
+            ADMISSION_NONE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
         result
     }
     pub fn set_output_method(&self, method: config::OutputMethod) -> Result<Snapshot, ToggleError> {
         if self.status().state != State::Idle {
             return Err(ToggleError::Busy);
         }
+        let admission = self.next_admission(false);
         if self
             .0
             .admitted
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .compare_exchange(
+                ADMISSION_NONE,
+                admission,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
             .is_err()
         {
             return Err(ToggleError::Busy);
@@ -226,11 +382,21 @@ impl Controller {
             .send(Command::SetOutputMethod(method, tx))
             .is_err()
         {
-            self.0.admitted.store(false, Ordering::Release);
+            let _ = self.0.admitted.compare_exchange(
+                admission,
+                ADMISSION_NONE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
             return Err(ToggleError::Unavailable);
         }
         let result = rx.recv().unwrap_or(Err(ToggleError::Unavailable));
-        self.0.admitted.store(false, Ordering::Release);
+        let _ = self.0.admitted.compare_exchange(
+            admission,
+            ADMISSION_NONE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
         result
     }
     pub fn shutdown_and_join(&self) {
@@ -242,25 +408,26 @@ impl Controller {
     }
 }
 
+type ActiveSession = (
+    capture::Capture,
+    worker::Worker,
+    Instant,
+    config::RecordingConfig,
+    config::OutputConfig,
+    bool,
+    bool,
+);
+
 fn run(
     rx: mpsc::Receiver<Command>,
     shared: Arc<Mutex<Snapshot>>,
-    admitted: Arc<AtomicBool>,
-    shutdown: Arc<AtomicBool>,
+    signals: RunSignals,
     root: PathBuf,
     mut delivery: Box<dyn Delivery>,
     updates: mpsc::Sender<Snapshot>,
 ) {
     let mut generation = 0;
-    let mut active: Option<(
-        capture::Capture,
-        worker::Worker,
-        Instant,
-        config::RecordingConfig,
-        config::OutputConfig,
-        bool,
-        bool,
-    )> = None;
+    let mut active: Option<ActiveSession> = None;
     let mut terminal_until: Option<Instant> = None;
     let publish = |state, g, started: Option<Instant>, message, show_timer| {
         let s = Snapshot {
@@ -319,57 +486,17 @@ fn run(
                 let result = if current != expected {
                     Err(ToggleError::Busy)
                 } else if expected == State::Idle && active.is_none() {
-                    generation += 1;
-                    let mut loaded_notifications = None;
-                    let started = config::load().map_err(|e| e.to_string()).and_then(|cfg| {
-                        loaded_notifications = Some(cfg.notifications);
-                        let c = capture::Capture::start(&root, generation, &cfg.recording.source)
-                            .map_err(|e| e.to_string())?;
-                        publish(State::Starting, generation, None, None, cfg.show_timer);
-                        let (pcm, wav) = c.paths();
-                        let path = worker::resolve().map_err(|e| e.to_string())?;
-                        let w = worker::Worker::start(
-                            &path,
-                            wav,
-                            pcm,
-                            &cfg.provider,
-                            shutdown.clone(),
-                        )?;
-                        Ok((
-                            c,
-                            w,
-                            cfg.recording,
-                            cfg.output,
-                            cfg.show_timer,
-                            cfg.notifications,
-                        ))
-                    });
-                    match started {
-                        Ok((c, w, cfg, output, show_timer, notifications)) => {
-                            let now = Instant::now();
-                            active = Some((c, w, now, cfg, output, show_timer, notifications));
-                            Ok(publish(
-                                State::Recording,
-                                generation,
-                                Some(now),
-                                None,
-                                show_timer,
-                            ))
-                        }
-                        Err(e) => {
-                            let msg = format!("capture failed: {e}");
-                            if let Some(enabled) = loaded_notifications {
-                                desktop::notify(
-                                    enabled,
-                                    "SayAll startup error",
-                                    "Speech session could not start; see the SayAll HUD for details",
-                                );
-                            }
-                            publish(State::Error, generation, None, Some(msg.clone()), true);
-                            terminal_until = Some(Instant::now() + Duration::from_secs(2));
-                            Err(ToggleError::Failed(msg))
-                        }
+                    let result = start_active(
+                        &mut active,
+                        &mut generation,
+                        &root,
+                        signals.shutdown.clone(),
+                        &publish,
+                    );
+                    if result.is_err() {
+                        terminal_until = Some(Instant::now() + Duration::from_secs(2));
                     }
+                    result
                 } else if expected == State::Recording && active.is_some() {
                     let result = finish_active(&mut active, generation, &publish, &mut *delivery);
                     terminal_until = Some(Instant::now() + Duration::from_secs(2));
@@ -379,9 +506,14 @@ fn run(
                 };
                 let _ = reply.send(result); // accepted work is completed even if the client left
             }
+            Ok(Command::RestartReady) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                if active.is_none() && terminal_until.is_some_and(|until| Instant::now() >= until) {
+                let restart_request = signals.restart_requested.load(Ordering::Acquire);
+                if active.is_none()
+                    && restart_request >> 1 != generation + 1
+                    && terminal_until.is_some_and(|until| Instant::now() >= until)
+                {
                     terminal_until = None;
                     let show_timer = shared.lock().unwrap().show_timer;
                     publish(State::Idle, generation, None, None, show_timer);
@@ -405,14 +537,27 @@ fn run(
                         );
                         terminal_until = Some(Instant::now() + Duration::from_secs(2));
                     } else if started.elapsed() >= Duration::from_secs(cfg.max_seconds as u64) {
-                        if admitted
-                            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        let admission = signals.next_admission.fetch_add(2, Ordering::AcqRel)
+                            | ADMISSION_FINISH_BIT;
+                        if signals
+                            .admitted
+                            .compare_exchange(
+                                ADMISSION_NONE,
+                                admission,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                            )
                             .is_ok()
                         {
                             let _ =
                                 finish_active(&mut active, generation, &publish, &mut *delivery);
                             terminal_until = Some(Instant::now() + Duration::from_secs(2));
-                            admitted.store(false, Ordering::Release);
+                            let _ = signals.admitted.compare_exchange(
+                                admission,
+                                ADMISSION_NONE,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                            );
                         }
                     } else if let Ok(level) = c.level() {
                         let mut s = publish(
@@ -428,6 +573,118 @@ fn run(
                     }
                 }
             }
+        }
+        let restart_request = signals.restart_requested.load(Ordering::Acquire);
+        if active.is_none() && restart_request != 0 {
+            if signals.shutdown.load(Ordering::Acquire) {
+                continue;
+            }
+            if restart_request & RESTART_READY_BIT == 0 {
+                continue;
+            }
+            if restart_request >> 1 != generation + 1 {
+                let _ = signals.restart_requested.compare_exchange(
+                    restart_request,
+                    0,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+                continue;
+            }
+            let owner = signals.admitted.load(Ordering::Acquire);
+            if owner != ADMISSION_NONE && !is_finish_admission(owner) {
+                continue;
+            }
+            let admission = signals.next_admission.fetch_add(2, Ordering::AcqRel);
+            if signals
+                .admitted
+                .compare_exchange(owner, admission, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                continue;
+            }
+            terminal_until = None;
+            let show_timer = shared.lock().unwrap().show_timer;
+            publish(State::Idle, generation, None, None, show_timer);
+            if start_active(
+                &mut active,
+                &mut generation,
+                &root,
+                signals.shutdown.clone(),
+                &publish,
+            )
+            .is_err()
+            {
+                terminal_until = Some(Instant::now() + Duration::from_secs(2));
+            }
+            let _ = signals.restart_requested.compare_exchange(
+                restart_request,
+                0,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            let _ = signals.admitted.compare_exchange(
+                admission,
+                ADMISSION_NONE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+    }
+}
+
+fn start_active<F>(
+    active: &mut Option<ActiveSession>,
+    generation: &mut u64,
+    root: &Path,
+    shutdown: Arc<AtomicBool>,
+    publish: &F,
+) -> Result<Snapshot, ToggleError>
+where
+    F: Fn(State, u64, Option<Instant>, Option<String>, bool) -> Snapshot,
+{
+    *generation += 1;
+    let mut loaded_notifications = None;
+    let started = config::load().map_err(|e| e.to_string()).and_then(|cfg| {
+        loaded_notifications = Some(cfg.notifications);
+        let capture = capture::Capture::start(root, *generation, &cfg.recording.source)
+            .map_err(|e| e.to_string())?;
+        publish(State::Starting, *generation, None, None, cfg.show_timer);
+        let (pcm, wav) = capture.paths();
+        let path = worker::resolve().map_err(|e| e.to_string())?;
+        let worker = worker::Worker::start(&path, wav, pcm, &cfg.provider, shutdown)?;
+        Ok((
+            capture,
+            worker,
+            cfg.recording,
+            cfg.output,
+            cfg.show_timer,
+            cfg.notifications,
+        ))
+    });
+    match started {
+        Ok((capture, worker, cfg, output, show_timer, notifications)) => {
+            let now = Instant::now();
+            *active = Some((capture, worker, now, cfg, output, show_timer, notifications));
+            Ok(publish(
+                State::Recording,
+                *generation,
+                Some(now),
+                None,
+                show_timer,
+            ))
+        }
+        Err(error) => {
+            let message = format!("capture failed: {error}");
+            if let Some(enabled) = loaded_notifications {
+                desktop::notify(
+                    enabled,
+                    "SayAll startup error",
+                    "Speech session could not start; see the SayAll HUD for details",
+                );
+            }
+            publish(State::Error, *generation, None, Some(message.clone()), true);
+            Err(ToggleError::Failed(message))
         }
     }
 }
@@ -445,15 +702,7 @@ enum DeliveryCompletion {
 }
 
 fn finish_active<F>(
-    active: &mut Option<(
-        capture::Capture,
-        worker::Worker,
-        Instant,
-        config::RecordingConfig,
-        config::OutputConfig,
-        bool,
-        bool,
-    )>,
+    active: &mut Option<ActiveSession>,
     generation: u64,
     publish: &F,
     delivery: &mut dyn Delivery,
@@ -713,7 +962,9 @@ mod tests {
         let inner = Arc::new(Inner {
             tx,
             snapshot: Arc::new(Mutex::new(Snapshot::default())),
-            admitted: Arc::new(AtomicBool::new(false)),
+            admitted: Arc::new(AtomicU64::new(ADMISSION_NONE)),
+            next_admission: Arc::new(AtomicU64::new(FIRST_ADMISSION)),
+            restart_requested: Arc::new(AtomicU64::new(0)),
             shutdown: Arc::new(AtomicBool::new(false)),
             join: Mutex::new(None),
         });
@@ -754,12 +1005,211 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_recording_toggles_admit_finish_and_queue_restart() {
+        let (tx, rx) = mpsc::channel();
+        let snapshot = Snapshot {
+            state: State::Recording,
+            ..Snapshot::default()
+        };
+        let restart_requested = Arc::new(AtomicU64::new(0));
+        let admitted = Arc::new(AtomicU64::new(ADMISSION_NONE));
+        let next_admission = Arc::new(AtomicU64::new(FIRST_ADMISSION));
+        let controller = Controller(Arc::new(Inner {
+            tx,
+            snapshot: Arc::new(Mutex::new(snapshot)),
+            admitted: admitted.clone(),
+            next_admission: next_admission.clone(),
+            restart_requested: restart_requested.clone(),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            join: Mutex::new(None),
+        }));
+        let (accepted_tx, accepted_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut restart_commands = 0;
+            let reply = loop {
+                match rx.recv().unwrap() {
+                    Command::Toggle(State::Recording, reply) => break reply,
+                    Command::RestartReady => restart_commands += 1,
+                    _ => panic!(),
+                }
+            };
+            accepted_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            let _ = reply.send(Ok(Snapshot::default()));
+            if let Ok(command) = rx.try_recv() {
+                assert!(matches!(command, Command::RestartReady));
+                restart_commands += 1;
+            }
+            assert_eq!(restart_commands, 1);
+        });
+        let barrier = Arc::new(Barrier::new(3));
+        let (result_tx, result_rx) = mpsc::channel();
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let controller = controller.clone();
+                let barrier = barrier.clone();
+                let results = result_tx.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    results.send(controller.toggle()).unwrap();
+                })
+            })
+            .collect();
+        drop(result_tx);
+
+        barrier.wait();
+        accepted_rx.recv().unwrap();
+        assert_eq!(result_rx.recv().unwrap().unwrap().state, State::Recording);
+        assert_eq!(restart_requested.load(Ordering::Acquire), 3);
+        let finish_admission = admitted.load(Ordering::Acquire);
+        assert!(is_finish_admission(finish_admission));
+        let start_admission = next_admission.fetch_add(2, Ordering::AcqRel);
+        assert_eq!(
+            admitted.compare_exchange(
+                finish_admission,
+                start_admission,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ),
+            Ok(finish_admission)
+        );
+        release_tx.send(()).unwrap();
+        assert!(result_rx.recv().unwrap().is_ok());
+        assert_eq!(admitted.load(Ordering::Acquire), start_admission);
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn toggle_while_finishing_queues_exactly_one_restart() {
+        for (state, finish_admitted) in [
+            (State::Recording, true),
+            (State::Stopping, false),
+            (State::Processing, false),
+            (State::Delivering, false),
+            (State::Success, false),
+            (State::Error, false),
+            (State::Cancelled, false),
+        ] {
+            let (tx, rx) = mpsc::channel();
+            let snapshot = Snapshot {
+                state,
+                ..Snapshot::default()
+            };
+            let restart_requested = Arc::new(AtomicU64::new(0));
+            let controller = Controller(Arc::new(Inner {
+                tx,
+                snapshot: Arc::new(Mutex::new(snapshot)),
+                admitted: Arc::new(AtomicU64::new(if finish_admitted {
+                    FIRST_ADMISSION | ADMISSION_FINISH_BIT
+                } else {
+                    ADMISSION_NONE
+                })),
+                next_admission: Arc::new(AtomicU64::new(FIRST_ADMISSION + 2)),
+                restart_requested: restart_requested.clone(),
+                shutdown: Arc::new(AtomicBool::new(false)),
+                join: Mutex::new(None),
+            }));
+
+            assert_eq!(controller.toggle().unwrap().state, state);
+            assert_eq!(restart_requested.load(Ordering::Acquire), 3);
+            assert!(matches!(controller.toggle(), Err(ToggleError::Busy)));
+            assert!(matches!(rx.try_recv(), Ok(Command::RestartReady)));
+        }
+    }
+
+    #[test]
+    fn stale_restart_request_cannot_attach_to_the_next_generation() {
+        let (tx, rx) = mpsc::channel();
+        let snapshot = Arc::new(Mutex::new(Snapshot {
+            state: State::Recording,
+            generation: 7,
+            ..Snapshot::default()
+        }));
+        let restart_requested = Arc::new(AtomicU64::new(0));
+        let controller = Controller(Arc::new(Inner {
+            tx,
+            snapshot: snapshot.clone(),
+            admitted: Arc::new(AtomicU64::new(FIRST_ADMISSION | ADMISSION_FINISH_BIT)),
+            next_admission: Arc::new(AtomicU64::new(FIRST_ADMISSION + 2)),
+            restart_requested: restart_requested.clone(),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            join: Mutex::new(None),
+        }));
+
+        *snapshot.lock().unwrap() = Snapshot {
+            state: State::Recording,
+            generation: 8,
+            ..Snapshot::default()
+        };
+
+        assert!(matches!(
+            controller.queue_restart(7),
+            Err(ToggleError::Busy)
+        ));
+        assert_eq!(restart_requested.load(Ordering::Acquire), 0);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn restart_reserved_during_terminal_expiry_retries_as_idle_start() {
+        let (tx, rx) = mpsc::channel();
+        let snapshot = Arc::new(Mutex::new(Snapshot {
+            state: State::Success,
+            generation: 7,
+            ..Snapshot::default()
+        }));
+        let restart_requested = Arc::new(AtomicU64::new(0));
+        let controller = Controller(Arc::new(Inner {
+            tx,
+            snapshot: snapshot.clone(),
+            admitted: Arc::new(AtomicU64::new(ADMISSION_NONE)),
+            next_admission: Arc::new(AtomicU64::new(FIRST_ADMISSION)),
+            restart_requested: restart_requested.clone(),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            join: Mutex::new(None),
+        }));
+        let mut locked_snapshot = snapshot.lock().unwrap();
+        let queued_controller = controller.clone();
+        let queued = std::thread::spawn(move || queued_controller.queue_restart(7));
+        while restart_requested.load(Ordering::Acquire) == 0 {
+            std::thread::yield_now();
+        }
+        *locked_snapshot = Snapshot {
+            state: State::Idle,
+            generation: 7,
+            ..Snapshot::default()
+        };
+        drop(locked_snapshot);
+
+        let Command::Toggle(State::Idle, reply) = rx.recv().unwrap() else {
+            panic!()
+        };
+        let started = Snapshot {
+            state: State::Recording,
+            generation: 8,
+            ..Snapshot::default()
+        };
+        reply.send(Ok(started.clone())).unwrap();
+
+        let result = queued.join().unwrap().unwrap();
+        assert_eq!(result.state, started.state);
+        assert_eq!(result.generation, started.generation);
+        assert_eq!(restart_requested.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
     fn concurrent_reload_and_toggle_admit_exactly_one_mutation() {
         let (tx, rx) = mpsc::channel();
         let inner = Arc::new(Inner {
             tx,
             snapshot: Arc::new(Mutex::new(Snapshot::default())),
-            admitted: Arc::new(AtomicBool::new(false)),
+            admitted: Arc::new(AtomicU64::new(ADMISSION_NONE)),
+            next_admission: Arc::new(AtomicU64::new(FIRST_ADMISSION)),
+            restart_requested: Arc::new(AtomicU64::new(0)),
             shutdown: Arc::new(AtomicBool::new(false)),
             join: Mutex::new(None),
         });
@@ -774,7 +1224,7 @@ mod tests {
                 | Command::Reload(reply)
                 | Command::SetProcessingMode(_, reply)
                 | Command::SetOutputMethod(_, reply) => reply,
-                Command::Shutdown => panic!(),
+                Command::RestartReady | Command::Shutdown => panic!(),
             };
             count.fetch_add(1, Ordering::SeqCst);
             accepted_tx.send(()).unwrap();
@@ -820,7 +1270,9 @@ mod tests {
         let controller = Controller(Arc::new(Inner {
             tx,
             snapshot: Arc::new(Mutex::new(snapshot)),
-            admitted: Arc::new(AtomicBool::new(false)),
+            admitted: Arc::new(AtomicU64::new(ADMISSION_NONE)),
+            next_admission: Arc::new(AtomicU64::new(FIRST_ADMISSION)),
+            restart_requested: Arc::new(AtomicU64::new(0)),
             shutdown: Arc::new(AtomicBool::new(false)),
             join: Mutex::new(None),
         }));
@@ -837,7 +1289,9 @@ mod tests {
         let controller = Controller(Arc::new(Inner {
             tx,
             snapshot: Arc::new(Mutex::new(snapshot)),
-            admitted: Arc::new(AtomicBool::new(false)),
+            admitted: Arc::new(AtomicU64::new(ADMISSION_NONE)),
+            next_admission: Arc::new(AtomicU64::new(FIRST_ADMISSION)),
+            restart_requested: Arc::new(AtomicU64::new(0)),
             shutdown: Arc::new(AtomicBool::new(false)),
             join: Mutex::new(None),
         }));
@@ -857,7 +1311,9 @@ mod tests {
         let controller = Controller(Arc::new(Inner {
             tx,
             snapshot: Arc::new(Mutex::new(snapshot)),
-            admitted: Arc::new(AtomicBool::new(false)),
+            admitted: Arc::new(AtomicU64::new(ADMISSION_NONE)),
+            next_admission: Arc::new(AtomicU64::new(FIRST_ADMISSION)),
+            restart_requested: Arc::new(AtomicU64::new(0)),
             shutdown: Arc::new(AtomicBool::new(false)),
             join: Mutex::new(None),
         }));

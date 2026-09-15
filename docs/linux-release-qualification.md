@@ -167,6 +167,7 @@ row is a publication blocker for the current candidate.
 | --- | --- | --- |
 | Login starts one silent host; `status` is read-only | ☐ | |
 | CLI and managed Hyprland shortcut each toggle exactly once | ☐ | |
+| A start toggle during stop/processing is queued once and begins the next recording without another keypress | ☐ | Verify both rapid shortcut presses and `sayall toggle` |
 | Capture level/timer update; cancellation returns to idle | ☐ | |
 | Streaming succeeds; REST fallback occurs at most once | ☐ | |
 | `type` delivers once to the field focused at delivery time | ☐ | Linux does not retain/revalidate the recording-start target |
