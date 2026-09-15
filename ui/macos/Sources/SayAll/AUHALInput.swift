@@ -183,6 +183,17 @@ final class AUHALInput {
         AudioComponentInstanceDispose(unit)
     }
 
+    func disposeAndWaitForCallbacks() {
+        while callbacksInFlight.load(ordering: .acquiring) != 0 {
+            usleep(1_000)
+        }
+        dispose()
+        while callbacksInFlight.load(ordering: .acquiring) != 0 {
+            usleep(1_000)
+        }
+        stopFailed.store(false, ordering: .releasing)
+    }
+
     private func drain() {
         while true {
             let read = consumed.load(ordering: .relaxed)

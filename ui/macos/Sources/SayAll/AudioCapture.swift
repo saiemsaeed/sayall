@@ -256,6 +256,8 @@ final class AudioCapture {
     private static let sampleRate = 16_000.0
     private static let minimumFrames: AVAudioFramePosition = 4_800
     private static let maximumFrames: AVAudioFramePosition = 4_800_000
+    private static let quarantinedInputLock = NSLock()
+    private static var quarantinedInputs: [AUHALInput] = []
     private let resampler = AudioResampler()
     private var inputUnit: AUHALInput?
     private var inputDeviceID: AudioDeviceID?
@@ -448,11 +450,26 @@ final class AudioCapture {
         let directory = directoryURL
         lock.unlock()
         if discardInput {
+            if let activeInput, !inputQuiesced {
+                Self.quarantine(activeInput)
+            }
             inputUnit = nil
             inputDeviceID = nil
         }
         lock.withLock { captureGeneration = nil }
         if deleteFile, let directory { try? FileManager.default.removeItem(at: directory) }
+    }
+
+    private static func quarantine(_ input: AUHALInput) {
+        quarantinedInputLock.withLock {
+            quarantinedInputs.append(input)
+        }
+        DispatchQueue.global(qos: .utility).async {
+            input.disposeAndWaitForCallbacks()
+            quarantinedInputLock.withLock {
+                quarantinedInputs.removeAll { $0 === input }
+            }
+        }
     }
 
     private func markUnexpectedFailure(generation: UUID) {
