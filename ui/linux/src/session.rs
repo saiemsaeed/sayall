@@ -91,6 +91,10 @@ enum Command {
     ),
     Shutdown,
 }
+const ADMISSION_NONE: u8 = 0;
+const ADMISSION_START: u8 = 1;
+const ADMISSION_FINISH: u8 = 2;
+
 struct Inner {
     tx: mpsc::Sender<Command>,
     snapshot: Arc<Mutex<Snapshot>>,
@@ -111,7 +115,7 @@ impl Controller {
         let (tx, rx) = mpsc::channel();
         let snapshot = Arc::new(Mutex::new(Snapshot::default()));
         let shared = snapshot.clone();
-        let admitted = Arc::new(AtomicU8::new(0));
+        let admitted = Arc::new(AtomicU8::new(ADMISSION_NONE));
         let restart_requested = Arc::new(AtomicBool::new(false));
         let shutdown = Arc::new(AtomicBool::new(false));
         let signals = RunSignals {
@@ -143,35 +147,56 @@ impl Controller {
                 | State::Success
                 | State::Error
                 | State::Cancelled
-        ) || (expected == State::Recording && self.0.admitted.load(Ordering::Acquire) == 2)
+        ) || (expected == State::Recording
+            && self.0.admitted.load(Ordering::Acquire) == ADMISSION_FINISH)
         {
             return self.queue_restart();
         }
         if !matches!(expected, State::Idle | State::Recording) {
             return Err(ToggleError::Busy);
         }
-        let admission = if expected == State::Recording { 2 } else { 1 };
-        if let Err(current) =
-            self.0
-                .admitted
-                .compare_exchange(0, admission, Ordering::AcqRel, Ordering::Acquire)
-        {
-            if expected == State::Recording && current == 2 {
+        let admission = if expected == State::Recording {
+            ADMISSION_FINISH
+        } else {
+            ADMISSION_START
+        };
+        if let Err(current) = self.0.admitted.compare_exchange(
+            ADMISSION_NONE,
+            admission,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            if expected == State::Recording && current == ADMISSION_FINISH {
                 return self.queue_restart();
             }
             return Err(ToggleError::Busy);
         }
         if self.status().state != expected {
-            self.0.admitted.store(0, Ordering::Release);
+            let _ = self.0.admitted.compare_exchange(
+                admission,
+                ADMISSION_NONE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
             return Err(ToggleError::Busy);
         }
         let (tx, rx) = mpsc::channel();
         if self.0.tx.send(Command::Toggle(expected, tx)).is_err() {
-            self.0.admitted.store(0, Ordering::Release);
+            let _ = self.0.admitted.compare_exchange(
+                admission,
+                ADMISSION_NONE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
             return Err(ToggleError::Unavailable);
         }
         let result = rx.recv().unwrap_or(Err(ToggleError::Unavailable));
-        self.0.admitted.store(0, Ordering::Release);
+        let _ = self.0.admitted.compare_exchange(
+            admission,
+            ADMISSION_NONE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
         result
     }
     fn queue_restart(&self) -> Result<Snapshot, ToggleError> {
@@ -192,18 +217,33 @@ impl Controller {
         if self
             .0
             .admitted
-            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .compare_exchange(
+                ADMISSION_NONE,
+                ADMISSION_START,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
             .is_err()
         {
             return Err(ToggleError::Busy);
         }
         let (tx, rx) = mpsc::channel();
         if self.0.tx.send(Command::Reload(tx)).is_err() {
-            self.0.admitted.store(0, Ordering::Release);
+            let _ = self.0.admitted.compare_exchange(
+                ADMISSION_START,
+                ADMISSION_NONE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
             return Err(ToggleError::Unavailable);
         }
         let result = rx.recv().unwrap_or(Err(ToggleError::Unavailable));
-        self.0.admitted.store(0, Ordering::Release);
+        let _ = self.0.admitted.compare_exchange(
+            ADMISSION_START,
+            ADMISSION_NONE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
         result
     }
     pub fn set_processing_mode(
@@ -216,7 +256,12 @@ impl Controller {
         if self
             .0
             .admitted
-            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .compare_exchange(
+                ADMISSION_NONE,
+                ADMISSION_START,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
             .is_err()
         {
             return Err(ToggleError::Busy);
@@ -228,11 +273,21 @@ impl Controller {
             .send(Command::SetProcessingMode(mode, tx))
             .is_err()
         {
-            self.0.admitted.store(0, Ordering::Release);
+            let _ = self.0.admitted.compare_exchange(
+                ADMISSION_START,
+                ADMISSION_NONE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
             return Err(ToggleError::Unavailable);
         }
         let result = rx.recv().unwrap_or(Err(ToggleError::Unavailable));
-        self.0.admitted.store(0, Ordering::Release);
+        let _ = self.0.admitted.compare_exchange(
+            ADMISSION_START,
+            ADMISSION_NONE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
         result
     }
     pub fn set_output_method(&self, method: config::OutputMethod) -> Result<Snapshot, ToggleError> {
@@ -242,7 +297,12 @@ impl Controller {
         if self
             .0
             .admitted
-            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .compare_exchange(
+                ADMISSION_NONE,
+                ADMISSION_START,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
             .is_err()
         {
             return Err(ToggleError::Busy);
@@ -254,11 +314,21 @@ impl Controller {
             .send(Command::SetOutputMethod(method, tx))
             .is_err()
         {
-            self.0.admitted.store(0, Ordering::Release);
+            let _ = self.0.admitted.compare_exchange(
+                ADMISSION_START,
+                ADMISSION_NONE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
             return Err(ToggleError::Unavailable);
         }
         let result = rx.recv().unwrap_or(Err(ToggleError::Unavailable));
-        self.0.admitted.store(0, Ordering::Release);
+        let _ = self.0.admitted.compare_exchange(
+            ADMISSION_START,
+            ADMISSION_NONE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
         result
     }
     pub fn shutdown_and_join(&self) {
@@ -370,7 +440,10 @@ fn run(
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                if active.is_none() && terminal_until.is_some_and(|until| Instant::now() >= until) {
+                if active.is_none()
+                    && !signals.restart_requested.load(Ordering::Acquire)
+                    && terminal_until.is_some_and(|until| Instant::now() >= until)
+                {
                     terminal_until = None;
                     let show_timer = shared.lock().unwrap().show_timer;
                     publish(State::Idle, generation, None, None, show_timer);
@@ -396,13 +469,23 @@ fn run(
                     } else if started.elapsed() >= Duration::from_secs(cfg.max_seconds as u64) {
                         if signals
                             .admitted
-                            .compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire)
+                            .compare_exchange(
+                                ADMISSION_NONE,
+                                ADMISSION_FINISH,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                            )
                             .is_ok()
                         {
                             let _ =
                                 finish_active(&mut active, generation, &publish, &mut *delivery);
                             terminal_until = Some(Instant::now() + Duration::from_secs(2));
-                            signals.admitted.store(0, Ordering::Release);
+                            let _ = signals.admitted.compare_exchange(
+                                ADMISSION_FINISH,
+                                ADMISSION_NONE,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                            );
                         }
                     } else if let Ok(level) = c.level() {
                         let mut s = publish(
@@ -419,11 +502,19 @@ fn run(
                 }
             }
         }
-        if active.is_none()
-            && signals.restart_requested.swap(false, Ordering::AcqRel)
-            && !signals.shutdown.load(Ordering::Acquire)
-        {
-            signals.admitted.store(0, Ordering::Release);
+        if active.is_none() && signals.restart_requested.load(Ordering::Acquire) {
+            if signals.shutdown.load(Ordering::Acquire) {
+                continue;
+            }
+            let owner = signals.admitted.load(Ordering::Acquire);
+            if !matches!(owner, ADMISSION_NONE | ADMISSION_FINISH)
+                || signals
+                    .admitted
+                    .compare_exchange(owner, ADMISSION_START, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
+            {
+                continue;
+            }
             terminal_until = None;
             let show_timer = shared.lock().unwrap().show_timer;
             publish(State::Idle, generation, None, None, show_timer);
@@ -438,6 +529,13 @@ fn run(
             {
                 terminal_until = Some(Instant::now() + Duration::from_secs(2));
             }
+            signals.restart_requested.store(false, Ordering::Release);
+            let _ = signals.admitted.compare_exchange(
+                ADMISSION_START,
+                ADMISSION_NONE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
         }
     }
 }
@@ -771,7 +869,7 @@ mod tests {
         let inner = Arc::new(Inner {
             tx,
             snapshot: Arc::new(Mutex::new(Snapshot::default())),
-            admitted: Arc::new(AtomicU8::new(0)),
+            admitted: Arc::new(AtomicU8::new(ADMISSION_NONE)),
             restart_requested: Arc::new(AtomicBool::new(false)),
             shutdown: Arc::new(AtomicBool::new(false)),
             join: Mutex::new(None),
@@ -820,10 +918,11 @@ mod tests {
             ..Snapshot::default()
         };
         let restart_requested = Arc::new(AtomicBool::new(false));
+        let admitted = Arc::new(AtomicU8::new(ADMISSION_NONE));
         let controller = Controller(Arc::new(Inner {
             tx,
             snapshot: Arc::new(Mutex::new(snapshot)),
-            admitted: Arc::new(AtomicU8::new(0)),
+            admitted: admitted.clone(),
             restart_requested: restart_requested.clone(),
             shutdown: Arc::new(AtomicBool::new(false)),
             join: Mutex::new(None),
@@ -858,8 +957,18 @@ mod tests {
         accepted_rx.recv().unwrap();
         assert_eq!(result_rx.recv().unwrap().unwrap().state, State::Recording);
         assert!(restart_requested.load(Ordering::Acquire));
+        assert_eq!(
+            admitted.compare_exchange(
+                ADMISSION_FINISH,
+                ADMISSION_START,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ),
+            Ok(ADMISSION_FINISH)
+        );
         release_tx.send(()).unwrap();
         assert!(result_rx.recv().unwrap().is_ok());
+        assert_eq!(admitted.load(Ordering::Acquire), ADMISSION_START);
         for handle in handles {
             handle.join().unwrap();
         }
@@ -886,7 +995,11 @@ mod tests {
             let controller = Controller(Arc::new(Inner {
                 tx,
                 snapshot: Arc::new(Mutex::new(snapshot)),
-                admitted: Arc::new(AtomicU8::new(if finish_admitted { 2 } else { 0 })),
+                admitted: Arc::new(AtomicU8::new(if finish_admitted {
+                    ADMISSION_FINISH
+                } else {
+                    ADMISSION_NONE
+                })),
                 restart_requested: restart_requested.clone(),
                 shutdown: Arc::new(AtomicBool::new(false)),
                 join: Mutex::new(None),
@@ -905,7 +1018,7 @@ mod tests {
         let inner = Arc::new(Inner {
             tx,
             snapshot: Arc::new(Mutex::new(Snapshot::default())),
-            admitted: Arc::new(AtomicU8::new(0)),
+            admitted: Arc::new(AtomicU8::new(ADMISSION_NONE)),
             restart_requested: Arc::new(AtomicBool::new(false)),
             shutdown: Arc::new(AtomicBool::new(false)),
             join: Mutex::new(None),
@@ -967,7 +1080,7 @@ mod tests {
         let controller = Controller(Arc::new(Inner {
             tx,
             snapshot: Arc::new(Mutex::new(snapshot)),
-            admitted: Arc::new(AtomicU8::new(0)),
+            admitted: Arc::new(AtomicU8::new(ADMISSION_NONE)),
             restart_requested: Arc::new(AtomicBool::new(false)),
             shutdown: Arc::new(AtomicBool::new(false)),
             join: Mutex::new(None),
@@ -985,7 +1098,7 @@ mod tests {
         let controller = Controller(Arc::new(Inner {
             tx,
             snapshot: Arc::new(Mutex::new(snapshot)),
-            admitted: Arc::new(AtomicU8::new(0)),
+            admitted: Arc::new(AtomicU8::new(ADMISSION_NONE)),
             restart_requested: Arc::new(AtomicBool::new(false)),
             shutdown: Arc::new(AtomicBool::new(false)),
             join: Mutex::new(None),
@@ -1006,7 +1119,7 @@ mod tests {
         let controller = Controller(Arc::new(Inner {
             tx,
             snapshot: Arc::new(Mutex::new(snapshot)),
-            admitted: Arc::new(AtomicU8::new(0)),
+            admitted: Arc::new(AtomicU8::new(ADMISSION_NONE)),
             restart_requested: Arc::new(AtomicBool::new(false)),
             shutdown: Arc::new(AtomicBool::new(false)),
             join: Mutex::new(None),
