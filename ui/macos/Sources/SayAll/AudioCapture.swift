@@ -437,10 +437,10 @@ final class AudioCapture {
         else { fixtureQueue.sync { fixtureFile = nil } }
 #endif
         let activeInput = inputUnit
-        activeInput?.stop()
+        let inputQuiesced = activeInput?.stop() ?? true
         resampler.reset()
         lock.lock()
-        let discardInput = captureFailed
+        let discardInput = captureFailed || !inputQuiesced
         file = nil
         try? pcmFile?.synchronize()
         try? pcmFile?.close()
