@@ -5,6 +5,17 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-15
+
+### Fixed
+
+- Made immediate stop-to-restart reliable on macOS by reusing a safely stopped
+  Core Audio input when possible and rebuilding it after capture, stop, or
+  device failures, reducing startup delay and preventing clipped opening words.
+- Made Linux retain one start request while the previous dictation finishes,
+  including at the terminal-state expiry boundary, so rapid restarts no longer
+  require another shortcut press or create duplicate sessions.
+
 ## [0.3.1] - 2026-08-20
 
 ### Added
@@ -418,7 +429,8 @@ Initial release, tested and supported on x86-64 Arch Linux with Omarchy.
 - Persistent privacy-safe transcription metrics and microphone diagnostics.
 - systemd user services and Hyprland hotkey integration.
 
-[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/saiemsaeed/sayall/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/saiemsaeed/sayall/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/saiemsaeed/sayall/compare/v0.2.11...v0.3.0
 [0.2.11]: https://github.com/saiemsaeed/sayall/compare/v0.2.10...v0.2.11
