@@ -127,10 +127,25 @@ pub fn diagnostics(arena: Allocator, io: Io, env: *const std.process.Environ.Map
 fn setupServices(arena: Allocator, io: Io) bool {
     if (!runInherited(io, &.{ "systemctl", "--user", "daemon-reload" })) return false;
     if (!runInherited(io, &.{ "systemctl", "--user", "enable", "sayall-hud.service" })) return false;
-    _ = runInherited(io, &.{ "systemctl", "--user", "stop", "sayall.service" });
-    if (!legacyOwnerInactive(arena, io)) return false;
-    _ = runInherited(io, &.{ "systemctl", "--user", "disable", "sayall.service" });
+    const legacy_exists = legacyUnitExists(arena, io) orelse return false;
+    if (legacy_exists) {
+        if (!runInherited(io, &.{ "systemctl", "--user", "stop", "sayall.service" })) return false;
+        if (!legacyOwnerInactive(arena, io)) return false;
+        if (!runInherited(io, &.{ "systemctl", "--user", "disable", "sayall.service" })) return false;
+    }
     return runInherited(io, &.{ "systemctl", "--user", "restart", "sayall-hud.service" });
+}
+
+fn legacyUnitExists(arena: Allocator, io: Io) ?bool {
+    const result = std.process.run(arena, io, .{
+        .argv = &.{ "systemctl", "--user", "show", "sayall.service", "--property=LoadState", "--value" },
+        .stdout_limit = .limited(4096),
+        .stderr_limit = .limited(4096),
+    }) catch return null;
+    if (!termSucceeded(result.term)) return null;
+    const state = std.mem.trim(u8, result.stdout, " \t\r\n");
+    if (std.mem.eql(u8, state, "not-found")) return false;
+    return if (state.len > 0) true else null;
 }
 
 fn legacyOwnerInactive(arena: Allocator, io: Io) bool {
