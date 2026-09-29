@@ -59,8 +59,9 @@ work. It builds and launches an isolated debug HUD; the installed SayAll app,
 its control socket, microphone selection, and clipboard are untouched.
 
 Reports are written beneath `dist/acoustic-e2e/`. A run fails when aggregate
-WER exceeds 0.35 or aggregate CER exceeds 0.20. Override these thresholds with
-`--max-wer` and `--max-cer` when evaluating a new corpus.
+WER exceeds 0.09 or aggregate CER exceeds 0.03. Override these thresholds with
+`--max-wer` and `--max-cer` only when explicitly evaluating a new corpus; the
+release streaming gate uses the same limits.
 
 Run Verbatim first to measure transcription accuracy. Clean and Polished are
 additional transformation checks and can intentionally differ from a verbatim

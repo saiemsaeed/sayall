@@ -295,8 +295,8 @@ def main() -> int:
     parser.add_argument("--reference", required=True, type=pathlib.Path)
     parser.add_argument("--mode", choices=("verbatim", "clean", "polished"), default="verbatim")
     parser.add_argument("--runs", type=int, default=3)
-    parser.add_argument("--max-wer", type=float, default=0.35)
-    parser.add_argument("--max-cer", type=float, default=0.20)
+    parser.add_argument("--max-wer", type=float, default=0.09)
+    parser.add_argument("--max-cer", type=float, default=0.03)
     parser.add_argument("--output", type=pathlib.Path)
     args = parser.parse_args()
     if not 1 <= args.runs <= 20:

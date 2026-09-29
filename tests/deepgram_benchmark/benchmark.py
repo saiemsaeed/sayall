@@ -50,12 +50,19 @@ def classify(expect_no_speech: bool, result: dict) -> str:
         return "false_speech" if status == "success" and text else "invalid_result"
     return "speech_ok" if status == "success" and text else "missing_speech"
 
-def thresholds_pass(clips: list[dict], corpus: dict, max_wer=None, max_cer=None) -> bool:
+def thresholds_pass(clips: list[dict], corpus: dict, max_wer=None, max_cer=None,
+                    quality_mode: str = "combined") -> bool:
     if any(c["classification"] not in ("speech_ok", "expected_no_speech") for c in clips): return False
     if any(c.get("mode") == "stream" and c.get("effective_transport") != "stream" for c in clips): return False
     if any(c.get("processing_profile") == "clean" and c.get("protected_term_errors", 0) > 0 for c in clips): return False
-    if max_wer is not None and (corpus["wer"] is None or corpus["wer"] > max_wer): return False
-    if max_cer is not None and (corpus["cer"] is None or corpus["cer"] > max_cer): return False
+    quality = corpus
+    if quality_mode != "combined":
+        counts = [{k: c[k] for k in ("word_edits", "reference_words", "char_edits", "reference_chars")}
+                  for c in clips if "word_edits" in c and not c["expect_no_speech"]
+                  and c.get("mode") == quality_mode]
+        quality = aggregate(counts) if counts else {"wer": None, "cer": None}
+    if max_wer is not None and (quality["wer"] is None or quality["wer"] > max_wer): return False
+    if max_cer is not None and (quality["cer"] is None or quality["cer"] > max_cer): return False
     return True
 
 def add_office_noise(pcm: bytes, snr_db: float, seed: int) -> bytes:
@@ -330,6 +337,8 @@ def main(argv=None):
     p.add_argument("--runs", type=int, choices=range(1, 11), default=5,
                    metavar="1-10", help="repetitions per clip and transport")
     p.add_argument("--max-wer", type=nonnegative_finite); p.add_argument("--max-cer", type=nonnegative_finite)
+    p.add_argument("--quality-mode", choices=("combined", "rest", "stream"), default="combined",
+                   help="transport aggregate evaluated by WER/CER thresholds")
     p.add_argument("--enforce", action="store_true"); p.add_argument("--dry-run", action="store_true")
     args = p.parse_args(argv)
     raw = args.manifest.read_bytes(); manifest = json.loads(raw)
@@ -456,8 +465,10 @@ def main(argv=None):
                 report["conditions"][condition] = condition_results
         expected_count = len(manifest["clips"]) * len(modes) * len(profiles) * args.runs
         passed = (not report["harness_error"] and len(report["clips"]) == expected_count
-                  and thresholds_pass(report["clips"], report["corpus"], args.max_wer, args.max_cer)) if not args.dry_run else None
+                  and thresholds_pass(report["clips"], report["corpus"], args.max_wer, args.max_cer,
+                                      args.quality_mode)) if not args.dry_run else None
         report["thresholds"] = {"enforced": args.enforce and not args.dry_run,
+                                "quality_mode": args.quality_mode,
                                 "max_wer": args.max_wer, "max_cer": args.max_cer, "passed": passed}
         args.output.write_text(json.dumps(report, indent=2, sort_keys=True)+"\n")
     if args.dry_run: return 0

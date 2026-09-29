@@ -42,6 +42,18 @@ class MetricsTests(unittest.TestCase):
         self.assertFalse(thresholds_pass([{"classification":"missing_speech"}], {"wer":0,"cer":0}))
         self.assertFalse(thresholds_pass([{"classification":"speech_ok", "mode":"stream", "effective_transport":"rest"}], {"wer":0,"cer":0}))
         self.assertFalse(thresholds_pass([{"classification":"speech_ok", "processing_profile":"clean", "protected_term_errors":1}], {"wer":0,"cer":0}))
+    def test_stream_quality_gate_is_not_masked_by_rest_accuracy(self):
+        base = {"classification":"speech_ok", "expect_no_speech":False,
+                "effective_transport":"rest", "word_edits":0, "reference_words":10,
+                "char_edits":0, "reference_chars":40}
+        clips = [base, {**base, "mode":"stream", "effective_transport":"stream", "word_edits":2}]
+        corpus = aggregate(clips)
+        self.assertTrue(thresholds_pass(clips, corpus, .10, .03, "combined"))
+        self.assertFalse(thresholds_pass(clips, corpus, .10, .03, "stream"))
+        clips[1]["word_edits"] = 0
+        clips[1]["char_edits"] = 2
+        self.assertFalse(thresholds_pass(clips, aggregate(clips), .10, .03, "stream"))
+
     def test_protocol_validation_requires_authoritative_transport(self):
         base = {"version":3, "processing_profile":"verbatim"}
         validate_ready({"version":3, "event":"ready", "streaming":True})
