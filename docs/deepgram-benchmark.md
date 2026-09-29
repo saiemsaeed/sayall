@@ -49,16 +49,20 @@ qualification reports also break WER/CER down by clean, 10 dB office-noise, and
 Thresholds are advisory unless `--enforce` is supplied; for example:
 
 ```sh
-python3 tests/deepgram_benchmark/benchmark.py --enforce --max-wer .10 --max-cer .08
+python3 tests/deepgram_benchmark/benchmark.py --mode both --quality-mode stream \
+  --enforce --max-wer .09 --max-cer .03
 ```
 
 Enforcement always requires successful/nonempty speech, expected no-speech,
 and a terminal worker result whose authoritative `transport` is `stream` for
-stream-mode clips. The initial `streaming_active` ready flag only says that a
-session started; a later WebSocket/finalization failure can still produce an
-automatic REST result and is reported as such. Run the workflow several times
-across normal provider variance before selecting thresholds. Record the model,
-region, manifest hash and individual JSON artifacts used for a baseline.
+stream-mode clips. The release workflow evaluates the streaming aggregate
+independently, so stronger REST results cannot hide a streaming regression; its
+limits are WER 0.09 and CER 0.03. The initial `streaming_active` ready flag only
+says that a session started; a later WebSocket/finalization failure can still
+produce an automatic REST result and is reported as such. Run the workflow
+several times across normal provider variance before selecting thresholds.
+Record the model, region, manifest hash and individual JSON artifacts used for
+a baseline.
 
 Streaming timing separates connection readiness, paced audio feed duration,
 total session time, and `post_stop_ms`: the time from sending the explicit
@@ -80,8 +84,8 @@ benchmark artifact; the first run or an expired 90-day artifact has no baseline.
 The **Release** workflow benchmarks its exact release commit with enforcement
 enabled before publication. A release cannot publish unless REST and streaming
 canaries succeed, streaming remains authoritative rather than falling back to
-REST, expected speech/no-speech behavior passes, aggregate WER is at most 10%,
-and aggregate CER is at most 8%. A scheduled run repeats the same enforced test
+REST, expected speech/no-speech behavior passes, streaming WER is at most 9%,
+and streaming CER is at most 3%. A scheduled run repeats the same enforced test
 weekly on the default branch because Deepgram can change independently of a
 SayAll commit. Latency remains measured and advisory until enough history exists
 to establish a stable threshold. Ordinary pushes and pull requests do not run

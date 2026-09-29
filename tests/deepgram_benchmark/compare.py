@@ -70,6 +70,7 @@ def metadata(report):
             "Repetitions per clip/transport/profile": report.get("runs_per_case", 1),
             "Scope": report.get("corpus_description") or "Provider canary; inspect the versioned manifest for coverage",
             "Manifest": (report.get("manifest_sha256") or "—")[:12],
+            "Quality gate transport": (report.get("thresholds") or {}).get("quality_mode", "combined"),
             "Thresholds": str((report.get("thresholds") or {}).get("passed", "—")),
             "Harness error": report.get("harness_error") or "none"}
 
