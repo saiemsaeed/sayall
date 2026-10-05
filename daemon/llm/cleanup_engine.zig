@@ -129,10 +129,10 @@ pub fn clean(gpa: Allocator, transcript: []const u8, glossary: []const []const u
         if (!deleted[i] and !deleted[i + 1] and !protected[i] and !protected[i + 1] and
             stutterWord(t.text) and stutterWord(next.text) and asciiEq(t.text, next.text) and
             !objectComplementContext(transcript, tokens, context_start) and
-            !nominalSubjectContext(transcript, tokens, context_start) and
+            !nominalSubjectContext(transcript, tokens, deleted, context_start) and
             grammaticalStutterContext(transcript, tokens, deleted, context_start) and
             !spelledLetterContext(transcript, tokens, context_start) and
-            hasStutterContinuation(transcript, tokens, context_start) and
+            hasStutterContinuation(transcript, tokens, deleted, context_start) and
             tokenChunkStart(transcript, t) == t.start and
             tokenChunkStart(transcript, next) == next.start)
         {
@@ -618,7 +618,7 @@ fn functionWord(text: []const u8) bool {
 // its predicate with the same spelling ("the police police", "the band band
 // together"). A directly preceding copula instead establishes a predicate
 // nominal ("this is the test test for ..."). Preserve uncertain noun phrases.
-fn nominalSubjectContext(source: []const u8, tokens: []const Token, index: usize) bool {
+fn nominalSubjectContext(source: []const u8, tokens: []const Token, deleted: []const bool, index: usize) bool {
     // A name may be the second copy ("I use Use for work"), or even two
     // function words (the band "The The"). Inspect the whole source run.
     var capitals: usize = 0;
@@ -649,7 +649,10 @@ fn nominalSubjectContext(source: []const u8, tokens: []const Token, index: usize
         if (copula(tokens[i].text)) return false;
         for ([_][]const u8{ "and", "or", "but", "i", "you", "he", "she", "it", "we", "they" }) |boundary| if (asciiEq(tokens[i].text, boundary)) return false;
         for ([_][]const u8{ "the", "a", "an", "this", "that", "these", "those", "my", "your", "our", "their", "his", "her", "its" }) |word| {
-            if (asciiEq(tokens[i].text, word)) return i == 0 or !copula(tokens[i - 1].text);
+            if (asciiEq(tokens[i].text, word)) {
+                const previous = previousContextToken(source, tokens, deleted, i) orelse return true;
+                return !copula(tokens[previous].text);
+            }
         }
     }
     return false;
@@ -715,7 +718,7 @@ fn grammaticalStutterContext(source: []const u8, tokens: []const Token, deleted:
 // when the run continues into a grammatical connector/determiner, or when the
 // repeated word itself is a closed-class function word. Missing a stutter is
 // preferable to assuming that every unknown adjective/adverb is a stutter.
-fn hasStutterContinuation(source: []const u8, tokens: []const Token, index: usize) bool {
+fn hasStutterContinuation(source: []const u8, tokens: []const Token, deleted: []const bool, index: usize) bool {
     var last = index + 1;
     while (last + 1 < tokens.len and asciiEq(tokens[index].text, tokens[last + 1].text)) : (last += 1) {
         const suffix = source[tokens[last].end..tokenChunkEnd(source, tokens[last])];
@@ -731,9 +734,11 @@ fn hasStutterContinuation(source: []const u8, tokens: []const Token, index: usiz
     // A following preposition alone cannot distinguish a stutter from an
     // emphatic modifier ("far far from", "long long into"). A directly
     // copular determiner-led nominal supplies a narrower noun context.
-    if (index >= 2 and copula(tokens[index - 2].text)) {
+    const previous = previousContextToken(source, tokens, deleted, index);
+    const before_previous = if (previous) |p| previousContextToken(source, tokens, deleted, p) else null;
+    if (before_previous != null and copula(tokens[before_previous.?].text)) {
         for ([_][]const u8{ "the", "a", "an" }) |article| {
-            if (!asciiEq(tokens[index - 1].text, article)) continue;
+            if (!asciiEq(tokens[previous.?].text, article)) continue;
             for ([_][]const u8{ "for", "of", "in", "on", "at", "with", "from", "by" }) |prep| {
                 if (asciiEq(tokens[last + 1].text, prep)) return true;
             }
@@ -742,23 +747,38 @@ fn hasStutterContinuation(source: []const u8, tokens: []const Token, index: usiz
     // Content-word repetitions need a predicate position as well as a
     // continuation. Connectors alone do not prove a stutter ("want coffee
     // coffee, or a latte", "want coffee coffee this time").
-    if (!predicatePosition(tokens, index)) return false;
+    if (!predicatePosition(source, tokens, deleted, index)) return false;
     for ([_][]const u8{ "the", "a", "an", "this", "that", "these", "those", "my", "your", "our", "their", "his", "her", "its", "to", "is", "are", "was", "were", "has", "have", "had", "can", "could", "will", "would", "shall", "should", "must", "may", "might", "does", "did" }) |word| {
         if (asciiEq(tokens[last + 1].text, word)) return true;
     }
     return false;
 }
 
-fn predicatePosition(tokens: []const Token, index: usize) bool {
-    if (index == 0) return false;
+// Context follows surviving words, but deletion must not erase evidence of
+// a sentence/line boundary. Each original gap is checked while skipping.
+fn previousContextToken(source: []const u8, tokens: []const Token, deleted: []const bool, index: usize) ?usize {
+    var previous = index;
+    while (previous > 0) {
+        previous -= 1;
+        for (source[tokens[previous].end..tokens[previous + 1].start]) |c| {
+            if (std.mem.indexOfScalar(u8, ".?!;:\n\r", c) != null) return null;
+        }
+        if (!deleted[previous]) return previous;
+    }
+    return null;
+}
+
+fn predicatePosition(source: []const u8, tokens: []const Token, deleted: []const bool, index: usize) bool {
+    const previous = previousContextToken(source, tokens, deleted, index) orelse return false;
     for ([_][]const u8{
         "i",    "you",   "we",     "they", "he",    "she", "it",    "please", "to",
         "am",   "is",    "are",    "was",  "were",  "be",  "been",  "being",  "have",
         "has",  "had",   "do",     "does", "did",   "can", "could", "may",    "might",
         "must", "shall", "should", "will", "would",
-    }) |cue| if (asciiEq(tokens[index - 1].text, cue)) return true;
-    if (index >= 2 and copula(tokens[index - 2].text)) {
-        for ([_][]const u8{ "this", "that", "these", "those" }) |subject| if (asciiEq(tokens[index - 1].text, subject)) return true;
+    }) |cue| if (asciiEq(tokens[previous].text, cue)) return true;
+    const before_previous = previousContextToken(source, tokens, deleted, previous) orelse return false;
+    if (copula(tokens[before_previous].text)) {
+        for ([_][]const u8{ "this", "that", "these", "those" }) |subject| if (asciiEq(tokens[previous].text, subject)) return true;
     }
     return false;
 }
@@ -1098,6 +1118,17 @@ test "clean collapses common single word stutters and preserves final punctuatio
     try expectClean("I use use, this", "I use, this", &.{});
     try expectClean("Please use use use, this", "Please use, this", &.{});
     try expectClean("The the tool", "The tool", &.{});
+}
+
+test "clean stutter context skips removed fillers without crossing sentence boundaries" {
+    try expectClean("I um use use this", "I use this", &.{});
+    try expectClean("please uh test test this", "please test this", &.{});
+    try expectClean("I um uh use use use this", "I use this", &.{});
+    try expectClean("Is um this uh expected expected to work", "Is this expected to work", &.{});
+    try expectClean("This is um the test test for cleanup", "This is the test for cleanup", &.{});
+    try expectClean("This is the um test test for cleanup", "This is the test for cleanup", &.{});
+    try expectClean("I. um use use this", "I. use use this", &.{});
+    try expectClean("I um. use use this", "I use use this", &.{});
 }
 
 test "clean collapses every member of an eligible repeated word run" {
