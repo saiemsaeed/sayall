@@ -575,7 +575,10 @@ imperative stutters such as `Use use this` can remain unchanged; `I use use this
 and `please use use this` have clearer context and are cleaned.
 Repeated content words before other content words or without a continuation
 remain intact, preserving productive emphasis such as `long long ago`,
-`tiny tiny particles`, and `many many failures`. A following preposition alone
+`tiny tiny particles`, and `many many failures`. Content-word stutters also
+require a predicate position (such as after a subject pronoun, auxiliary, or
+`please`); a conjunction does not authorize deleting contrastive repetitions
+like `coffee coffee, or a latte`. A following preposition alone
 also does not justify deletion (`far far from home`). Free-relative overlaps
 such as `What happens happens for a reason` remain intact. Some genuine stutters (such as
 an isolated `use use`) are therefore deliberately left unchanged.

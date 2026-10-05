@@ -739,8 +739,26 @@ fn hasStutterContinuation(source: []const u8, tokens: []const Token, index: usiz
             }
         }
     }
-    for ([_][]const u8{ "the", "a", "an", "this", "that", "these", "those", "my", "your", "our", "their", "his", "her", "its", "to", "and", "or", "is", "are", "was", "were", "has", "have", "had", "can", "could", "will", "would", "shall", "should", "must", "may", "might", "does", "did" }) |word| {
+    // Content-word repetitions need a predicate position as well as a
+    // continuation. Connectors alone do not prove a stutter ("want coffee
+    // coffee, or a latte", "want coffee coffee this time").
+    if (!predicatePosition(tokens, index)) return false;
+    for ([_][]const u8{ "the", "a", "an", "this", "that", "these", "those", "my", "your", "our", "their", "his", "her", "its", "to", "is", "are", "was", "were", "has", "have", "had", "can", "could", "will", "would", "shall", "should", "must", "may", "might", "does", "did" }) |word| {
         if (asciiEq(tokens[last + 1].text, word)) return true;
+    }
+    return false;
+}
+
+fn predicatePosition(tokens: []const Token, index: usize) bool {
+    if (index == 0) return false;
+    for ([_][]const u8{
+        "i",    "you",   "we",     "they", "he",    "she", "it",    "please", "to",
+        "am",   "is",    "are",    "was",  "were",  "be",  "been",  "being",  "have",
+        "has",  "had",   "do",     "does", "did",   "can", "could", "may",    "might",
+        "must", "shall", "should", "will", "would",
+    }) |cue| if (asciiEq(tokens[index - 1].text, cue)) return true;
+    if (index >= 2 and copula(tokens[index - 2].text)) {
+        for ([_][]const u8{ "this", "that", "these", "those" }) |subject| if (asciiEq(tokens[index - 1].text, subject)) return true;
     }
     return false;
 }
@@ -1232,6 +1250,10 @@ test "clean preserves productive emphasis without an adjective vocabulary" {
         "She stood close close by the door",
         "He went far far away",
         "There were many many failures",
+        "Do you want coffee coffee, or a latte?",
+        "Do you want coffee coffee and a croissant?",
+        "I want coffee coffee this time",
+        "She prefers tea tea or hot chocolate",
         "There were many many of them",
         "a tiny tiny particle",
         "a large large building",
@@ -1245,7 +1267,7 @@ test "clean preserves productive emphasis without an adjective vocabulary" {
     };
     for (unchanged) |text| try expectClean(text, text, &.{});
     try expectClean("I I saw a tiny tiny particle", "I saw a tiny tiny particle", &.{});
-    try expectClean("please test test this and expected expected to work", "please test this and expected to work", &.{});
+    try expectClean("please test test this. It is expected expected to work", "please test this. It is expected to work", &.{});
 }
 
 test "clean preserves grammatical duplicates without disabling unrelated stutter cleanup" {
