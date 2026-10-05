@@ -151,7 +151,7 @@ impl Default for Stt {
             language: "en".into(),
             region: "global".into(),
             keyterms: Vec::new(),
-            smart_format: false,
+            smart_format: true,
             punctuate: false,
             dictation: false,
             numerals: false,
@@ -1033,7 +1033,7 @@ mod tests {
     fn provider_defaults_apply_only_to_omitted_fields() {
         let omitted: Config = serde_json::from_str("{}").unwrap();
         assert_eq!(omitted.stt.model, "nova-3");
-        assert!(!omitted.stt.smart_format);
+        assert!(omitted.stt.smart_format);
         assert!(!omitted.stt.punctuate);
         assert!(!omitted.stt.dictation);
         assert!(!omitted.stt.numerals);
@@ -1044,9 +1044,10 @@ mod tests {
         assert_eq!(omitted.hud.theme, Theme::Omarchy);
         assert_eq!(omitted.hud.shape, Shape::Rounded);
         let explicit: Config = serde_json::from_str(
-            r#"{"stt":{"model":"","provider":""},"llm":{"provider":"","model":""}}"#,
+            r#"{"stt":{"model":"","provider":"","smart_format":false},"llm":{"provider":"","model":""}}"#,
         )
         .unwrap();
+        assert!(!explicit.stt.smart_format);
         assert!(explicit.stt.model.is_empty());
         assert!(explicit.stt.provider.is_empty());
         assert!(explicit.llm.provider.is_empty());

@@ -107,16 +107,38 @@ pub fn clean(gpa: Allocator, transcript: []const u8, glossary: []const []const u
     };
     defer gpa.free(tokens);
     if (tokens.len == 0) return gpa.dupe(u8, transcript);
-    if (hasDecorationOnlyChunk(transcript, tokens)) return gpa.dupe(u8, transcript);
     var deleted = try gpa.alloc(bool, tokens.len);
     defer gpa.free(deleted);
     @memset(deleted, false);
     const protected = try protectionMap(gpa, transcript, tokens, glossary);
     defer gpa.free(protected);
+    protectDetachedDecorations(transcript, tokens, protected);
+    const spelling = try gpa.alloc(usize, tokens.len);
+    defer gpa.free(spelling);
+    for (spelling, 0..) |*index, i| index.* = i;
     for (tokens, 0..) |t, i| {
         if (!protected[i] and filler(t.text)) deleted[i] = true;
     }
-    // Exact adjacent phrase repetition. Never remove a one-word repetition.
+    // Collapse ordinary-word stutters, excluding common meaningful repeats.
+    // Retain the last copy's punctuation and the first copy's spelling.
+    // Deepgram can insert a comma or capitalize a repeated word. A comma is
+    // allowed here, but sentence boundaries, line breaks and literals are not.
+    for (tokens[0 .. tokens.len - 1], 0..) |t, i| {
+        const next = tokens[i + 1];
+        if (!deleted[i] and !deleted[i + 1] and !protected[i] and !protected[i + 1] and
+            stutterWord(t.text) and stutterWord(next.text) and asciiEq(t.text, next.text) and
+            tokenChunkStart(transcript, t) == t.start and
+            tokenChunkStart(transcript, next) == next.start)
+        {
+            const end = tokenChunkEnd(transcript, t);
+            const suffix = transcript[t.end..end];
+            if ((suffix.len == 0 or std.mem.eql(u8, suffix, ",")) and horizontalGap(transcript[end..next.start])) {
+                deleted[i] = true;
+                spelling[i + 1] = spelling[i];
+            }
+        }
+    }
+    // Exact adjacent phrase repetition (two or more words).
     // Each run is compared to its retained first phrase so three or more
     // copies collapse fully rather than leaving the final copy behind.
     var n: usize = 8;
@@ -153,7 +175,7 @@ pub fn clean(gpa: Allocator, transcript: []const u8, glossary: []const []const u
     var survivors: usize = 0;
     for (deleted) |is_deleted| survivors += @intFromBool(!is_deleted);
     if (survivors == 0) return gpa.dupe(u8, transcript);
-    return renderClean(gpa, transcript, tokens, deleted);
+    return renderClean(gpa, transcript, tokens, deleted, spelling);
 }
 
 /// Parse, validate and render v2. Malformed or unsafe plans are rejected so
@@ -287,14 +309,21 @@ pub fn tokenize(gpa: Allocator, text: []const u8) Error![]Token {
     return out.toOwnedSlice(gpa);
 }
 
-fn renderClean(gpa: Allocator, source: []const u8, tokens: []const Token, deleted: []const bool) ![]u8 {
+fn appendCleanToken(out: *std.ArrayList(u8), gpa: Allocator, source: []const u8, tokens: []const Token, index: usize, spelling: []const usize) !void {
+    const token = tokens[index];
+    try out.appendSlice(gpa, source[tokenChunkStart(source, token)..token.start]);
+    try out.appendSlice(gpa, tokens[spelling[index]].text);
+    try out.appendSlice(gpa, source[token.end..tokenChunkEnd(source, token)]);
+}
+
+fn renderClean(gpa: Allocator, source: []const u8, tokens: []const Token, deleted: []const bool, spelling: []const usize) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(gpa);
     var first: usize = 0;
     while (deleted[first]) first += 1;
     const first_start = tokenChunkStart(source, tokens[first]);
     if (first == 0) try out.appendSlice(gpa, source[0..first_start]);
-    try out.appendSlice(gpa, source[first_start..tokenChunkEnd(source, tokens[first])]);
+    try appendCleanToken(&out, gpa, source, tokens, first, spelling);
     var previous = first;
     var i = first + 1;
     while (i < tokens.len) : (i += 1) {
@@ -309,8 +338,7 @@ fn renderClean(gpa: Allocator, source: []const u8, tokens: []const Token, delete
         } else {
             try out.appendSlice(gpa, gap);
         }
-        const start = tokenChunkStart(source, tokens[i]);
-        try out.appendSlice(gpa, source[start..tokenChunkEnd(source, tokens[i])]);
+        try appendCleanToken(&out, gpa, source, tokens, i, spelling);
         previous = i;
     }
     var deleted_after = false;
@@ -554,6 +582,57 @@ fn validNumberCore(s: []const u8) bool {
 }
 fn endsWithIgnoreCase(s: []const u8, suffix: []const u8) bool {
     return s.len >= suffix.len and asciiEq(s[s.len - suffix.len ..], suffix);
+}
+// A detached punctuation/markup chunk should protect its local neighbors,
+// not silently disable Clean for the entire dictation. Protected neighbors
+// ensure renderClean preserves the original gap verbatim.
+fn protectDetachedDecorations(source: []const u8, tokens: []const Token, protected: []bool) void {
+    var previous_end: usize = 0;
+    for (tokens, 0..) |token, i| {
+        const start = tokenChunkStart(source, token);
+        for (source[previous_end..start]) |c| {
+            if (!std.ascii.isWhitespace(c)) {
+                protected[i] = true;
+                if (i > 0) protected[i - 1] = true;
+                break;
+            }
+        }
+        previous_end = tokenChunkEnd(source, token);
+    }
+    for (source[previous_end..]) |c| if (!std.ascii.isWhitespace(c)) {
+        protected[tokens.len - 1] = true;
+        break;
+    };
+}
+
+fn horizontalGap(gap: []const u8) bool {
+    if (gap.len == 0) return false;
+    for (gap) |c| if (c != ' ' and c != '\t') return false;
+    return true;
+}
+fn asciiLetters(text: []const u8) bool {
+    if (text.len == 0) return false;
+    for (text) |c| if (!std.ascii.isAlphabetic(c)) return false;
+    return true;
+}
+fn stutterWord(text: []const u8) bool {
+    // This is an English prose heuristic, not inference of speaker intent.
+    // Keep digits, identifiers, acronyms, and spelled-out letter sequences.
+    if (!asciiLetters(text)) return false;
+    if (text.len == 1) return std.mem.eql(u8, text, "a") or asciiEq(text, "i");
+    for (text[1..]) |c| if (std.ascii.isUpper(c)) return false;
+    // Meaningful emphasis, grammatical repetitions, and spoken numeric values
+    // must not be silently collapsed. Quotes and glossary spans are protected
+    // separately by the caller.
+    for ([_][]const u8{
+        "no",      "not",     "never",    "yes",      "very",     "really",  "so",      "too",       "more",     "less",
+        "much",    "quite",   "that",     "had",      "bye",      "go",      "hear",    "knock",     "bang",     "zero",
+        "oh",      "one",     "two",      "three",    "four",     "five",    "six",     "seven",     "eight",    "nine",
+        "ten",     "eleven",  "twelve",   "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen",
+        "twenty",  "thirty",  "forty",    "fifty",    "sixty",    "seventy", "eighty",  "ninety",    "hundred",  "thousand",
+        "million", "billion", "trillion",
+    }) |word| if (asciiEq(text, word)) return false;
+    return true;
 }
 fn cleanRangesEqual(source: []const u8, tokens: []const Token, deleted: []const bool, protected: []const bool, a: usize, b: usize, len: usize) bool {
     for (0..len) |j| {
@@ -811,6 +890,84 @@ test "clean repetition is exact adjacent and at least two tokens" {
     try expectClean("go now go now go now please", "go now please", &.{});
     try expectClean("very very good", "very very good", &.{});
     try expectClean("go to, go to work", "go to, go to work", &.{});
+}
+
+test "clean collapses common single word stutters and preserves final punctuation" {
+    try expectClean("I I use use this", "I use this", &.{});
+    try expectClean("please use use use.", "please use.", &.{});
+    try expectClean("in the the file and and in in here", "in the file and in here", &.{});
+    try expectClean("use\tuse this", "use this", &.{});
+    try expectClean("I use, use this tool to work.", "I use this tool to work.", &.{});
+    try expectClean("Use use use, use this.", "Use this.", &.{});
+    try expectClean("I, I use, use this.", "I use this.", &.{});
+    try expectClean("The the tool", "The tool", &.{});
+}
+
+test "clean collapses ordinary words beyond the original allowlist" {
+    try expectClean("Is this expected expected to work?", "Is this expected to work?", &.{});
+    try expectClean("This is the test test for clean mode.", "This is the test for clean mode.", &.{});
+    try expectClean("you you know", "you know", &.{});
+    try expectClean("Test test test, test this.", "Test this.", &.{});
+    try expectClean("try this this thing and remove remove duplicates", "try this thing and remove duplicates", &.{});
+    try expectClean("test test", "test test", &.{"test"});
+    try expectClean("say \"test test\" and `expected expected`", "say \"test test\" and `expected expected`", &.{});
+    const protected = [_][]const u8{
+        "2 2 times",      "two two times",  "one one zero zero",   "hundred hundred",
+        "very very good", "had had enough", "that that works",     "no no",
+        "bye bye",        "fooBar fooBar",  "HTTP HTTP",           "g g l l",
+        "A A",            "v2 v2",          "test_test test_test", "test. test",
+        "test\ntest",     "test; test",
+        "test… test",
+        "café café",
+    };
+    for (protected) |text| try expectClean(text, text, &.{});
+}
+
+test "clean preserves ambiguous single repeats and boundaries" {
+    const unchanged = [_][]const u8{
+        "no no not not very very really really",
+        "she had had enough and said that that works",
+        "1 1 two two AB12 AB12 USE USE",
+        "use; use this",
+        "use: use this",
+        "use. use this",
+        "use\nuse this",
+        "USE, USE this",
+        "say `use use` and \"use use\"",
+        "use /tmp/use /tmp/use",
+        "use (use) this",
+    };
+    for (unchanged) |text| try expectClean(text, text, &.{});
+    try expectClean("use use this", "use use this", &.{"use"});
+    try expectClean("use use this", "use use this", &.{"use this"});
+}
+
+test "detached punctuation only protects local neighbors in Clean" {
+    try expectClean("well ... anyway I use use this tool", "well ... anyway I use this tool", &.{});
+    try expectClean("() keep this and use use it", "() keep this and use it", &.{});
+    try expectClean("I use use this tool ()", "I use this tool ()", &.{});
+    try expectClean("use () use", "use () use", &.{});
+    try expectClean("um () uh", "um () uh", &.{});
+    try expectClean("keep ()\t exact", "keep ()\t exact", &.{});
+}
+
+test "full dictation removes plain and comma separated stutters" {
+    try expectClean(
+        "I I use use this tool to work I use, use this tool to work. I use, use this tool to work I use use this tool to work",
+        "I use this tool to work I use this tool to work. I use this tool to work I use this tool to work",
+        &.{},
+    );
+}
+
+test "clean combines stutters fillers and phrases without changing numbers" {
+    const source = "um I I use use configuration and we should we should set 2 actually 3";
+    const expected = "I use configuration and we should set 3";
+    try expectClean(source, expected, &.{});
+    try expectClean(expected, expected, &.{});
+    try expectClean("use use 2 files and one folder", "use 2 files and one folder", &.{});
+    try expectClean("use use", "use", &.{});
+    try expectClean("use", "use", &.{});
+    try expectClean("", "", &.{});
 }
 
 test "clean accepts only locally provable scalar backtracks" {

@@ -437,6 +437,29 @@ test "provider mapping is deterministic" {
     try std.testing.expectEqual(ErrorCode.deepgram_server, mapDeepgramError(error.ServerError));
 }
 
+test "stream worker uses real Clean for stutters and preserves Verbatim" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const path = try writeTestWav(&tmp, 16_000);
+    defer std.testing.allocator.free(path);
+    const raw = "I I use use this tool. I use, use this tool. Use use this tool. This test test is expected expected to work for you you 2 2 times.";
+    for ([_]processing.Profile{ .clean, .verbatim }) |profile| {
+        const result = processWithTranscript(std.testing.allocator, std.testing.io, .{
+            .version = worker_protocol.version,
+            .wav_path = path,
+            .deepgram_api_key = "synthetic-test-key",
+            .llm_api_key = "",
+            .processing_profile = profile,
+        }, .{}, raw);
+        defer if (result.text) |text| std.testing.allocator.free(text);
+        try std.testing.expectEqual(Status.success, result.status);
+        try std.testing.expectEqual(profile, result.processing_profile);
+        try std.testing.expectEqual(Transport.stream, result.transport);
+        try std.testing.expect(result.warning == null);
+        try std.testing.expectEqualStrings(if (profile == .clean) "I use this tool. I use this tool. Use this tool. This test is expected to work for you 2 2 times." else raw, result.text.?);
+    }
+}
+
 test "REST and stream planner failure preserve polished profile with Clean fallback" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
