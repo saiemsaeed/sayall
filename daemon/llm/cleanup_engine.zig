@@ -107,12 +107,12 @@ pub fn clean(gpa: Allocator, transcript: []const u8, glossary: []const []const u
     };
     defer gpa.free(tokens);
     if (tokens.len == 0) return gpa.dupe(u8, transcript);
+    if (hasDecorationOnlyChunk(transcript, tokens)) return gpa.dupe(u8, transcript);
     var deleted = try gpa.alloc(bool, tokens.len);
     defer gpa.free(deleted);
     @memset(deleted, false);
     const protected = try protectionMap(gpa, transcript, tokens, glossary);
     defer gpa.free(protected);
-    protectDetachedDecorations(transcript, tokens, protected);
     const spelling = try gpa.alloc(usize, tokens.len);
     defer gpa.free(spelling);
     for (spelling, 0..) |*index, i| index.* = i;
@@ -583,28 +583,6 @@ fn validNumberCore(s: []const u8) bool {
 fn endsWithIgnoreCase(s: []const u8, suffix: []const u8) bool {
     return s.len >= suffix.len and asciiEq(s[s.len - suffix.len ..], suffix);
 }
-// A detached punctuation/markup chunk should protect its local neighbors,
-// not silently disable Clean for the entire dictation. Protected neighbors
-// ensure renderClean preserves the original gap verbatim.
-fn protectDetachedDecorations(source: []const u8, tokens: []const Token, protected: []bool) void {
-    var previous_end: usize = 0;
-    for (tokens, 0..) |token, i| {
-        const start = tokenChunkStart(source, token);
-        for (source[previous_end..start]) |c| {
-            if (!std.ascii.isWhitespace(c)) {
-                protected[i] = true;
-                if (i > 0) protected[i - 1] = true;
-                break;
-            }
-        }
-        previous_end = tokenChunkEnd(source, token);
-    }
-    for (source[previous_end..]) |c| if (!std.ascii.isWhitespace(c)) {
-        protected[tokens.len - 1] = true;
-        break;
-    };
-}
-
 fn horizontalGap(gap: []const u8) bool {
     if (gap.len == 0) return false;
     for (gap) |c| if (c != ' ' and c != '\t') return false;
@@ -940,15 +918,6 @@ test "clean preserves ambiguous single repeats and boundaries" {
     for (unchanged) |text| try expectClean(text, text, &.{});
     try expectClean("use use this", "use use this", &.{"use"});
     try expectClean("use use this", "use use this", &.{"use this"});
-}
-
-test "detached punctuation only protects local neighbors in Clean" {
-    try expectClean("well ... anyway I use use this tool", "well ... anyway I use this tool", &.{});
-    try expectClean("() keep this and use use it", "() keep this and use it", &.{});
-    try expectClean("I use use this tool ()", "I use this tool ()", &.{});
-    try expectClean("use () use", "use () use", &.{});
-    try expectClean("um () uh", "um () uh", &.{});
-    try expectClean("keep ()\t exact", "keep ()\t exact", &.{});
 }
 
 test "full dictation removes plain and comma separated stutters" {

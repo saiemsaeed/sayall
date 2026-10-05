@@ -556,9 +556,7 @@ Verbatim when intentional repetition must be preserved exactly. It keeps ambiguo
 repetitions such as `no no`, `very very`, and `had had`, as well as repeated
 numeric digits and number words, acronyms, and mixed-case identifiers.
 These rules do not cross sentence boundaries or line breaks, or edit quoted,
-technical, or glossary spans. Detached punctuation protects nearby words rather
-than disabling cleanup throughout the entire transcript. These rules do not
-change `2` into `two`. Enable them with
+technical, or glossary spans. These rules do not change `2` into `two`. Enable them with
 `"processing": { "mode": "clean" }`; Polished also uses this Clean stage.
 
 `hud.show_timer` defaults to `true` and displays recording duration as `mm:ss`.
