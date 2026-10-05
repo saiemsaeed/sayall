@@ -123,6 +123,11 @@ sayall mic-test
 
 Verify `sayall status` reports `idle`, then press `Ctrl+Slash`, speak, and press
 it again. The transcript should be typed into the focused window.
+On Linux, a manual stop enters the `stopping` state immediately but keeps the
+microphone recording for up to one additional second to capture speech at the
+shortcut boundary before finalizing transcription. This adds up to one second
+to stop-to-result latency. The tail is shortened near the recording limit and
+skipped for automatic limit stops, too-short recordings, and shutdown.
 
 View or customize the managed shortcut at any time:
 
