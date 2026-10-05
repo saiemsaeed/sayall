@@ -119,29 +119,30 @@ pub fn clean(gpa: Allocator, transcript: []const u8, glossary: []const []const u
     for (tokens, 0..) |t, i| {
         if (!protected[i] and filler(t.text)) deleted[i] = true;
     }
+    // Keep source-run membership stable as repeated copies are deleted.
+    const omitted_fillers = try gpa.dupe(bool, deleted);
+    defer gpa.free(omitted_fillers);
     // Collapse ordinary-word stutters, excluding common meaningful repeats.
     // Retain the last copy's punctuation and the first copy's spelling.
     // Deepgram can insert a comma or capitalize a repeated word. A comma is
     // allowed here, but sentence boundaries, line breaks and literals are not.
     for (tokens[0 .. tokens.len - 1], 0..) |t, i| {
-        const next = tokens[i + 1];
-        const context_start = repetitionContextStart(transcript, tokens, i);
-        if (!deleted[i] and !deleted[i + 1] and !protected[i] and !protected[i + 1] and
+        if (deleted[i]) continue;
+        const next_index = nextContextToken(transcript, tokens, omitted_fillers, i) orelse continue;
+        const next = tokens[next_index];
+        const context_start = repetitionContextStart(transcript, tokens, omitted_fillers, i);
+        if (!protected[i] and !protected[next_index] and
             stutterWord(t.text) and stutterWord(next.text) and asciiEq(t.text, next.text) and
             !objectComplementContext(transcript, tokens, context_start) and
-            !nominalSubjectContext(transcript, tokens, deleted, context_start) and
+            !nominalSubjectContext(transcript, tokens, deleted, omitted_fillers, context_start) and
             grammaticalStutterContext(transcript, tokens, deleted, context_start) and
-            !spelledLetterContext(transcript, tokens, context_start) and
-            hasStutterContinuation(transcript, tokens, deleted, context_start) and
+            !spelledLetterContext(transcript, tokens, omitted_fillers, context_start) and
+            hasStutterContinuation(transcript, tokens, deleted, omitted_fillers, context_start) and
             tokenChunkStart(transcript, t) == t.start and
             tokenChunkStart(transcript, next) == next.start)
         {
-            const end = tokenChunkEnd(transcript, t);
-            const suffix = transcript[t.end..end];
-            if ((suffix.len == 0 or std.mem.eql(u8, suffix, ",")) and horizontalGap(transcript[end..next.start])) {
-                deleted[i] = true;
-                spelling[i + 1] = spelling[i];
-            }
+            deleted[i] = true;
+            spelling[next_index] = spelling[i];
         }
     }
     // Exact adjacent phrase repetition (two or more words).
@@ -601,10 +602,22 @@ fn asciiLetters(text: []const u8) bool {
 }
 // Context belongs to the whole source run even when an earlier copy was
 // protected rather than deleted. Otherwise later copies can bypass a guard.
-fn repetitionContextStart(source: []const u8, tokens: []const Token, index: usize) usize {
+fn repetitionContextStart(source: []const u8, tokens: []const Token, omitted: []const bool, index: usize) usize {
     var start = index;
-    while (start > 0 and asciiEq(tokens[start - 1].text, tokens[index].text) and commaOrSpaceGap(source, tokens[start - 1], tokens[start])) start -= 1;
+    while (previousContextToken(source, tokens, omitted, start)) |previous| {
+        if (!asciiEq(tokens[previous].text, tokens[index].text)) break;
+        start = previous;
+    }
     return start;
+}
+
+fn repetitionContextEnd(source: []const u8, tokens: []const Token, omitted: []const bool, index: usize) usize {
+    var last = index;
+    while (nextContextToken(source, tokens, omitted, last)) |next| {
+        if (!asciiEq(tokens[next].text, tokens[index].text)) break;
+        last = next;
+    }
+    return last;
 }
 
 fn functionWord(text: []const u8) bool {
@@ -618,15 +631,20 @@ fn functionWord(text: []const u8) bool {
 // its predicate with the same spelling ("the police police", "the band band
 // together"). A directly preceding copula instead establishes a predicate
 // nominal ("this is the test test for ..."). Preserve uncertain noun phrases.
-fn nominalSubjectContext(source: []const u8, tokens: []const Token, deleted: []const bool, index: usize) bool {
+fn nominalSubjectContext(source: []const u8, tokens: []const Token, deleted: []const bool, omitted: []const bool, index: usize) bool {
     // A name may be the second copy ("I use Use for work"), or even two
     // function words (the band "The The"). Inspect the whole source run.
     var capitals: usize = 0;
     var last = index;
     while (true) {
-        if (tokens[last].text.len > 1 and std.ascii.isUpper(tokens[last].text[0])) capitals += 1;
-        if (last + 1 == tokens.len or !asciiEq(tokens[index].text, tokens[last + 1].text) or !commaOrSpaceGap(source, tokens[last], tokens[last + 1])) break;
-        last += 1;
+        if (tokens[last].text.len > 1 and std.ascii.isUpper(tokens[last].text[0])) {
+            // A later capital can begin a title: "the The Office finale".
+            if (last != index) return true;
+            capitals += 1;
+        }
+        const next = nextContextToken(source, tokens, omitted, last) orelse break;
+        if (!asciiEq(tokens[index].text, tokens[next].text)) break;
+        last = next;
     }
     const is_function = functionWord(tokens[index].text);
     if (capitals >= (if (is_function) @as(usize, 2) else @as(usize, 1))) return true;
@@ -665,12 +683,14 @@ fn copula(word: []const u8) bool {
 // Lowercase a/i can be articles/pronouns or literal letters. Preserve a run
 // adjacent to another letter or a digit token so spelling "g a a" or "a a 9"
 // is never mistaken for a prose stutter.
-fn spelledLetterContext(source: []const u8, tokens: []const Token, index: usize) bool {
+fn spelledLetterContext(source: []const u8, tokens: []const Token, omitted: []const bool, index: usize) bool {
     if (tokens[index].text.len != 1) return false;
-    var last = index;
-    while (last + 1 < tokens.len and asciiEq(tokens[index].text, tokens[last + 1].text)) : (last += 1) {}
-    if (index > 0 and letterOrDigits(tokens[index - 1].text) and commaOrSpaceGap(source, tokens[index - 1], tokens[index])) return true;
-    return last + 1 < tokens.len and letterOrDigits(tokens[last + 1].text) and commaOrSpaceGap(source, tokens[last], tokens[last + 1]);
+    const last = repetitionContextEnd(source, tokens, omitted, index);
+    if (previousContextToken(source, tokens, omitted, index)) |previous| {
+        if (letterOrDigits(tokens[previous].text)) return true;
+    }
+    const next = nextContextToken(source, tokens, omitted, last) orelse return false;
+    return letterOrDigits(tokens[next].text);
 }
 fn letterOrDigits(text: []const u8) bool {
     return (text.len == 1 and std.ascii.isAlphabetic(text[0])) or (text.len > 0 and std.ascii.isDigit(text[0]));
@@ -718,13 +738,8 @@ fn grammaticalStutterContext(source: []const u8, tokens: []const Token, deleted:
 // when the run continues into a grammatical connector/determiner, or when the
 // repeated word itself is a closed-class function word. Missing a stutter is
 // preferable to assuming that every unknown adjective/adverb is a stutter.
-fn hasStutterContinuation(source: []const u8, tokens: []const Token, deleted: []const bool, index: usize) bool {
-    var last = index + 1;
-    while (last + 1 < tokens.len and asciiEq(tokens[index].text, tokens[last + 1].text)) : (last += 1) {
-        const suffix = source[tokens[last].end..tokenChunkEnd(source, tokens[last])];
-        if ((suffix.len != 0 and !std.mem.eql(u8, suffix, ",")) or
-            !horizontalGap(source[tokenChunkEnd(source, tokens[last])..tokens[last + 1].start])) return false;
-    }
+fn hasStutterContinuation(source: []const u8, tokens: []const Token, deleted: []const bool, omitted: []const bool, index: usize) bool {
+    const last = repetitionContextEnd(source, tokens, omitted, index);
     const continuation = nextContextToken(source, tokens, deleted, last) orelse return false;
     if (functionWord(tokens[index].text)) return true;
     // A following preposition alone cannot distinguish a stutter from an
@@ -767,9 +782,7 @@ fn previousContextToken(source: []const u8, tokens: []const Token, deleted: []co
     var previous = index;
     while (previous > 0) {
         previous -= 1;
-        for (source[tokens[previous].end..tokens[previous + 1].start]) |c| {
-            if (std.mem.indexOfScalar(u8, ".?!;:\n\r", c) != null) return null;
-        }
+        if (!commaOrSpaceGap(source, tokens[previous], tokens[previous + 1])) return null;
         if (!deleted[previous]) return previous;
     }
     return null;
@@ -1143,6 +1156,20 @@ test "clean stutter context skips removed fillers without crossing sentence boun
     try expectClean("This is the um test test for cleanup", "This is the test for cleanup", &.{});
     try expectClean("I. um use use this", "I. use use this", &.{});
     try expectClean("I um. use use this", "I use use this", &.{});
+}
+
+test "clean joins repetitions exposed by filler deletion with source boundaries intact" {
+    try expectClean("I use um use this", "I use this", &.{});
+    try expectClean("please use um use uh use this", "please use this", &.{});
+    try expectClean("I use, um, use this", "I use this", &.{});
+    try expectClean("I use um. use this", "I use use this", &.{});
+    try expectClean("I use um\nuse this", "I use\nuse this", &.{});
+    try expectClean("Rose um rose rose to leave", "Rose rose rose to leave", &.{});
+    try expectClean("I use um Use use this", "I use Use use this", &.{});
+    try expectClean("I use um use this", "I use use this", &.{"use"});
+    try expectClean("I watched the The Office finale", "I watched the The Office finale", &.{});
+    try expectClean("I watched the um The Office finale", "I watched the The Office finale", &.{});
+    try expectClean("The um the tool", "The tool", &.{});
 }
 
 test "clean collapses every member of an eligible repeated word run" {
