@@ -549,8 +549,9 @@ retain their legacy formatting behavior for this migration cycle. The legacy
 `llama-3.1-8b-instant` model remains syntactically accepted for that
 compatibility path but cannot be selected for Polished mode.
 
-Clean collapses adjacent repeated English prose words, including `test test`,
-`expected expected`, `you you`, `use, use`, and `The the`, preserving the first
+Clean collapses adjacent repeated English prose words when the continuation
+supports a stutter: for example, `test test this`, `expected expected to work`,
+`you you know`, `use, use this`, and `The the tool`. It preserves the first
 copy's spelling and the final copy's punctuation. This is a heuristic: use
 Verbatim when intentional repetition must be preserved exactly. It keeps ambiguous
 repetitions such as `no no`, `very very`, and `had had`, as well as repeated
@@ -561,6 +562,10 @@ when those words might instead be accidental stutters. Clean also preserves
 repetitions after object-complement predicates in the same clause, such as
 `What makes you you?` or `I consider work work`. This contextual safeguard can
 leave genuine stutters untouched rather than risk deleting meaningful words.
+Repeated content words before other content words or without a continuation
+remain intact, preserving productive emphasis such as `long long ago`,
+`tiny tiny particles`, and `many many failures`. Some genuine stutters (such as
+an isolated `use use`) are therefore deliberately left unchanged.
 These rules do not cross sentence boundaries or line breaks, or edit quoted,
 technical, or glossary spans. These rules do not change `2` into `two`. Enable them with
 `"processing": { "mode": "clean" }`; Polished also uses this Clean stage.
