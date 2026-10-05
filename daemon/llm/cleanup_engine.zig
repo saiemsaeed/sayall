@@ -599,6 +599,15 @@ fn stutterWord(text: []const u8) bool {
     if (!asciiLetters(text)) return false;
     if (text.len == 1) return std.mem.eql(u8, text, "a") or asciiEq(text, "i");
     for (text[1..]) |c| if (std.ascii.isUpper(c)) return false;
+    // Object/possessive "her" and auxiliary/copular verbs can legitimately
+    // repeat with different roles: "her her book", "what it is is unclear",
+    // "I do do that", "they can can tomatoes". Without grammatical parsing,
+    // preserve these even when they could also be an accidental stutter.
+    for ([_][]const u8{
+        "her",   "am",   "are",   "is",     "was",  "were",  "be",  "been",  "being",
+        "have",  "has",  "had",   "do",     "does", "did",   "can", "could", "may",
+        "might", "must", "shall", "should", "will", "would",
+    }) |word| if (asciiEq(text, word)) return false;
     // Meaningful emphasis, grammatical repetitions, and spoken numeric values
     // must not be silently collapsed. Quotes and glossary spans are protected
     // separately by the caller.
@@ -899,6 +908,23 @@ test "clean collapses ordinary words beyond the original allowlist" {
         "café café",
     };
     for (protected) |text| try expectClean(text, text, &.{});
+}
+
+test "clean preserves grammatical duplicates without disabling unrelated stutter cleanup" {
+    const grammatical = [_][]const u8{
+        "I gave her her book",
+        "Give her her keys",
+        "What it is is unclear",
+        "What it was was unclear",
+        "I do do that",
+        "They can can tomatoes",
+        "Her her book", // case changes and commas do not prove a stutter
+        "I gave her, her book",
+        "She had had enough",
+        "I know that that works",
+    };
+    for (grammatical) |text| try expectClean(text, text, &.{});
+    try expectClean("I I gave her her book for the test test", "I gave her her book for the test", &.{});
 }
 
 test "clean preserves ambiguous single repeats and boundaries" {

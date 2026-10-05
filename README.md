@@ -554,7 +554,10 @@ Clean collapses adjacent repeated English prose words, including `test test`,
 copy's spelling and the final copy's punctuation. This is a heuristic: use
 Verbatim when intentional repetition must be preserved exactly. It keeps ambiguous
 repetitions such as `no no`, `very very`, and `had had`, as well as repeated
-numeric digits and number words, acronyms, and mixed-case identifiers.
+numeric digits and number words, acronyms, and mixed-case identifiers. Grammatical
+duplicates involving `her` or auxiliary/copular verbs remain untouched (for
+example, `I gave her her book`, `what it is is unclear`, and `I do do that`), even
+when those words might instead be accidental stutters.
 These rules do not cross sentence boundaries or line breaks, or edit quoted,
 technical, or glossary spans. These rules do not change `2` into `two`. Enable them with
 `"processing": { "mode": "clean" }`; Polished also uses this Clean stage.
