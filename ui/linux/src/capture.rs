@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 pub struct Capture {
     source: CaptureSource,
+    started_at: Instant,
     dir: PathBuf,
     pcm: PathBuf,
     wav: PathBuf,
@@ -116,10 +117,14 @@ impl Capture {
                 Ok(())
             });
         }
+        // Anchor before spawning the recorder, never after provider/worker
+        // startup: those samples already count toward the recording limit.
+        let started_at = Instant::now();
         let child = command.spawn()?;
         startup_cleanup.0 = None;
         Ok(Self {
             source: CaptureSource::Process(child),
+            started_at,
             dir,
             pcm,
             wav,
@@ -156,6 +161,7 @@ impl Capture {
         let output = pcm.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
+        let started_at = Instant::now();
         let thread = std::thread::spawn(move || {
             stream_fixture(
                 &output,
@@ -170,12 +176,17 @@ impl Capture {
                 stop,
                 thread: Some(thread),
             },
+            started_at,
             dir,
             pcm,
             wav,
             cleanup: true,
         })
     }
+    pub fn started_at(&self) -> Instant {
+        self.started_at
+    }
+
     pub fn paths(&self) -> (&Path, &Path) {
         (&self.pcm, &self.wav)
     }
@@ -597,12 +608,17 @@ mod tests {
         let mut bytes = Vec::new();
         write_wav(&mut bytes, &pcm).unwrap();
         fs::write(&fixture, bytes).unwrap();
+        let before_start = Instant::now();
         let mut capture = Capture::start_fixture(&root, 1, &fixture).unwrap();
+        let started_at = capture.started_at();
+        assert!(started_at >= before_start && started_at <= Instant::now());
         let before = fs::metadata(capture.paths().0).unwrap().len();
         capture
             .wait_for_tail(Duration::from_millis(150), &AtomicBool::new(false))
             .unwrap();
         let after = fs::metadata(capture.paths().0).unwrap().len();
+        assert_eq!(capture.started_at(), started_at);
+        assert!(capture.started_at().elapsed() >= Duration::from_millis(150));
         assert!(
             after > before,
             "tail must record additional audio, not just delay processing"

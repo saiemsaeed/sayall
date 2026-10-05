@@ -677,12 +677,22 @@ where
     });
     match started {
         Ok((capture, worker, cfg, output, show_timer, notifications)) => {
-            let now = Instant::now();
-            *active = Some((capture, worker, now, cfg, output, show_timer, notifications));
+            // Recording has been live throughout worker startup. Use the same
+            // capture clock for the HUD, automatic limit, and manual-stop tail.
+            let started_at = capture.started_at();
+            *active = Some((
+                capture,
+                worker,
+                started_at,
+                cfg,
+                output,
+                show_timer,
+                notifications,
+            ));
             Ok(publish(
                 State::Recording,
                 *generation,
-                Some(now),
+                Some(started_at),
                 None,
                 show_timer,
             ))
@@ -940,6 +950,23 @@ mod tests {
             stop_tail_duration(Duration::from_secs(300), &cfg, StopReason::User),
             Duration::ZERO
         );
+        assert_eq!(
+            stop_tail_duration(Duration::from_secs(301), &cfg, StopReason::User),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn worker_startup_time_counts_toward_the_manual_stop_limit() {
+        let cfg = config::RecordingConfig::default();
+        let worker_startup = Duration::from_secs(2);
+        let since_worker_ready = Duration::from_millis(297_750);
+        // Only 250ms remain in the actual capture, although a timer started
+        // after worker readiness would incorrectly allow a full second.
+        let captured = worker_startup + since_worker_ready;
+        let tail = stop_tail_duration(captured, &cfg, StopReason::User);
+        assert_eq!(tail, Duration::from_millis(250));
+        assert_eq!(captured + tail, Duration::from_secs(300));
         assert_eq!(
             stop_tail_duration(Duration::from_secs(301), &cfg, StopReason::User),
             Duration::ZERO
