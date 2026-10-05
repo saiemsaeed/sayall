@@ -128,7 +128,8 @@ pub fn clean(gpa: Allocator, transcript: []const u8, glossary: []const []const u
         if (!deleted[i] and !deleted[i + 1] and !protected[i] and !protected[i + 1] and
             stutterWord(t.text) and stutterWord(next.text) and asciiEq(t.text, next.text) and
             !objectComplementContext(transcript, tokens, i) and
-            pronounStutterContext(transcript, tokens, deleted, spelling[i]) and
+            grammaticalStutterContext(transcript, tokens, deleted, spelling[i]) and
+            !spelledLetterContext(transcript, tokens, spelling[i]) and
             hasStutterContinuation(transcript, tokens, i) and
             tokenChunkStart(transcript, t) == t.start and
             tokenChunkStart(transcript, next) == next.start)
@@ -596,17 +597,41 @@ fn asciiLetters(text: []const u8) bool {
     for (text) |c| if (!std.ascii.isAlphabetic(c)) return false;
     return true;
 }
-// The same pronoun can be an object and the next clause's subject ("I told
-// you you were wrong"). Only collapse subject pronouns at a clause start;
-// an arbitrary preceding verb is not evidence of a stutter. Use the original
-// start of a repeated run so triple stutters keep the same decision.
-fn pronounStutterContext(source: []const u8, tokens: []const Token, deleted: []const bool, index: usize) bool {
+// Lowercase a/i can be articles/pronouns or literal letters. Preserve a run
+// adjacent to another letter or a digit token so spelling "g a a" or "a a 9"
+// is never mistaken for a prose stutter.
+fn spelledLetterContext(source: []const u8, tokens: []const Token, index: usize) bool {
+    if (tokens[index].text.len != 1) return false;
+    var last = index;
+    while (last + 1 < tokens.len and asciiEq(tokens[index].text, tokens[last + 1].text)) : (last += 1) {}
+    if (index > 0 and letterOrDigits(tokens[index - 1].text) and commaOrSpaceGap(source, tokens[index - 1], tokens[index])) return true;
+    return last + 1 < tokens.len and letterOrDigits(tokens[last + 1].text) and commaOrSpaceGap(source, tokens[last], tokens[last + 1]);
+}
+fn letterOrDigits(text: []const u8) bool {
+    return (text.len == 1 and std.ascii.isAlphabetic(text[0])) or (text.len > 0 and std.ascii.isDigit(text[0]));
+}
+fn commaOrSpaceGap(source: []const u8, left: Token, right: Token) bool {
+    const end = tokenChunkEnd(source, left);
+    const suffix = source[left.end..end];
+    return (suffix.len == 0 or std.mem.eql(u8, suffix, ",")) and horizontalGap(source[end..right.start]);
+}
+
+// A closed-class word can straddle two grammatical roles: object/subject
+// ("I told you you ..."), subject/determiner ("Is this this ..."), or a
+// phrasal-verb particle and preposition ("looking for for years"). Collapse
+// these only at a clause start, not after an arbitrary preceding verb. Use
+// the original run start so triple stutters keep the same decision.
+fn grammaticalStutterContext(source: []const u8, tokens: []const Token, deleted: []const bool, index: usize) bool {
     for ([_][]const u8{ "me", "him", "her", "us", "them" }) |word| if (asciiEq(tokens[index].text, word)) return false;
-    var subject_pronoun = false;
-    for ([_][]const u8{ "i", "you", "he", "she", "it", "we", "they" }) |word| {
-        subject_pronoun = subject_pronoun or asciiEq(tokens[index].text, word);
-    }
-    if (!subject_pronoun) return true;
+    var ambiguous_role = false;
+    for ([_][]const u8{
+        "i",    "you",   "he",      "she",    "it",     "we",     "they",   "this",       "these",   "those",
+        "to",   "of",    "in",      "on",     "at",     "by",     "for",    "from",       "with",    "off",
+        "out",  "up",    "down",    "over",   "under",  "about",  "after",  "before",     "through", "into",
+        "onto", "until", "during",  "around", "beside", "near",   "within", "without",    "toward",  "towards",
+        "upon", "via",   "against", "along",  "across", "behind", "beyond", "underneath", "despite",
+    }) |word| ambiguous_role = ambiguous_role or asciiEq(tokens[index].text, word);
+    if (!ambiguous_role) return true;
     var previous = index;
     while (previous > 0) {
         previous -= 1;
@@ -993,7 +1018,7 @@ test "clean collapses ordinary words beyond the original allowlist" {
     try expectClean("This is the test test for clean mode.", "This is the test for clean mode.", &.{});
     try expectClean("you you know", "you know", &.{});
     try expectClean("Test test test, test this.", "Test this.", &.{});
-    try expectClean("try this this thing and remove remove the duplicates", "try this thing and remove the duplicates", &.{});
+    try expectClean("this this thing needs changes; remove remove the duplicates", "this thing needs changes; remove the duplicates", &.{});
     try expectClean("test test", "test test", &.{"test"});
     try expectClean("say \"test test\" and `expected expected`", "say \"test test\" and `expected expected`", &.{});
     const protected = [_][]const u8{
@@ -1028,6 +1053,34 @@ test "clean protects object complements by clause context rather than repeated w
     try expectClean("Consider this\ntest test this", "Consider this\ntest this", &.{});
     try expectClean("I use use this and consider work work", "I use this and consider work work", &.{});
     try expectClean("Can you make make this?", "Can you make this?", &.{});
+}
+
+test "clean preserves particles and prepositions across grammatical boundaries" {
+    const unchanged = [_][]const u8{
+        "This is what I was looking for for years",
+        "What did you put it in in the morning?",
+        "That is what I held on on Tuesday",
+        "The person I spoke to to get help",
+        "This is what I gave up up north",
+        "I was looking for, for years",
+        "Is this this person's book?",
+        "Are these these people's belongings?",
+    };
+    for (unchanged) |text| try expectClean(text, text, &.{});
+    try expectClean("in in this room", "in this room", &.{});
+    try expectClean("We waited. In in this room", "We waited. In this room", &.{});
+    try expectClean("I I was looking for for years", "I was looking for for years", &.{});
+}
+
+test "clean protects repeated letters beside other dictated letters and digits" {
+    const unchanged = [_][]const u8{
+        "spell a a b",      "spell g a a please", "spell g, a a please",
+        "a a 99",           "a a 2nd",            "i i 99",
+        "say g i i please",
+    };
+    for (unchanged) |text| try expectClean(text, text, &.{});
+    try expectClean("I I use this", "I use this", &.{});
+    try expectClean("I have a a problem", "I have a problem", &.{});
 }
 
 test "clean preserves pronouns shared across complement clauses" {

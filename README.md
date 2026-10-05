@@ -560,9 +560,10 @@ repetitions such as `no no`, `very very`, and `had had`, as well as repeated
 numeric digits and number words, acronyms, and mixed-case identifiers. Grammatical
 duplicates involving `her` or auxiliary/copular verbs remain untouched (for
 example, `I gave her her book`, `what it is is unclear`, and `I do do that`), even
-when those words might instead be accidental stutters. Personal pronoun repeats
-are only collapsed in subject-start positions; object/subject overlaps such as
-`I told you you were wrong` remain intact. Clean also preserves
+when those words might instead be accidental stutters. Repeated pronouns,
+demonstratives, and prepositions are only collapsed in clause-start positions;
+grammatical overlaps such as `I told you you were wrong`, `is this this person's
+book`, and `looking for for years` remain intact. Clean also preserves
 repetitions after object-complement predicates in the same clause, such as
 `What makes you you?` or `I consider work work`. This contextual safeguard can
 leave genuine stutters untouched rather than risk deleting meaningful words.
