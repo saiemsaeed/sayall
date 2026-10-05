@@ -762,8 +762,17 @@ fn hasStutterContinuation(source: []const u8, tokens: []const Token, deleted: []
     // An infinitive can follow a nominal object ("use use to describe").
     // Retain it unless a copula establishes the repeated predicate instead.
     if (asciiEq(tokens[continuation].text, "to")) return copularPredicatePosition(source, tokens, deleted, index);
-    if (nextContextToken(source, tokens, deleted, continuation)) |noun| {
-        for ([_][]const u8{ "time", "times", "way", "ways", "day", "days", "week", "weeks", "month", "months", "year", "years", "morning", "afternoon", "evening", "night", "season", "semester" }) |adjunct| {
+    // Modifiers can intervene before an adjunct head ("the old-fashioned
+    // way"). Conservatively inspect the remainder of this source clause,
+    // rather than guessing how many adjectives its noun phrase contains.
+    var noun = continuation + 1;
+    while (noun < tokens.len) : (noun += 1) {
+        var boundary = false;
+        for (source[tokens[noun - 1].end..tokens[noun].start]) |c| {
+            boundary = boundary or std.mem.indexOfScalar(u8, ".?!;:\n\r", c) != null;
+        }
+        if (boundary) break;
+        for ([_][]const u8{ "time", "times", "way", "ways", "day", "days", "week", "weeks", "month", "months", "year", "years", "morning", "afternoon", "evening", "night", "season", "semester", "hour", "hours", "minute", "minutes", "second", "seconds", "moment", "moments", "while", "period", "occasion" }) |adjunct| {
             if (asciiEq(tokens[noun].text, adjunct)) return false;
         }
     }
@@ -1256,6 +1265,11 @@ test "clean preserves verb object homographs before relative and embedded clause
         "I spray spray to repel insects",
         "I use use this way",
         "I use use this year",
+        "I paint paint the old-fashioned way",
+        "I paint paint the very unusual old-fashioned way",
+        "I paint paint the \"old-fashioned\" way",
+        "I use use this particular academic year",
+        "I spray spray a little while",
     };
     for (unchanged) |text| try expectClean(text, text, &.{});
     try expectClean("I use use this tool", "I use this tool", &.{});
