@@ -1082,6 +1082,18 @@ test "clean collapses common single word stutters and preserves final punctuatio
     try expectClean("The the tool", "The tool", &.{});
 }
 
+test "clean collapses every member of an eligible repeated word run" {
+    for (2..9) |copies| {
+        var source: std.ArrayList(u8) = .empty;
+        defer source.deinit(std.testing.allocator);
+        try source.appendSlice(std.testing.allocator, "please ");
+        for (0..copies) |_| try source.appendSlice(std.testing.allocator, "use ");
+        try source.appendSlice(std.testing.allocator, "this");
+        try expectClean(source.items, "please use this", &.{});
+    }
+    try expectClean("please use, use use, use this", "please use this", &.{});
+}
+
 test "clean collapses ordinary words beyond the original allowlist" {
     try expectClean("Is this expected expected to work?", "Is this expected to work?", &.{});
     try expectClean("This is the test test for clean mode.", "This is the test for clean mode.", &.{});
