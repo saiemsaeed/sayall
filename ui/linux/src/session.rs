@@ -498,7 +498,14 @@ fn run(
                     }
                     result
                 } else if expected == State::Recording && active.is_some() {
-                    let result = finish_active(&mut active, generation, &publish, &mut *delivery);
+                    let result = finish_active(
+                        &mut active,
+                        generation,
+                        &publish,
+                        &mut *delivery,
+                        StopReason::User,
+                        &signals.shutdown,
+                    );
                     terminal_until = Some(Instant::now() + Duration::from_secs(2));
                     result
                 } else {
@@ -549,8 +556,14 @@ fn run(
                             )
                             .is_ok()
                         {
-                            let _ =
-                                finish_active(&mut active, generation, &publish, &mut *delivery);
+                            let _ = finish_active(
+                                &mut active,
+                                generation,
+                                &publish,
+                                &mut *delivery,
+                                StopReason::DurationLimit,
+                                &signals.shutdown,
+                            );
                             terminal_until = Some(Instant::now() + Duration::from_secs(2));
                             let _ = signals.admitted.compare_exchange(
                                 admission,
@@ -701,19 +714,47 @@ enum DeliveryCompletion {
     },
 }
 
+#[derive(Clone, Copy)]
+enum StopReason {
+    User,
+    DurationLimit,
+}
+
+fn stop_tail_duration(
+    recorded: Duration,
+    cfg: &config::RecordingConfig,
+    reason: StopReason,
+) -> Duration {
+    if matches!(reason, StopReason::DurationLimit)
+        || recorded < Duration::from_millis(cfg.min_ms as u64)
+    {
+        return Duration::ZERO;
+    }
+    Duration::from_secs(1).min(Duration::from_secs(cfg.max_seconds as u64).saturating_sub(recorded))
+}
+
 fn finish_active<F>(
     active: &mut Option<ActiveSession>,
     generation: u64,
     publish: &F,
     delivery: &mut dyn Delivery,
+    reason: StopReason,
+    shutdown: &AtomicBool,
 ) -> Result<Snapshot, ToggleError>
 where
     F: Fn(State, u64, Option<Instant>, Option<String>, bool) -> Snapshot,
 {
-    let (capture, worker, started, cfg, output, show_timer, notifications) =
+    let (mut capture, worker, started, cfg, output, show_timer, notifications) =
         active.take().expect("active capture");
+    let stop_requested = Instant::now();
+    let recorded = stop_requested.duration_since(started);
+    let tail_deadline = stop_requested + stop_tail_duration(recorded, &cfg, reason);
     publish(State::Stopping, generation, Some(started), None, show_timer);
     let outcome = (|| -> Result<DeliveryCompletion, String> {
+        let tail = tail_deadline.saturating_duration_since(Instant::now());
+        capture
+            .wait_for_tail(tail, shutdown)
+            .map_err(|e| format!("capture tail failed: {e}"))?;
         let wav = capture
             .stop()
             .map_err(|e| format!("capture stop failed: {e}"))?;
@@ -724,7 +765,8 @@ where
             }
         }
         let cleanup = Cleanup(wav);
-        if started.elapsed() < Duration::from_millis(cfg.min_ms as u64) {
+        // The tail must not make an accidental short tap pass validation.
+        if recorded < Duration::from_millis(cfg.min_ms as u64) {
             return Err("recording is too short".into());
         }
         if no_signal(&cleanup.0) {
@@ -752,6 +794,15 @@ where
             },
         ))
     })();
+    if shutdown.load(Ordering::Acquire) {
+        return Ok(publish(
+            State::Cancelled,
+            generation,
+            None,
+            None,
+            show_timer,
+        ));
+    }
     match outcome {
         Ok(DeliveryCompletion::NoSpeech) => Ok(publish(
             State::Success,
@@ -873,6 +924,44 @@ fn no_signal(path: &Path) -> bool {
 mod tests {
     use super::*;
     use std::sync::{Barrier, atomic::AtomicUsize};
+
+    #[test]
+    fn manual_stop_tail_is_one_second_bounded_by_recording_limit() {
+        let cfg = config::RecordingConfig::default();
+        assert_eq!(
+            stop_tail_duration(Duration::from_secs(2), &cfg, StopReason::User),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            stop_tail_duration(Duration::from_millis(299_750), &cfg, StopReason::User),
+            Duration::from_millis(250)
+        );
+        assert_eq!(
+            stop_tail_duration(Duration::from_secs(300), &cfg, StopReason::User),
+            Duration::ZERO
+        );
+        assert_eq!(
+            stop_tail_duration(Duration::from_secs(301), &cfg, StopReason::User),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn automatic_stop_and_short_taps_have_no_tail() {
+        let cfg = config::RecordingConfig::default();
+        assert_eq!(
+            stop_tail_duration(Duration::from_secs(2), &cfg, StopReason::DurationLimit),
+            Duration::ZERO
+        );
+        assert_eq!(
+            stop_tail_duration(Duration::from_millis(299), &cfg, StopReason::User),
+            Duration::ZERO
+        );
+        assert_eq!(
+            stop_tail_duration(Duration::from_millis(300), &cfg, StopReason::User),
+            Duration::from_secs(1)
+        );
+    }
 
     struct CountingDelivery(usize);
     impl Delivery for CountingDelivery {

@@ -6,10 +6,8 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 #[cfg(debug_assertions)]
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(debug_assertions)]
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -193,6 +191,26 @@ impl Capture {
     pub fn level(&self) -> io::Result<Level> {
         analyze_tail(&self.pcm)
     }
+    /// Keep producing PCM briefly after a manual stop request so speech at
+    /// the shortcut boundary reaches both the stream worker and the final WAV.
+    /// Shutdown must not wait for the tail or continue recording unnecessarily.
+    pub fn wait_for_tail(&mut self, duration: Duration, shutdown: &AtomicBool) -> io::Result<()> {
+        let deadline = Instant::now() + duration;
+        loop {
+            if shutdown.load(Ordering::Acquire) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "capture cancelled",
+                ));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() || !self.alive()? {
+                return Ok(());
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(10)));
+        }
+    }
+
     pub fn stop(mut self) -> io::Result<PathBuf> {
         let process_result = self.terminate(Duration::from_secs(2));
         // pw-record 1.6 exits with status 1 after handling SIGINT even though
@@ -572,6 +590,56 @@ mod tests {
     }
 
     #[test]
+    fn stop_tail_keeps_capturing_samples_before_finalizing_wav() {
+        let root = private_root("stop-tail-audio");
+        let fixture = root.join("fixture.wav");
+        let pcm = vec![0x3f; 32_000]; // one second of nonzero synthetic samples
+        let mut bytes = Vec::new();
+        write_wav(&mut bytes, &pcm).unwrap();
+        fs::write(&fixture, bytes).unwrap();
+        let mut capture = Capture::start_fixture(&root, 1, &fixture).unwrap();
+        let before = fs::metadata(capture.paths().0).unwrap().len();
+        capture
+            .wait_for_tail(Duration::from_millis(150), &AtomicBool::new(false))
+            .unwrap();
+        let after = fs::metadata(capture.paths().0).unwrap().len();
+        assert!(
+            after > before,
+            "tail must record additional audio, not just delay processing"
+        );
+        let wav = capture.stop().unwrap();
+        let output = fs::read(&wav).unwrap();
+        assert!(output.len() as u64 >= 44 + after);
+        assert_eq!(&output[44..], &pcm[..output.len() - 44]);
+        cleanup(&wav);
+    }
+
+    #[test]
+    fn shutdown_interrupts_stop_tail_and_capture_cleanup_removes_audio() {
+        let root = private_root("stop-tail-cancel");
+        let fixture = root.join("fixture.wav");
+        let mut bytes = Vec::new();
+        write_wav(&mut bytes, &[0x3f; 32_000]).unwrap();
+        fs::write(&fixture, bytes).unwrap();
+        let mut capture = Capture::start_fixture(&root, 1, &fixture).unwrap();
+        let shutdown = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(20));
+                shutdown.store(true, Ordering::Release);
+            });
+            let started = Instant::now();
+            let error = capture
+                .wait_for_tail(Duration::from_secs(5), &shutdown)
+                .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+            assert!(started.elapsed() < Duration::from_secs(2));
+        });
+        capture.cancel();
+        assert!(!root.join("session-1").exists());
+    }
+
+    #[test]
     fn fixture_waits_for_start_gate() {
         let root = private_root("fixture-gate");
         let pcm = root.join("audio.pcm");
@@ -800,6 +868,11 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(exited, "fake capture did not exit before deadline");
+        let tail_started = Instant::now();
+        capture
+            .wait_for_tail(Duration::from_secs(5), &AtomicBool::new(false))
+            .unwrap();
+        assert!(tail_started.elapsed() < Duration::from_secs(2));
         let error = capture.stop().unwrap_err();
         assert!(error.to_string().contains("23"));
         assert!(!root.join("session-11").exists());
