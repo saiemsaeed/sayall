@@ -759,9 +759,17 @@ fn hasStutterContinuation(source: []const u8, tokens: []const Token, deleted: []
     // continuation. Connectors alone do not prove a stutter ("want coffee
     // coffee, or a latte", "want coffee coffee this time").
     if (!predicatePosition(source, tokens, deleted, index)) return false;
+    // An infinitive can follow a nominal object ("use use to describe").
+    // Retain it unless a copula establishes the repeated predicate instead.
+    if (asciiEq(tokens[continuation].text, "to")) return copularPredicatePosition(source, tokens, deleted, index);
+    if (nextContextToken(source, tokens, deleted, continuation)) |noun| {
+        for ([_][]const u8{ "time", "times", "way", "ways", "day", "days", "week", "weeks", "month", "months", "year", "years", "morning", "afternoon", "evening", "night", "season", "semester" }) |adjunct| {
+            if (asciiEq(tokens[noun].text, adjunct)) return false;
+        }
+    }
     // A relative "that" or an auxiliary can instead follow a same-spelled
     // object/embedded subject: "paint paint that dries", "hope hope is ...".
-    for ([_][]const u8{ "the", "a", "an", "this", "these", "those", "my", "your", "our", "their", "his", "her", "its", "to" }) |word| {
+    for ([_][]const u8{ "the", "a", "an", "this", "these", "those", "my", "your", "our", "their", "his", "her", "its" }) |word| {
         if (asciiEq(tokens[continuation].text, word)) return true;
     }
     return false;
@@ -788,6 +796,16 @@ fn previousContextToken(source: []const u8, tokens: []const Token, deleted: []co
         if (!deleted[previous]) return previous;
     }
     return null;
+}
+
+fn copularPredicatePosition(source: []const u8, tokens: []const Token, deleted: []const bool, index: usize) bool {
+    const previous = previousContextToken(source, tokens, deleted, index) orelse return false;
+    if (copula(tokens[previous].text)) return true;
+    const before = previousContextToken(source, tokens, deleted, previous) orelse return false;
+    if (!copula(tokens[before].text)) return false;
+    if (questionSubject(tokens[previous].text)) return true;
+    for ([_][]const u8{ "this", "that", "these", "those" }) |subject| if (asciiEq(tokens[previous].text, subject)) return true;
+    return false;
 }
 
 fn predicatePosition(source: []const u8, tokens: []const Token, deleted: []const bool, index: usize) bool {
@@ -1234,9 +1252,14 @@ test "clean preserves verb object homographs before relative and embedded clause
         "I paint paint that dries quickly",
         "I hope hope is enough",
         "I hope hope will prevail",
+        "I use use to describe practical utility",
+        "I spray spray to repel insects",
+        "I use use this way",
+        "I use use this year",
     };
     for (unchanged) |text| try expectClean(text, text, &.{});
     try expectClean("I use use this tool", "I use this tool", &.{});
+    try expectClean("Is it expected expected to work", "Is it expected to work", &.{});
 }
 
 test "clean preserves free relative subject predicate overlaps" {
