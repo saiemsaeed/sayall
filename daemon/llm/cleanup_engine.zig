@@ -759,7 +759,9 @@ fn hasStutterContinuation(source: []const u8, tokens: []const Token, deleted: []
     // continuation. Connectors alone do not prove a stutter ("want coffee
     // coffee, or a latte", "want coffee coffee this time").
     if (!predicatePosition(source, tokens, deleted, index)) return false;
-    for ([_][]const u8{ "the", "a", "an", "this", "that", "these", "those", "my", "your", "our", "their", "his", "her", "its", "to", "is", "are", "was", "were", "has", "have", "had", "can", "could", "will", "would", "shall", "should", "must", "may", "might", "does", "did" }) |word| {
+    // A relative "that" or an auxiliary can instead follow a same-spelled
+    // object/embedded subject: "paint paint that dries", "hope hope is ...".
+    for ([_][]const u8{ "the", "a", "an", "this", "these", "those", "my", "your", "our", "their", "his", "her", "its", "to" }) |word| {
         if (asciiEq(tokens[continuation].text, word)) return true;
     }
     return false;
@@ -1224,6 +1226,17 @@ test "clean protects object complements by clause context rather than repeated w
     try expectClean("Consider this\nplease test test this", "Consider this\nplease test this", &.{});
     try expectClean("I use use this and consider work work", "I use this and consider work work", &.{});
     try expectClean("Can you make make this?", "Can you make this?", &.{});
+}
+
+test "clean preserves verb object homographs before relative and embedded clauses" {
+    const unchanged = [_][]const u8{
+        "I fish fish that migrate",
+        "I paint paint that dries quickly",
+        "I hope hope is enough",
+        "I hope hope will prevail",
+    };
+    for (unchanged) |text| try expectClean(text, text, &.{});
+    try expectClean("I use use this tool", "I use this tool", &.{});
 }
 
 test "clean preserves free relative subject predicate overlaps" {
