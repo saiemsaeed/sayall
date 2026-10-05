@@ -575,7 +575,9 @@ imperative stutters such as `Use use this` can remain unchanged; `I use use this
 and `please use use this` have clearer context and are cleaned.
 Repeated content words before other content words or without a continuation
 remain intact, preserving productive emphasis such as `long long ago`,
-`tiny tiny particles`, and `many many failures`. Some genuine stutters (such as
+`tiny tiny particles`, and `many many failures`. A following preposition alone
+also does not justify deletion (`far far from home`). Free-relative overlaps
+such as `What happens happens for a reason` remain intact. Some genuine stutters (such as
 an isolated `use use`) are therefore deliberately left unchanged.
 These rules do not cross sentence boundaries or line breaks, or edit quoted,
 technical, or glossary spans. These rules do not change `2` into `two`. Enable them with

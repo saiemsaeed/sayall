@@ -132,7 +132,7 @@ pub fn clean(gpa: Allocator, transcript: []const u8, glossary: []const []const u
             !nominalSubjectContext(transcript, tokens, context_start) and
             grammaticalStutterContext(transcript, tokens, deleted, context_start) and
             !spelledLetterContext(transcript, tokens, context_start) and
-            hasStutterContinuation(transcript, tokens, i) and
+            hasStutterContinuation(transcript, tokens, context_start) and
             tokenChunkStart(transcript, t) == t.start and
             tokenChunkStart(transcript, next) == next.start)
         {
@@ -619,11 +619,22 @@ fn functionWord(text: []const u8) bool {
 // together"). A directly preceding copula instead establishes a predicate
 // nominal ("this is the test test for ..."). Preserve uncertain noun phrases.
 fn nominalSubjectContext(source: []const u8, tokens: []const Token, index: usize) bool {
-    if (functionWord(tokens[index].text)) return false;
+    // A name may be the second copy ("I use Use for work"), or even two
+    // function words (the band "The The"). Inspect the whole source run.
+    var capitals: usize = 0;
+    var last = index;
+    while (true) {
+        if (tokens[last].text.len > 1 and std.ascii.isUpper(tokens[last].text[0])) capitals += 1;
+        if (last + 1 == tokens.len or !asciiEq(tokens[index].text, tokens[last + 1].text) or !commaOrSpaceGap(source, tokens[last], tokens[last + 1])) break;
+        last += 1;
+    }
+    const is_function = functionWord(tokens[index].text);
+    if (capitals >= (if (is_function) @as(usize, 2) else @as(usize, 1))) return true;
+    if (is_function) return false;
     // Without a subject/verb context, a bare run may begin with a noun or
     // proper name, not a stutter ("Rose rose to leave"). Capitalized content
     // words elsewhere may be names too. Do not guess them away.
-    if (index == 0 or std.ascii.isUpper(tokens[index].text[0])) return true;
+    if (index == 0) return true;
     for (source[tokens[index - 1].end..tokens[index].start]) |c| {
         if (std.mem.indexOfScalar(u8, ".?!;:\n\r", c) != null) return true;
     }
@@ -717,14 +728,25 @@ fn hasStutterContinuation(source: []const u8, tokens: []const Token, index: usiz
     if ((suffix.len != 0 and !std.mem.eql(u8, suffix, ",")) or
         !horizontalGap(source[end..tokens[last + 1].start])) return false;
     if (functionWord(tokens[index].text)) return true;
-    for ([_][]const u8{ "the", "a", "an", "this", "that", "these", "those", "my", "your", "our", "their", "his", "her", "its", "to", "for", "of", "in", "on", "at", "with", "from", "by", "and", "or", "is", "are", "was", "were", "has", "have", "had", "can", "could", "will", "would", "shall", "should", "must", "may", "might", "does", "did" }) |word| {
+    // A following preposition alone cannot distinguish a stutter from an
+    // emphatic modifier ("far far from", "long long into"). A directly
+    // copular determiner-led nominal supplies a narrower noun context.
+    if (index >= 2 and copula(tokens[index - 2].text)) {
+        for ([_][]const u8{ "the", "a", "an" }) |article| {
+            if (!asciiEq(tokens[index - 1].text, article)) continue;
+            for ([_][]const u8{ "for", "of", "in", "on", "at", "with", "from", "by" }) |prep| {
+                if (asciiEq(tokens[last + 1].text, prep)) return true;
+            }
+        }
+    }
+    for ([_][]const u8{ "the", "a", "an", "this", "that", "these", "those", "my", "your", "our", "their", "his", "her", "its", "to", "and", "or", "is", "are", "was", "were", "has", "have", "had", "can", "could", "will", "would", "shall", "should", "must", "may", "might", "does", "did" }) |word| {
         if (asciiEq(tokens[last + 1].text, word)) return true;
     }
     return false;
 }
 
-// A preceding object-complement predicate is evidence that identical words
-// may have different roles ("makes you you", "consider work work"). Preserve
+// A preceding object-complement predicate or free-relative marker is
+// evidence that identical words may have different roles ("makes you you", "consider work work"). Preserve
 // repetitions throughout that clause, including coordinated complements,
 // rather than adding the particular repeated nouns/pronouns to an exception
 // list. This intentionally favors missed stutters over deleting meaning.
@@ -737,23 +759,21 @@ fn objectComplementContext(source: []const u8, tokens: []const Token, index: usi
         }
         if (tokens[i].protected) return false;
         for ([_][]const u8{
-            "make",     "makes",     "made",       "making",
-            "consider", "considers", "considered", "considering",
-            "call",     "calls",     "called",     "calling",
-            "find",     "finds",     "found",      "finding",
-            "deem",     "deems",     "deemed",     "deeming",
-            "declare",  "declares",  "declared",   "declaring",
-            "label",    "labels",    "labeled",    "labelled",
-            "labeling", "labelling", "name",       "names",
-            "named",    "naming",    "keep",       "keeps",
-            "kept",     "keeping",   "leave",      "leaves",
-            "left",     "leaving",   "render",     "renders",
-            "rendered", "rendering", "prove",      "proves",
-            "proved",   "proven",    "proving",    "judge",
-            "judges",   "judged",    "judging",    "elect",
-            "elects",   "elected",   "electing",   "appoint",
-            "appoints", "appointed", "appointing", "think",
-            "thinks",   "thought",   "thinking",
+            "what",      "whatever",   "whoever",     "whichever", "whomever",
+            "make",      "makes",      "made",        "making",    "consider",
+            "considers", "considered", "considering", "call",      "calls",
+            "called",    "calling",    "find",        "finds",     "found",
+            "finding",   "deem",       "deems",       "deemed",    "deeming",
+            "declare",   "declares",   "declared",    "declaring", "label",
+            "labels",    "labeled",    "labelled",    "labeling",  "labelling",
+            "name",      "names",      "named",       "naming",    "keep",
+            "keeps",     "kept",       "keeping",     "leave",     "leaves",
+            "left",      "leaving",    "render",      "renders",   "rendered",
+            "rendering", "prove",      "proves",      "proved",    "proven",
+            "proving",   "judge",      "judges",      "judged",    "judging",
+            "elect",     "elects",     "elected",     "electing",  "appoint",
+            "appoints",  "appointed",  "appointing",  "think",     "thinks",
+            "thought",   "thinking",
         }) |verb| if (asciiEq(tokens[i].text, verb)) return true;
     }
     return false;
@@ -1104,11 +1124,24 @@ test "clean protects object complements by clause context rather than repeated w
     try expectClean("Can you make make this?", "Can you make this?", &.{});
 }
 
+test "clean preserves free relative subject predicate overlaps" {
+    const unchanged = [_][]const u8{
+        "What happens happens for a reason",
+        "Whatever happens happens for a reason",
+        "Whoever calls calls to ask for help",
+        "What works works for everyone",
+        "Whatever remains remains in place",
+    };
+    for (unchanged) |text| try expectClean(text, text, &.{});
+    try expectClean("What works works. I use use this", "What works works. I use this", &.{});
+}
+
 test "clean preserves proper name verb repetitions and bare subject ambiguity" {
     const unchanged = [_][]const u8{
-        "Rose rose to leave",       "rose rose to leave",     "Today Rose rose to leave",
-        "Mark mark the spot",       "Bora Bora is beautiful", "Duran Duran are performing",
-        "Stop. Rose rose to leave", "Use use this",           "Rose rose rose to leave",
+        "Rose rose to leave",       "rose rose to leave",             "Today Rose rose to leave",
+        "Mark mark the spot",       "Bora Bora is beautiful",         "Duran Duran are performing",
+        "Stop. Rose rose to leave", "Use use this",                   "Rose rose rose to leave",
+        "I use Use for work",       "We listen to The The on repeat", "I use Use use this",
     };
     for (unchanged) |text| try expectClean(text, text, &.{});
     try expectClean("I use use this", "I use this", &.{});
@@ -1128,6 +1161,7 @@ test "clean preserves noun verb homographs and still removes imperative stutters
     try expectClean("Please find find find the file", "Please find the file", &.{});
     try expectClean("Please test test this change", "Please test this change", &.{});
     try expectClean("This is the test test for clean mode", "This is the test for clean mode", &.{});
+    try expectClean("This is the test test test for clean mode", "This is the test for clean mode", &.{});
 }
 
 test "clean preserves particles and prepositions across grammatical boundaries" {
@@ -1180,6 +1214,10 @@ test "clean preserves pronouns shared across complement clauses" {
 test "clean preserves productive emphasis without an adjective vocabulary" {
     const unchanged = [_][]const u8{
         "It happened long long ago",
+        "It lasted long long into the night",
+        "He traveled far far from home",
+        "It lasted long long after midnight",
+        "She stood close close by the door",
         "He went far far away",
         "There were many many failures",
         "There were many many of them",
