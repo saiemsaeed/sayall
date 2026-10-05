@@ -559,7 +559,8 @@ Verbatim when intentional repetition must be preserved exactly. It keeps ambiguo
 repetitions such as `no no`, `very very`, and `had had`, as well as repeated
 numeric digits and number words, acronyms, and mixed-case identifiers. Single-character
 repetitions are preserved (including `a a batteries`, which may mean AA), except
-for `I` in a supported pronoun context. Grammatical
+for `I` in a supported pronoun context. Repeated `and`/`or` remain intact because
+they can name operators in unquoted technical prose. Grammatical
 duplicates involving `her` or auxiliary/copular verbs remain untouched (for
 example, `I gave her her book`, `what it is is unclear`, and `I do do that`), even
 when those words might instead be accidental stutters. Repeated pronouns,

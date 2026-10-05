@@ -152,6 +152,15 @@ pub fn clean(gpa: Allocator, transcript: []const u8, glossary: []const []const u
     while (n >= 2) : (n -= 1) {
         var base: usize = 0;
         while (base + n * 2 <= tokens.len) {
+            // Uniform word runs belong to the guarded single-word pass.
+            // Do not bypass its protections by grouping four copies as two
+            // identical two-word phrases (e.g. "no no no no").
+            var uniform = true;
+            for (tokens[base + 1 .. base + n]) |token| uniform = uniform and asciiEq(tokens[base].text, token.text);
+            if (uniform) {
+                base += 1;
+                continue;
+            }
             var candidate = base + n;
             if (!cleanRangesEqual(transcript, tokens, deleted, protected, base, candidate, n)) {
                 base += 1;
@@ -883,6 +892,9 @@ fn stutterWord(text: []const u8) bool {
         "her",   "am",   "are",   "is",     "was",  "were",  "be",  "been",  "being",
         "have",  "has",  "had",   "do",     "does", "did",   "can", "could", "may",
         "might", "must", "shall", "should", "will", "would",
+        // Conjunctions can themselves name operators without quotes:
+        // "both and and or operators". Keep this closed class ambiguous.
+        "and", "or",
     }) |word| if (asciiEq(text, word)) return false;
     // Meaningful emphasis, grammatical repetitions, and spoken numeric values
     // must not be silently collapsed. Quotes and glossary spans are protected
@@ -1161,7 +1173,7 @@ test "clean repetition is exact adjacent and at least two tokens" {
 test "clean collapses common single word stutters and preserves final punctuation" {
     try expectClean("I I use use this", "I use this", &.{});
     try expectClean("please use use use this.", "please use this.", &.{});
-    try expectClean("in the the file and and in in here", "in the file and in here", &.{});
+    try expectClean("in the the file and and in in here", "in the file and and in here", &.{});
     try expectClean("please use\tuse this", "please use this", &.{});
     try expectClean("I use, use this tool to work.", "I use this tool to work.", &.{});
     try expectClean("Please use use use, use this.", "Please use this.", &.{});
@@ -1253,6 +1265,19 @@ test "clean protects object complements by clause context rather than repeated w
     try expectClean("Consider this\nplease test test this", "Consider this\nplease test this", &.{});
     try expectClean("I use use this and consider work work", "I use this and consider work work", &.{});
     try expectClean("Can you make make this?", "Can you make this?", &.{});
+}
+
+test "clean preserves unquoted conjunction names and protected uniform runs" {
+    const unchanged = [_][]const u8{
+        "Explain both and and or operators",
+        "Explain both or or and operators",
+        "and and or operators",
+        "no no no no",
+        "a a a a batteries",
+        "and and and and or operators",
+        "very very very very good",
+    };
+    for (unchanged) |text| try expectClean(text, text, &.{});
 }
 
 test "clean preserves verb object homographs before relative and embedded clauses" {
