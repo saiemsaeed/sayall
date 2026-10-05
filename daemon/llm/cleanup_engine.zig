@@ -750,6 +750,10 @@ fn grammaticalStutterContext(source: []const u8, tokens: []const Token, deleted:
 fn hasStutterContinuation(source: []const u8, tokens: []const Token, deleted: []const bool, omitted: []const bool, index: usize) bool {
     const last = repetitionContextEnd(source, tokens, omitted, index);
     const continuation = nextContextToken(source, tokens, deleted, last) orelse return false;
+    if (questionSubject(tokens[index].text) and clauseContains(source, tokens, continuation, &.{
+        "alone",      "only",       "myself",       "yourself",     "yourselves", "ourselves", "himself", "herself", "itself", "themselves",
+        "personally", "especially", "particularly", "specifically",
+    })) return false;
     if (functionWord(tokens[index].text)) return true;
     // A following preposition alone cannot distinguish a stutter from an
     // emphatic modifier ("far far from", "long long into"). A directly
@@ -789,6 +793,16 @@ fn hasStutterContinuation(source: []const u8, tokens: []const Token, deleted: []
     // object/embedded subject: "paint paint that dries", "hope hope is ...".
     for ([_][]const u8{ "the", "a", "an", "this", "these", "those", "my", "your", "our", "their", "his", "her", "its" }) |word| {
         if (asciiEq(tokens[continuation].text, word)) return true;
+    }
+    return false;
+}
+
+fn clauseContains(source: []const u8, tokens: []const Token, start: usize, words: []const []const u8) bool {
+    for (tokens[start..], start..) |token, index| {
+        if (index > 0) for (source[tokens[index - 1].end..token.start]) |c| {
+            if (std.mem.indexOfScalar(u8, ".?!;:\n\r", c) != null) return false;
+        };
+        for (words) |word| if (asciiEq(token.text, word)) return true;
     }
     return false;
 }
@@ -1265,6 +1279,19 @@ test "clean protects object complements by clause context rather than repeated w
     try expectClean("Consider this\nplease test test this", "Consider this\nplease test this", &.{});
     try expectClean("I use use this and consider work work", "I use this and consider work work", &.{});
     try expectClean("Can you make make this?", "Can you make this?", &.{});
+}
+
+test "clean preserves pronoun focus through its source clause" {
+    const unchanged = [_][]const u8{
+        "You, you alone can fix this",
+        "I I myself will do it",
+        "You you are the only one who can help",
+        "We we personally approved this",
+    };
+    for (unchanged) |text| try expectClean(text, text, &.{});
+    try expectClean("I um I alone can do it", "I I alone can do it", &.{});
+    try expectClean("you you know this", "you know this", &.{});
+    try expectClean("I I use this. You alone can fix that", "I use this. You alone can fix that", &.{});
 }
 
 test "clean preserves unquoted conjunction names and protected uniform runs" {
