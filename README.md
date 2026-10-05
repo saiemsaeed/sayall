@@ -223,11 +223,13 @@ zig build process -Doptimize=ReleaseFast  # required: default build does not reb
 zig build test-batch
 cargo test --locked --manifest-path ui/linux/Cargo.toml
 cargo build --locked --release --manifest-path ui/linux/Cargo.toml
+# Co-locate the host with the new worker; otherwise it can use /usr/lib's worker.
+install -m 755 ui/linux/target/release/sayall-hud zig-out/bin/sayall-hud
 
 # Stop the packaged host before running a checkout build; both use the same
 # socket and configuration.
 systemctl --user stop sayall-hud.service
-./ui/linux/target/release/sayall-hud --autostart
+./zig-out/bin/sayall-hud --autostart
 ```
 
 In another terminal, use `./zig-out/bin/sayall status` and `toggle`.
@@ -558,7 +560,9 @@ repetitions such as `no no`, `very very`, and `had had`, as well as repeated
 numeric digits and number words, acronyms, and mixed-case identifiers. Grammatical
 duplicates involving `her` or auxiliary/copular verbs remain untouched (for
 example, `I gave her her book`, `what it is is unclear`, and `I do do that`), even
-when those words might instead be accidental stutters. Clean also preserves
+when those words might instead be accidental stutters. Personal pronoun repeats
+are only collapsed in subject-start positions; object/subject overlaps such as
+`I told you you were wrong` remain intact. Clean also preserves
 repetitions after object-complement predicates in the same clause, such as
 `What makes you you?` or `I consider work work`. This contextual safeguard can
 leave genuine stutters untouched rather than risk deleting meaningful words.

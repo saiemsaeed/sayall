@@ -128,6 +128,7 @@ pub fn clean(gpa: Allocator, transcript: []const u8, glossary: []const []const u
         if (!deleted[i] and !deleted[i + 1] and !protected[i] and !protected[i + 1] and
             stutterWord(t.text) and stutterWord(next.text) and asciiEq(t.text, next.text) and
             !objectComplementContext(transcript, tokens, i) and
+            pronounStutterContext(transcript, tokens, deleted, spelling[i]) and
             hasStutterContinuation(transcript, tokens, i) and
             tokenChunkStart(transcript, t) == t.start and
             tokenChunkStart(transcript, next) == next.start)
@@ -595,6 +596,32 @@ fn asciiLetters(text: []const u8) bool {
     for (text) |c| if (!std.ascii.isAlphabetic(c)) return false;
     return true;
 }
+// The same pronoun can be an object and the next clause's subject ("I told
+// you you were wrong"). Only collapse subject pronouns at a clause start;
+// an arbitrary preceding verb is not evidence of a stutter. Use the original
+// start of a repeated run so triple stutters keep the same decision.
+fn pronounStutterContext(source: []const u8, tokens: []const Token, deleted: []const bool, index: usize) bool {
+    for ([_][]const u8{ "me", "him", "her", "us", "them" }) |word| if (asciiEq(tokens[index].text, word)) return false;
+    var subject_pronoun = false;
+    for ([_][]const u8{ "i", "you", "he", "she", "it", "we", "they" }) |word| {
+        subject_pronoun = subject_pronoun or asciiEq(tokens[index].text, word);
+    }
+    if (!subject_pronoun) return true;
+    var previous = index;
+    while (previous > 0) {
+        previous -= 1;
+        if (deleted[previous]) continue;
+        for (source[tokens[previous].end..tokens[index].start]) |c| {
+            if (std.mem.indexOfScalar(u8, ".?!;:\n\r", c) != null) return true;
+        }
+        for ([_][]const u8{ "and", "or", "but", "if", "when", "while", "because", "although", "unless", "that", "whether", "since", "until", "where" }) |word| {
+            if (asciiEq(tokens[previous].text, word)) return true;
+        }
+        return false;
+    }
+    return true;
+}
+
 // Repeated open-class words before another content word can be productive
 // emphasis, regardless of vocabulary: "long long ago", "tiny tiny particles",
 // "many many failures". An isolated/trailing run is ambiguous too. Only edit
@@ -608,7 +635,11 @@ fn hasStutterContinuation(source: []const u8, tokens: []const Token, index: usiz
         if ((suffix.len != 0 and !std.mem.eql(u8, suffix, ",")) or
             !horizontalGap(source[tokenChunkEnd(source, tokens[last])..tokens[last + 1].start])) return false;
     }
-    if (last + 1 == tokens.len or !horizontalGap(source[tokens[last].end..tokens[last + 1].start])) return false;
+    if (last + 1 == tokens.len) return false;
+    const end = tokenChunkEnd(source, tokens[last]);
+    const suffix = source[tokens[last].end..end];
+    if ((suffix.len != 0 and !std.mem.eql(u8, suffix, ",")) or
+        !horizontalGap(source[end..tokens[last + 1].start])) return false;
     for ([_][]const u8{ "i", "you", "we", "they", "he", "she", "it", "the", "a", "an", "this", "these", "those", "to", "of", "in", "for", "with", "and", "or" }) |word| {
         if (asciiEq(tokens[index].text, word)) return true;
     }
@@ -951,6 +982,9 @@ test "clean collapses common single word stutters and preserves final punctuatio
     try expectClean("I use, use this tool to work.", "I use this tool to work.", &.{});
     try expectClean("Use use use, use this.", "Use this.", &.{});
     try expectClean("I, I use, use this.", "I use this.", &.{});
+    try expectClean("I I, think this", "I, think this", &.{});
+    try expectClean("use use, this", "use, this", &.{});
+    try expectClean("Use use use, this", "Use, this", &.{});
     try expectClean("The the tool", "The tool", &.{});
 }
 
@@ -994,6 +1028,25 @@ test "clean protects object complements by clause context rather than repeated w
     try expectClean("Consider this\ntest test this", "Consider this\ntest this", &.{});
     try expectClean("I use use this and consider work work", "I use this and consider work work", &.{});
     try expectClean("Can you make make this?", "Can you make this?", &.{});
+}
+
+test "clean preserves pronouns shared across complement clauses" {
+    const unchanged = [_][]const u8{
+        "I told you you were wrong",
+        "I assure you you can do it",
+        "We warned you you would regret it",
+        "They convinced me me being there mattered",
+        "I told it it was wrong",
+        "It is you you should ask",
+        "Are you you today?",
+        "I told you, you were wrong",
+    };
+    for (unchanged) |text| try expectClean(text, text, &.{});
+    try expectClean("You you know", "You know", &.{});
+    try expectClean("I I I use this", "I use this", &.{});
+    try expectClean("um I I use this", "I use this", &.{});
+    try expectClean("Stop. You you know", "Stop. You know", &.{});
+    try expectClean("if you you know", "if you know", &.{});
 }
 
 test "clean preserves productive emphasis without an adjective vocabulary" {
