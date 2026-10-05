@@ -127,7 +127,8 @@ pub fn clean(gpa: Allocator, transcript: []const u8, glossary: []const []const u
         const next = tokens[i + 1];
         if (!deleted[i] and !deleted[i + 1] and !protected[i] and !protected[i + 1] and
             stutterWord(t.text) and stutterWord(next.text) and asciiEq(t.text, next.text) and
-            !objectComplementContext(transcript, tokens, i) and
+            !objectComplementContext(transcript, tokens, spelling[i]) and
+            !nominalSubjectContext(transcript, tokens, spelling[i]) and
             grammaticalStutterContext(transcript, tokens, deleted, spelling[i]) and
             !spelledLetterContext(transcript, tokens, spelling[i]) and
             hasStutterContinuation(transcript, tokens, i) and
@@ -597,6 +598,40 @@ fn asciiLetters(text: []const u8) bool {
     for (text) |c| if (!std.ascii.isAlphabetic(c)) return false;
     return true;
 }
+fn functionWord(text: []const u8) bool {
+    for ([_][]const u8{ "i", "you", "we", "they", "he", "she", "it", "the", "a", "an", "this", "these", "those", "to", "of", "in", "for", "with", "and", "or" }) |word| {
+        if (asciiEq(text, word)) return true;
+    }
+    return false;
+}
+
+// An article/determiner-led noun phrase can end with the subject and begin
+// its predicate with the same spelling ("the police police", "the band band
+// together"). A directly preceding copula instead establishes a predicate
+// nominal ("this is the test test for ..."). Preserve uncertain noun phrases.
+fn nominalSubjectContext(source: []const u8, tokens: []const Token, index: usize) bool {
+    if (functionWord(tokens[index].text)) return false;
+    // Zero-marked plural nouns also occur as bare subjects without articles.
+    for ([_][]const u8{ "police", "people", "fish", "buffalo", "staff", "crew" }) |word| if (asciiEq(tokens[index].text, word)) return true;
+    var i = index;
+    while (i > 0) {
+        i -= 1;
+        for (source[tokens[i].end..tokens[i + 1].start]) |c| {
+            if (std.mem.indexOfScalar(u8, ".?!;:\n\r", c) != null) return false;
+        }
+        if (copula(tokens[i].text)) return false;
+        for ([_][]const u8{ "and", "or", "but", "i", "you", "he", "she", "it", "we", "they" }) |boundary| if (asciiEq(tokens[i].text, boundary)) return false;
+        for ([_][]const u8{ "the", "a", "an", "this", "that", "these", "those", "my", "your", "our", "their", "his", "her", "its" }) |word| {
+            if (asciiEq(tokens[i].text, word)) return i == 0 or !copula(tokens[i - 1].text);
+        }
+    }
+    return false;
+}
+fn copula(word: []const u8) bool {
+    for ([_][]const u8{ "am", "is", "are", "was", "were", "be", "been", "being" }) |value| if (asciiEq(word, value)) return true;
+    return false;
+}
+
 // Lowercase a/i can be articles/pronouns or literal letters. Preserve a run
 // adjacent to another letter or a digit token so spelling "g a a" or "a a 9"
 // is never mistaken for a prose stutter.
@@ -665,9 +700,7 @@ fn hasStutterContinuation(source: []const u8, tokens: []const Token, index: usiz
     const suffix = source[tokens[last].end..end];
     if ((suffix.len != 0 and !std.mem.eql(u8, suffix, ",")) or
         !horizontalGap(source[end..tokens[last + 1].start])) return false;
-    for ([_][]const u8{ "i", "you", "we", "they", "he", "she", "it", "the", "a", "an", "this", "these", "those", "to", "of", "in", "for", "with", "and", "or" }) |word| {
-        if (asciiEq(tokens[index].text, word)) return true;
-    }
+    if (functionWord(tokens[index].text)) return true;
     for ([_][]const u8{ "the", "a", "an", "this", "that", "these", "those", "my", "your", "our", "their", "his", "her", "its", "to", "for", "of", "in", "on", "at", "with", "from", "by", "and", "or", "is", "are", "was", "were", "has", "have", "had", "can", "could", "will", "would", "shall", "should", "must", "may", "might", "does", "did" }) |word| {
         if (asciiEq(tokens[last + 1].text, word)) return true;
     }
@@ -1055,6 +1088,21 @@ test "clean protects object complements by clause context rather than repeated w
     try expectClean("Can you make make this?", "Can you make this?", &.{});
 }
 
+test "clean preserves noun verb homographs and still removes imperative stutters" {
+    const unchanged = [_][]const u8{
+        "The police police the area",       "Police police the area",
+        "The local police police the area", "The band band together",
+        "The crowd crowd around the stage", "Fish fish in shallow water",
+        "People people the planet",         "The fish fish in schools",
+    };
+    for (unchanged) |text| try expectClean(text, text, &.{});
+    try expectClean("Make make make this change", "Make this change", &.{});
+    try expectClean("Please make make make this change", "Please make this change", &.{});
+    try expectClean("Find find find the file", "Find the file", &.{});
+    try expectClean("Test test this change", "Test this change", &.{});
+    try expectClean("This is the test test for clean mode", "This is the test for clean mode", &.{});
+}
+
 test "clean preserves particles and prepositions across grammatical boundaries" {
     const unchanged = [_][]const u8{
         "This is what I was looking for for years",
@@ -1137,7 +1185,7 @@ test "clean preserves grammatical duplicates without disabling unrelated stutter
         "I know that that works",
     };
     for (grammatical) |text| try expectClean(text, text, &.{});
-    try expectClean("I I gave her her book for the test test of this feature", "I gave her her book for the test of this feature", &.{});
+    try expectClean("I I gave her her book. This is the test test of this feature", "I gave her her book. This is the test of this feature", &.{});
 }
 
 test "clean preserves ambiguous single repeats and boundaries" {

@@ -567,6 +567,8 @@ book`, and `looking for for years` remain intact. Clean also preserves
 repetitions after object-complement predicates in the same clause, such as
 `What makes you you?` or `I consider work work`. This contextual safeguard can
 leave genuine stutters untouched rather than risk deleting meaningful words.
+Determiner-led noun phrases and common bare noun/verb homographs are also
+protected, for example `The police police the area` and `Fish fish in schools`.
 Repeated content words before other content words or without a continuation
 remain intact, preserving productive emphasis such as `long long ago`,
 `tiny tiny particles`, and `many many failures`. Some genuine stutters (such as
