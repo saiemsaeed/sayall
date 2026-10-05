@@ -552,8 +552,8 @@ retain their legacy formatting behavior for this migration cycle. The legacy
 compatibility path but cannot be selected for Polished mode.
 
 Clean collapses adjacent repeated English prose words when the continuation
-supports a stutter: for example, `test test this`, `expected expected to work`,
-`you you know`, `use, use this`, and `The the tool`. It preserves the first
+supports a stutter: for example, `please test test this`, `is expected expected
+to work`, `you you know`, `I use, use this`, and `The the tool`. It preserves the first
 copy's spelling and the final copy's punctuation. This is a heuristic: use
 Verbatim when intentional repetition must be preserved exactly. It keeps ambiguous
 repetitions such as `no no`, `very very`, and `had had`, as well as repeated
@@ -569,6 +569,10 @@ repetitions after object-complement predicates in the same clause, such as
 leave genuine stutters untouched rather than risk deleting meaningful words.
 Determiner-led noun phrases and common bare noun/verb homographs are also
 protected, for example `The police police the area` and `Fish fish in schools`.
+Potential proper names and bare sentence-initial content-word repetitions are
+preserved (`Rose rose to leave`, `Bora Bora is beautiful`). This also means bare
+imperative stutters such as `Use use this` can remain unchanged; `I use use this`
+and `please use use this` have clearer context and are cleaned.
 Repeated content words before other content words or without a continuation
 remain intact, preserving productive emphasis such as `long long ago`,
 `tiny tiny particles`, and `many many failures`. Some genuine stutters (such as

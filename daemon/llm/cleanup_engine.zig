@@ -125,12 +125,13 @@ pub fn clean(gpa: Allocator, transcript: []const u8, glossary: []const []const u
     // allowed here, but sentence boundaries, line breaks and literals are not.
     for (tokens[0 .. tokens.len - 1], 0..) |t, i| {
         const next = tokens[i + 1];
+        const context_start = repetitionContextStart(transcript, tokens, i);
         if (!deleted[i] and !deleted[i + 1] and !protected[i] and !protected[i + 1] and
             stutterWord(t.text) and stutterWord(next.text) and asciiEq(t.text, next.text) and
-            !objectComplementContext(transcript, tokens, spelling[i]) and
-            !nominalSubjectContext(transcript, tokens, spelling[i]) and
-            grammaticalStutterContext(transcript, tokens, deleted, spelling[i]) and
-            !spelledLetterContext(transcript, tokens, spelling[i]) and
+            !objectComplementContext(transcript, tokens, context_start) and
+            !nominalSubjectContext(transcript, tokens, context_start) and
+            grammaticalStutterContext(transcript, tokens, deleted, context_start) and
+            !spelledLetterContext(transcript, tokens, context_start) and
             hasStutterContinuation(transcript, tokens, i) and
             tokenChunkStart(transcript, t) == t.start and
             tokenChunkStart(transcript, next) == next.start)
@@ -598,6 +599,14 @@ fn asciiLetters(text: []const u8) bool {
     for (text) |c| if (!std.ascii.isAlphabetic(c)) return false;
     return true;
 }
+// Context belongs to the whole source run even when an earlier copy was
+// protected rather than deleted. Otherwise later copies can bypass a guard.
+fn repetitionContextStart(source: []const u8, tokens: []const Token, index: usize) usize {
+    var start = index;
+    while (start > 0 and asciiEq(tokens[start - 1].text, tokens[index].text) and commaOrSpaceGap(source, tokens[start - 1], tokens[start])) start -= 1;
+    return start;
+}
+
 fn functionWord(text: []const u8) bool {
     for ([_][]const u8{ "i", "you", "we", "they", "he", "she", "it", "the", "a", "an", "this", "these", "those", "to", "of", "in", "for", "with", "and", "or" }) |word| {
         if (asciiEq(text, word)) return true;
@@ -611,6 +620,13 @@ fn functionWord(text: []const u8) bool {
 // nominal ("this is the test test for ..."). Preserve uncertain noun phrases.
 fn nominalSubjectContext(source: []const u8, tokens: []const Token, index: usize) bool {
     if (functionWord(tokens[index].text)) return false;
+    // Without a subject/verb context, a bare run may begin with a noun or
+    // proper name, not a stutter ("Rose rose to leave"). Capitalized content
+    // words elsewhere may be names too. Do not guess them away.
+    if (index == 0 or std.ascii.isUpper(tokens[index].text[0])) return true;
+    for (source[tokens[index - 1].end..tokens[index].start]) |c| {
+        if (std.mem.indexOfScalar(u8, ".?!;:\n\r", c) != null) return true;
+    }
     // Zero-marked plural nouns also occur as bare subjects without articles.
     for ([_][]const u8{ "police", "people", "fish", "buffalo", "staff", "crew" }) |word| if (asciiEq(tokens[index].text, word)) return true;
     var i = index;
@@ -1036,13 +1052,13 @@ test "clean collapses common single word stutters and preserves final punctuatio
     try expectClean("I I use use this", "I use this", &.{});
     try expectClean("please use use use this.", "please use this.", &.{});
     try expectClean("in the the file and and in in here", "in the file and in here", &.{});
-    try expectClean("use\tuse this", "use this", &.{});
+    try expectClean("please use\tuse this", "please use this", &.{});
     try expectClean("I use, use this tool to work.", "I use this tool to work.", &.{});
-    try expectClean("Use use use, use this.", "Use this.", &.{});
+    try expectClean("Please use use use, use this.", "Please use this.", &.{});
     try expectClean("I, I use, use this.", "I use this.", &.{});
     try expectClean("I I, think this", "I, think this", &.{});
-    try expectClean("use use, this", "use, this", &.{});
-    try expectClean("Use use use, this", "Use, this", &.{});
+    try expectClean("I use use, this", "I use, this", &.{});
+    try expectClean("Please use use use, this", "Please use, this", &.{});
     try expectClean("The the tool", "The tool", &.{});
 }
 
@@ -1050,8 +1066,8 @@ test "clean collapses ordinary words beyond the original allowlist" {
     try expectClean("Is this expected expected to work?", "Is this expected to work?", &.{});
     try expectClean("This is the test test for clean mode.", "This is the test for clean mode.", &.{});
     try expectClean("you you know", "you know", &.{});
-    try expectClean("Test test test, test this.", "Test this.", &.{});
-    try expectClean("this this thing needs changes; remove remove the duplicates", "this thing needs changes; remove the duplicates", &.{});
+    try expectClean("Please test test test, test this.", "Please test this.", &.{});
+    try expectClean("this this thing needs changes; please remove remove the duplicates", "this thing needs changes; please remove the duplicates", &.{});
     try expectClean("test test", "test test", &.{"test"});
     try expectClean("say \"test test\" and `expected expected`", "say \"test test\" and `expected expected`", &.{});
     const protected = [_][]const u8{
@@ -1082,10 +1098,21 @@ test "clean protects object complements by clause context rather than repeated w
     // The same words still collapse without evidence of a complement, and
     // a predicate in an earlier sentence/line cannot inhibit later cleanup.
     try expectClean("you you know work work starts now", "you know work work starts now", &.{});
-    try expectClean("Consider this. test test this", "Consider this. test this", &.{});
-    try expectClean("Consider this\ntest test this", "Consider this\ntest this", &.{});
+    try expectClean("Consider this. Please test test this", "Consider this. Please test this", &.{});
+    try expectClean("Consider this\nplease test test this", "Consider this\nplease test this", &.{});
     try expectClean("I use use this and consider work work", "I use this and consider work work", &.{});
     try expectClean("Can you make make this?", "Can you make this?", &.{});
+}
+
+test "clean preserves proper name verb repetitions and bare subject ambiguity" {
+    const unchanged = [_][]const u8{
+        "Rose rose to leave",       "rose rose to leave",     "Today Rose rose to leave",
+        "Mark mark the spot",       "Bora Bora is beautiful", "Duran Duran are performing",
+        "Stop. Rose rose to leave", "Use use this",           "Rose rose rose to leave",
+    };
+    for (unchanged) |text| try expectClean(text, text, &.{});
+    try expectClean("I use use this", "I use this", &.{});
+    try expectClean("Please make make make this change", "Please make this change", &.{});
 }
 
 test "clean preserves noun verb homographs and still removes imperative stutters" {
@@ -1096,10 +1123,10 @@ test "clean preserves noun verb homographs and still removes imperative stutters
         "People people the planet",         "The fish fish in schools",
     };
     for (unchanged) |text| try expectClean(text, text, &.{});
-    try expectClean("Make make make this change", "Make this change", &.{});
+    try expectClean("Make make make this change", "Make make make this change", &.{});
     try expectClean("Please make make make this change", "Please make this change", &.{});
-    try expectClean("Find find find the file", "Find the file", &.{});
-    try expectClean("Test test this change", "Test this change", &.{});
+    try expectClean("Please find find find the file", "Please find the file", &.{});
+    try expectClean("Please test test this change", "Please test this change", &.{});
     try expectClean("This is the test test for clean mode", "This is the test for clean mode", &.{});
 }
 
@@ -1168,7 +1195,7 @@ test "clean preserves productive emphasis without an adjective vocabulary" {
     };
     for (unchanged) |text| try expectClean(text, text, &.{});
     try expectClean("I I saw a tiny tiny particle", "I saw a tiny tiny particle", &.{});
-    try expectClean("test test this and expected expected to work", "test this and expected to work", &.{});
+    try expectClean("please test test this and expected expected to work", "please test this and expected to work", &.{});
 }
 
 test "clean preserves grammatical duplicates without disabling unrelated stutter cleanup" {
@@ -1220,7 +1247,7 @@ test "clean combines stutters fillers and phrases without changing numbers" {
     const expected = "I use the configuration and we should set 3";
     try expectClean(source, expected, &.{});
     try expectClean(expected, expected, &.{});
-    try expectClean("use use these 2 files and one folder", "use these 2 files and one folder", &.{});
+    try expectClean("please use use these 2 files and one folder", "please use these 2 files and one folder", &.{});
     try expectClean("use use", "use use", &.{});
     try expectClean("use", "use", &.{});
     try expectClean("", "", &.{});
