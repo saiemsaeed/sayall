@@ -725,11 +725,7 @@ fn hasStutterContinuation(source: []const u8, tokens: []const Token, deleted: []
         if ((suffix.len != 0 and !std.mem.eql(u8, suffix, ",")) or
             !horizontalGap(source[tokenChunkEnd(source, tokens[last])..tokens[last + 1].start])) return false;
     }
-    if (last + 1 == tokens.len) return false;
-    const end = tokenChunkEnd(source, tokens[last]);
-    const suffix = source[tokens[last].end..end];
-    if ((suffix.len != 0 and !std.mem.eql(u8, suffix, ",")) or
-        !horizontalGap(source[end..tokens[last + 1].start])) return false;
+    const continuation = nextContextToken(source, tokens, deleted, last) orelse return false;
     if (functionWord(tokens[index].text)) return true;
     // A following preposition alone cannot distinguish a stutter from an
     // emphatic modifier ("far far from", "long long into"). A directly
@@ -740,7 +736,7 @@ fn hasStutterContinuation(source: []const u8, tokens: []const Token, deleted: []
         for ([_][]const u8{ "the", "a", "an" }) |article| {
             if (!asciiEq(tokens[previous.?].text, article)) continue;
             for ([_][]const u8{ "for", "of", "in", "on", "at", "with", "from", "by" }) |prep| {
-                if (asciiEq(tokens[last + 1].text, prep)) return true;
+                if (asciiEq(tokens[continuation].text, prep)) return true;
             }
         }
     }
@@ -749,9 +745,20 @@ fn hasStutterContinuation(source: []const u8, tokens: []const Token, deleted: []
     // coffee, or a latte", "want coffee coffee this time").
     if (!predicatePosition(source, tokens, deleted, index)) return false;
     for ([_][]const u8{ "the", "a", "an", "this", "that", "these", "those", "my", "your", "our", "their", "his", "her", "its", "to", "is", "are", "was", "were", "has", "have", "had", "can", "could", "will", "would", "shall", "should", "must", "may", "might", "does", "did" }) |word| {
-        if (asciiEq(tokens[last + 1].text, word)) return true;
+        if (asciiEq(tokens[continuation].text, word)) return true;
     }
     return false;
+}
+
+fn nextContextToken(source: []const u8, tokens: []const Token, deleted: []const bool, index: usize) ?usize {
+    var previous = index;
+    while (previous + 1 < tokens.len) {
+        const next = previous + 1;
+        if (!commaOrSpaceGap(source, tokens[previous], tokens[next])) return null;
+        if (!deleted[next]) return next;
+        previous = next;
+    }
+    return null;
 }
 
 // Context follows surviving words, but deletion must not erase evidence of
@@ -821,7 +828,10 @@ fn stutterWord(text: []const u8) bool {
     // This is an English prose heuristic, not inference of speaker intent.
     // Keep digits, identifiers, acronyms, and spelled-out letter sequences.
     if (!asciiLetters(text)) return false;
-    if (text.len == 1) return std.mem.eql(u8, text, "a") or asciiEq(text, "i");
+    // "a a batteries" can be AA, not a repeated article. A neighboring
+    // third letter is not required for this ambiguity. Only the pronoun I
+    // remains eligible, subject to the clause/spelling context safeguards.
+    if (text.len == 1) return asciiEq(text, "i");
     for (text[1..]) |c| if (std.ascii.isUpper(c)) return false;
     // Object/possessive "her" and auxiliary/copular verbs can legitimately
     // repeat with different roles: "her her book", "what it is is unclear",
@@ -1124,6 +1134,10 @@ test "clean stutter context skips removed fillers without crossing sentence boun
     try expectClean("I um use use this", "I use this", &.{});
     try expectClean("please uh test test this", "please test this", &.{});
     try expectClean("I um uh use use use this", "I use this", &.{});
+    try expectClean("I um use use uh this", "I use this", &.{});
+    try expectClean("please test test uh the change", "please test the change", &.{});
+    try expectClean("I use use, um this", "I use, this", &.{});
+    try expectClean("I use use um. this", "I use use this", &.{});
     try expectClean("Is um this uh expected expected to work", "Is this expected to work", &.{});
     try expectClean("This is um the test test for cleanup", "This is the test for cleanup", &.{});
     try expectClean("This is the um test test for cleanup", "This is the test for cleanup", &.{});
@@ -1250,7 +1264,10 @@ test "clean protects repeated letters beside other dictated letters and digits" 
     };
     for (unchanged) |text| try expectClean(text, text, &.{});
     try expectClean("I I use this", "I use this", &.{});
-    try expectClean("I have a a problem", "I have a problem", &.{});
+    try expectClean("I have a a problem", "I have a a problem", &.{});
+    try expectClean("use a a batteries", "use a a batteries", &.{});
+    try expectClean("I use a a batteries", "I use a a batteries", &.{});
+    try expectClean("insert a, a batteries", "insert a, a batteries", &.{});
 }
 
 test "clean preserves pronouns shared across complement clauses" {

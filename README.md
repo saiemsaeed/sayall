@@ -557,7 +557,9 @@ to work`, `you you know`, `I use, use this`, and `The the tool`. It preserves th
 copy's spelling and the final copy's punctuation. This is a heuristic: use
 Verbatim when intentional repetition must be preserved exactly. It keeps ambiguous
 repetitions such as `no no`, `very very`, and `had had`, as well as repeated
-numeric digits and number words, acronyms, and mixed-case identifiers. Grammatical
+numeric digits and number words, acronyms, and mixed-case identifiers. Single-character
+repetitions are preserved (including `a a batteries`, which may mean AA), except
+for `I` in a supported pronoun context. Grammatical
 duplicates involving `her` or auxiliary/copular verbs remain untouched (for
 example, `I gave her her book`, `what it is is unclear`, and `I do do that`), even
 when those words might instead be accidental stutters. Repeated pronouns,
