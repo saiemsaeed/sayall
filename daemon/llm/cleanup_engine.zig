@@ -127,6 +127,7 @@ pub fn clean(gpa: Allocator, transcript: []const u8, glossary: []const []const u
         const next = tokens[i + 1];
         if (!deleted[i] and !deleted[i + 1] and !protected[i] and !protected[i + 1] and
             stutterWord(t.text) and stutterWord(next.text) and asciiEq(t.text, next.text) and
+            !objectComplementContext(transcript, tokens, i) and
             tokenChunkStart(transcript, t) == t.start and
             tokenChunkStart(transcript, next) == next.start)
         {
@@ -593,6 +594,42 @@ fn asciiLetters(text: []const u8) bool {
     for (text) |c| if (!std.ascii.isAlphabetic(c)) return false;
     return true;
 }
+// A preceding object-complement predicate is evidence that identical words
+// may have different roles ("makes you you", "consider work work"). Preserve
+// repetitions throughout that clause, including coordinated complements,
+// rather than adding the particular repeated nouns/pronouns to an exception
+// list. This intentionally favors missed stutters over deleting meaning.
+fn objectComplementContext(source: []const u8, tokens: []const Token, index: usize) bool {
+    var i = index;
+    while (i > 0) {
+        i -= 1;
+        for (source[tokens[i].end..tokens[i + 1].start]) |c| {
+            if (std.mem.indexOfScalar(u8, ".?!;:\n\r", c) != null) return false;
+        }
+        if (tokens[i].protected) return false;
+        for ([_][]const u8{
+            "make",     "makes",     "made",       "making",
+            "consider", "considers", "considered", "considering",
+            "call",     "calls",     "called",     "calling",
+            "find",     "finds",     "found",      "finding",
+            "deem",     "deems",     "deemed",     "deeming",
+            "declare",  "declares",  "declared",   "declaring",
+            "label",    "labels",    "labeled",    "labelled",
+            "labeling", "labelling", "name",       "names",
+            "named",    "naming",    "keep",       "keeps",
+            "kept",     "keeping",   "leave",      "leaves",
+            "left",     "leaving",   "render",     "renders",
+            "rendered", "rendering", "prove",      "proves",
+            "proved",   "proven",    "proving",    "judge",
+            "judges",   "judged",    "judging",    "elect",
+            "elects",   "elected",   "electing",   "appoint",
+            "appoints", "appointed", "appointing", "think",
+            "thinks",   "thought",   "thinking",
+        }) |verb| if (asciiEq(tokens[i].text, verb)) return true;
+    }
+    return false;
+}
+
 fn stutterWord(text: []const u8) bool {
     // This is an English prose heuristic, not inference of speaker intent.
     // Keep digits, identifiers, acronyms, and spelled-out letter sequences.
@@ -908,6 +945,28 @@ test "clean collapses ordinary words beyond the original allowlist" {
         "café café",
     };
     for (protected) |text| try expectClean(text, text, &.{});
+}
+
+test "clean protects object complements by clause context rather than repeated word identity" {
+    const unchanged = [_][]const u8{
+        "What makes you you?",
+        "I consider work work",
+        "What really makes you you every day?",
+        "They considered work work and play play",
+        "I call a test test",
+        "We find work work even on weekends",
+        "They MADE you you",
+        "Keep work work",
+        "I consider work, work",
+    };
+    for (unchanged) |text| try expectClean(text, text, &.{});
+    // The same words still collapse without evidence of a complement, and
+    // a predicate in an earlier sentence/line cannot inhibit later cleanup.
+    try expectClean("you you know work work starts now", "you know work starts now", &.{});
+    try expectClean("Consider this. test test now", "Consider this. test now", &.{});
+    try expectClean("Consider this\ntest test now", "Consider this\ntest now", &.{});
+    try expectClean("I use use this and consider work work", "I use this and consider work work", &.{});
+    try expectClean("Can you make make this?", "Can you make this?", &.{});
 }
 
 test "clean preserves grammatical duplicates without disabling unrelated stutter cleanup" {

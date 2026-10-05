@@ -557,7 +557,10 @@ repetitions such as `no no`, `very very`, and `had had`, as well as repeated
 numeric digits and number words, acronyms, and mixed-case identifiers. Grammatical
 duplicates involving `her` or auxiliary/copular verbs remain untouched (for
 example, `I gave her her book`, `what it is is unclear`, and `I do do that`), even
-when those words might instead be accidental stutters.
+when those words might instead be accidental stutters. Clean also preserves
+repetitions after object-complement predicates in the same clause, such as
+`What makes you you?` or `I consider work work`. This contextual safeguard can
+leave genuine stutters untouched rather than risk deleting meaningful words.
 These rules do not cross sentence boundaries or line breaks, or edit quoted,
 technical, or glossary spans. These rules do not change `2` into `two`. Enable them with
 `"processing": { "mode": "clean" }`; Polished also uses this Clean stage.
