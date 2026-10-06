@@ -19,7 +19,7 @@ pub const OutputConfig = struct {
 pub const RecordingConfig = struct {
     max_seconds: u32 = 300,
     min_ms: u32 = 300,
-    /// Linux manual-stop capture tail (0 disables it; maximum 1000 ms).
+    /// Linux and macOS manual-stop capture tail (0 disables it; maximum 1000 ms).
     stop_tail_ms: u32 = 10,
     /// PipeWire node name/serial to record from (empty = default source).
     source: []const u8 = "",

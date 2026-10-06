@@ -289,6 +289,57 @@ final class AudioFixtureCaptureTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testTailCapturesAdditionalAudioAndCancellationDoesNotFinalize() async throws {
+        let fixture = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
+        try makeFixture(at: fixture, seconds: 3)
+        let root = URL(fileURLWithPath: "/tmp/sayall-acoustic-e2e-test-\(UUID().uuidString)")
+        let names = ["SAYALL_TEST_AUDIO_FIXTURE", "SAYALL_TEST_RECORDING_ROOT",
+                     "SAYALL_TEST_AUDIO_START_GATE", "SAYALL_TEST_AUDIO_EOF_PATH"]
+        let previous = names.map { name in getenv(name).map { String(cString: $0) } }
+        for name in names { unsetenv(name) }
+        setenv(names[0], fixture.path, 1)
+        setenv(names[1], root.appendingPathComponent("recordings").path, 1)
+        let gate = root.appendingPathComponent("start")
+        setenv(names[2], gate.path, 1)
+        defer {
+            for (name, value) in zip(names, previous) {
+                if let value { setenv(name, value, 1) } else { unsetenv(name) }
+            }
+            try? FileManager.default.removeItem(at: fixture)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let capture = AudioCapture()
+        defer { capture.cancel() }
+        for cancelTail in [false, true] {
+            try? FileManager.default.removeItem(at: gate)
+            let initial = try capture.start()
+            // A tail cannot make a too-short recording eligible.
+            XCTAssertThrowsError(try capture.stopTailDeadline(configuredMs: 1000))
+            try Data().write(to: gate)
+            let readyBy = Date().addingTimeInterval(3)
+            while (try Data(contentsOf: initial.pcmURL)).count < 12_800 && Date() < readyBy {
+                try await Task.sleep(nanoseconds: 20_000_000)
+            }
+            let before = try Data(contentsOf: initial.pcmURL).count
+            XCTAssertGreaterThanOrEqual(before, 12_800)
+            let deadline = try capture.stopTailDeadline(configuredMs: cancelTail ? 1000 : 150)
+            let stopping = Task { @MainActor in try await capture.stop(atTailDeadline: deadline) }
+            if cancelTail {
+                try await Task.sleep(nanoseconds: 20_000_000)
+                stopping.cancel()
+                capture.cancel()
+                do { _ = try await stopping.value; XCTFail("cancelled tail finalized capture") }
+                catch is CancellationError {}
+                XCTAssertFalse(FileManager.default.fileExists(atPath: initial.directoryURL.path))
+            } else {
+                let recording = try await stopping.value
+                XCTAssertGreaterThan(try Data(contentsOf: recording.pcmURL).count, before)
+                try FileManager.default.removeItem(at: recording.directoryURL)
+            }
+        }
+    }
+
     func testFixtureIsPacedAndCanStopWithoutFurtherWrites() throws {
         let fixture = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
         try makeFixture(at: fixture, seconds: 0.8)
@@ -808,6 +859,24 @@ final class TextDeliveryTests: XCTestCase {
 }
 
 final class AudioCaptureConversionTests: XCTestCase {
+    func testRecordingTailPolicyAndBoundaries() {
+        for milliseconds in [0, 1, 10, 25, 1000] {
+            XCTAssertEqual(AudioCapture.stopTailNanoseconds(configuredMs: milliseconds,
+                frames: 32_000, elapsedNanoseconds: 2_000_000_000, automatic: false), UInt64(milliseconds) * 1_000_000)
+            XCTAssertEqual(AudioCapture.stopTailNanoseconds(configuredMs: milliseconds,
+                frames: 32_000, elapsedNanoseconds: 299_995_000_000, automatic: false), UInt64(min(milliseconds, 5)) * 1_000_000)
+            XCTAssertEqual(AudioCapture.stopTailNanoseconds(configuredMs: milliseconds,
+                frames: 4_799_920, elapsedNanoseconds: 2_000_000_000, automatic: false), UInt64(min(milliseconds, 5)) * 1_000_000)
+            XCTAssertEqual(AudioCapture.stopTailNanoseconds(configuredMs: milliseconds,
+                frames: 32_000, elapsedNanoseconds: 2_000_000_000, automatic: true), 0)
+        }
+        for (frames, elapsed) in [(Int64(4799), UInt64(1_000_000_000)), (4800, 299_000_000),
+                                  (4_800_000, 300_000_000_000), (4_800_001, 301_000_000_000)] {
+            XCTAssertEqual(AudioCapture.stopTailNanoseconds(configuredMs: 1000,
+                frames: frames, elapsedNanoseconds: elapsed, automatic: false), 0)
+        }
+    }
+
     func testActiveChannelMonoBufferPreservesTheLoudestInputChannel() throws {
         let layout = try XCTUnwrap(AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_Quadraphonic))
         let format = AVAudioFormat(
@@ -1383,6 +1452,26 @@ final class ConfigurationLoaderTests: XCTestCase {
         let parent = loader.url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: parent.path)
+    }
+
+    func testRecordingTailDefaultsAndValidationMatchSharedConfig() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let loader = ConfigurationLoader(environment: ["DEEPGRAM_API_KEY": "test-key"], homeDirectory: home)
+        try preparePrivateParent(for: loader)
+        XCTAssertEqual(try loader.load().stopTailMs, 10)
+        for json in ["{}", #"{"recording":{}}"#, #"{"recording":{"min_ms":200}}"#] {
+            try Data(json.utf8).write(to: loader.url)
+            XCTAssertEqual(try loader.load().stopTailMs, 10)
+        }
+        for value in [0, 1, 10, 25, 1000] {
+            try Data("{\"recording\":{\"stop_tail_ms\":\(value)}}".utf8).write(to: loader.url)
+            XCTAssertEqual(try loader.load().stopTailMs, value)
+        }
+        for value in ["-1", "1001", "4294967296", "0.5", "null", "true", "\"10\""] {
+            try Data("{\"recording\":{\"stop_tail_ms\":\(value)}}".utf8).write(to: loader.url)
+            XCTAssertThrowsError(try loader.load(), value)
+        }
     }
 
     func testLoadsLinuxConfigSchema() throws {

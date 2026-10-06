@@ -27,6 +27,7 @@ struct ProviderSettings: Equatable {
     let trailingSpace: Bool
     let metricsEnabled: Bool
     let metricsHistoryMaxEntries: Int
+    var stopTailMs: Int = 10
 }
 
 enum ConfigurationError: Error, Equatable {
@@ -71,7 +72,7 @@ struct ConfigurationLoader {
             }
             document = decoded
         } else {
-            document = Document(stt: nil, llm: nil, processing: nil, output: nil, metrics: nil, hud: nil)
+            document = Document(stt: nil, llm: nil, processing: nil, output: nil, metrics: nil, hud: nil, recording: nil)
         }
         return try settings(from: document)
     }
@@ -148,6 +149,8 @@ struct ConfigurationLoader {
         let keyterms = try loadKeyterms(fallback: document.stt?.keyterms ?? [])
         let streaming = document.stt?.streaming ?? true
         let finalizeTimeout = document.stt?.streamFinalizeTimeoutMs ?? 2_000
+        let stopTailMs = document.recording?.stopTailMs ?? 10
+        guard (0...1000).contains(stopTailMs) else { throw ConfigurationError.malformed }
         let llmModel = legacyCloudConfig ? "gpt-oss-120b" : document.llm?.model ?? "gpt-oss-120b"
         let llmBaseURL = legacyCloudConfig ? "https://api.cerebras.ai/v1/chat/completions" :
             document.llm?.baseURL ?? "https://api.cerebras.ai/v1/chat/completions"
@@ -210,7 +213,8 @@ struct ConfigurationLoader {
             outputMethod: outputMethod,
             trailingSpace: document.output?.trailingSpace ?? true,
             metricsEnabled: document.metrics?.enabled ?? true,
-            metricsHistoryMaxEntries: document.metrics?.historyMaxEntries ?? 1_000
+            metricsHistoryMaxEntries: document.metrics?.historyMaxEntries ?? 1_000,
+            stopTailMs: stopTailMs
         )
     }
 
@@ -364,6 +368,16 @@ struct ConfigurationLoader {
         let output: Output?
         let metrics: Metrics?
         let hud: HUD?
+        let recording: Recording?
+    }
+
+    private struct Recording: Decodable {
+        let stopTailMs: Int
+        enum CodingKeys: String, CodingKey { case stopTailMs = "stop_tail_ms" }
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            stopTailMs = values.contains(.stopTailMs) ? try values.decode(Int.self, forKey: .stopTailMs) : 10
+        }
     }
 
     private struct Processing: Decodable {

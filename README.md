@@ -123,7 +123,7 @@ sayall mic-test
 
 Verify `sayall status` reports `idle`, then press `Ctrl+Slash`, speak, and press
 it again. The transcript should be typed into the focused window.
-On Linux, a manual stop enters the `stopping` state immediately but keeps the
+On Linux and macOS, a manual stop enters the `stopping` state immediately but keeps the
 microphone recording for an additional **10 ms by default** to capture speech
 at the shortcut boundary before finalizing transcription. Configure this with
 `recording.stop_tail_ms` (0–1000 ms; `0` disables it). The tail is shortened near
@@ -619,14 +619,16 @@ specific input, set `recording.source` to a PipeWire node name or serial:
 ```
 
 An empty `source` follows the OS default, including future default-device
-changes. `recording.stop_tail_ms` controls the Linux manual-stop capture tail:
+changes. `recording.stop_tail_ms` controls the Linux and macOS manual-stop capture tail:
 use `0` to disable it, `10` for the default, or up to `1000` for more end-of-speech
 padding. Only whole milliseconds from 0 through 1000 are valid. Existing
-configs without this field also use 10 ms; add `1000` to retain the previous
+configs without this field also use 10 ms; add `1000` to retain Linux's previous
 one-second behavior. The config is loaded at the start of each recording, so
 changes apply to the next recording without restarting the app. Capture and
 streaming remain live during the tail, and the app still waits normally for the
-final transcript afterward. macOS does not use this Linux-specific setting.
+final transcript afterward. On macOS the tail is bounded by the existing
+five-minute capture limit; `recording.max_seconds`, `recording.min_ms`, and the
+PipeWire `recording.source` setting remain Linux-specific.
 
 Output method `clipboard` copies without inserting. On macOS, `type` inserts
 at the verified original cursor using clipboard-backed `Command+V`; `paste` is

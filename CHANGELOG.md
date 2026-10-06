@@ -7,7 +7,7 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Added `recording.stop_tail_ms` for the Linux manual-stop capture tail, defaulting
+- Added `recording.stop_tail_ms` for the Linux and macOS manual-stop capture tail, defaulting
   to 10 ms. Set it from 0 (disabled) through 1000 ms; the tail never extends past
   the recording limit and is skipped for short taps, automatic stops, and shutdown.
 
