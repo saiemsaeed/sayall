@@ -432,6 +432,10 @@ test "recording tail defaults for old configs and honors explicit values" {
         .{ .json = "{\"recording\":{\"min_ms\":200,\"max_seconds\":5}}", .expected = 10 },
         .{ .json = "{\"recording\":{\"stop_tail_ms\":0}}", .expected = 0 },
         .{ .json = "{\"recording\":{\"stop_tail_ms\":25}}", .expected = 25 },
+        .{ .json = "{\"recording\":{\"stop_tail_ms\":10.0}}", .expected = 10 },
+        .{ .json = "{\"recording\":{\"stop_tail_ms\":1e1}}", .expected = 10 },
+        .{ .json = "{\"recording\":{\"stop_tail_ms\":1e+1}}", .expected = 10 },
+        .{ .json = "{\"recording\":{\"stop_tail_ms\":100e-1}}", .expected = 10 },
         .{ .json = "{\"recording\":{\"stop_tail_ms\":1000}}", .expected = 1000 },
     }) |case| {
         const parsed = try std.json.parseFromSlice(Config, std.testing.allocator, case.json, .{});

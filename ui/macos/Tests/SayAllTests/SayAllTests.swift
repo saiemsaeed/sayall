@@ -1468,6 +1468,10 @@ final class ConfigurationLoaderTests: XCTestCase {
             try Data("{\"recording\":{\"stop_tail_ms\":\(value)}}".utf8).write(to: loader.url)
             XCTAssertEqual(try loader.load().stopTailMs, value)
         }
+        for value in ["10.0", "1e1", "1e+1", "100e-1"] {
+            try Data("{\"recording\":{\"stop_tail_ms\":\(value)}}".utf8).write(to: loader.url)
+            XCTAssertEqual(try loader.load().stopTailMs, 10)
+        }
         for value in ["-1", "1001", "4294967296", "0.5", "null", "true", "\"10\""] {
             try Data("{\"recording\":{\"stop_tail_ms\":\(value)}}".utf8).write(to: loader.url)
             XCTAssertThrowsError(try loader.load(), value)

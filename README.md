@@ -621,7 +621,8 @@ specific input, set `recording.source` to a PipeWire node name or serial:
 An empty `source` follows the OS default, including future default-device
 changes. `recording.stop_tail_ms` controls the Linux and macOS manual-stop capture tail:
 use `0` to disable it, `10` for the default, or up to `1000` for more end-of-speech
-padding. Only whole milliseconds from 0 through 1000 are valid. Existing
+padding. Only whole numeric millisecond values from 0 through 1000 are valid
+(for example, `10` and `10.0` both mean 10 ms). Existing
 configs without this field also use 10 ms; add `1000` to retain Linux's previous
 one-second behavior. The config is loaded at the start of each recording, so
 changes apply to the next recording without restarting the app. Capture and
