@@ -553,7 +553,9 @@ compatibility path but cannot be selected for Polished mode.
 
 Clean collapses adjacent repeated English prose words by default, including
 standalone repetitions: `left left` → `left`, `right right` → `right`, and
-`I use, use this` → `I use this`. It preserves the first copy's spelling and
+`I use, use this` → `I use this`. Contractions with internal straight or curly
+apostrophes also collapse (`we're we're` → `we're`, `we’re we’re` → `we’re`).
+It preserves the first copy's spelling and
 final copy's punctuation, and handles repeats separated by removed fillers.
 No sentence-role, emphasis, or proper-name inference is performed.
 

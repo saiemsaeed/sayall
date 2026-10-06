@@ -303,6 +303,13 @@ pub fn tokenize(gpa: Allocator, text: []const u8) Error![]Token {
                 protected = true;
                 quote = if (quote == c) 0 else if (quote == 0) c else quote;
             } else if (q + 2 < e and c == 0xe2 and text[q + 1] == 0x80 and text[q + 2] >= 0x98 and text[q + 2] <= 0x9d) {
+                // U+2019 inside a word is an apostrophe, not a quote boundary.
+                // Do not close an enclosing quotation or protect the rest of
+                // an otherwise unquoted sentence because of a contraction.
+                if (internalApostropheWidth(text, q) == 3) {
+                    q += 2;
+                    continue;
+                }
                 protected = true;
                 curly_quote = switch (text[q + 2]) {
                     0x98 => 0x99,
@@ -600,9 +607,24 @@ fn horizontalGap(gap: []const u8) bool {
     for (gap) |c| if (c != ' ' and c != '\t') return false;
     return true;
 }
-fn asciiLetters(text: []const u8) bool {
+fn internalApostropheWidth(text: []const u8, index: usize) usize {
+    const width: usize = if (text[index] == '\'') 1 else if (std.mem.startsWith(u8, text[index..], "’")) 3 else return 0;
+    if (index == 0 or index + width >= text.len) return 0;
+    return if (std.ascii.isAlphanumeric(text[index - 1]) and std.ascii.isAlphanumeric(text[index + width])) width else 0;
+}
+
+fn proseWord(text: []const u8) bool {
     if (text.len == 0) return false;
-    for (text) |c| if (!std.ascii.isAlphabetic(c)) return false;
+    var i: usize = 0;
+    while (i < text.len) {
+        if (std.ascii.isAlphabetic(text[i])) {
+            i += 1;
+        } else {
+            const width = internalApostropheWidth(text, i);
+            if (width == 0) return false;
+            i += width;
+        }
+    }
     return true;
 }
 // Context belongs to the whole source run even when an earlier copy was
@@ -672,7 +694,7 @@ fn previousContextToken(source: []const u8, tokens: []const Token, deleted: []co
 fn stutterWord(text: []const u8) bool {
     // This is an English prose heuristic, not inference of speaker intent.
     // Keep digits, identifiers, acronyms, and spelled-out letter sequences.
-    if (!asciiLetters(text)) return false;
+    if (!proseWord(text)) return false;
     // "a a batteries" can be AA, not a repeated article. A neighboring
     // third letter is not required for this ambiguity. Only the pronoun I
     // remains eligible, subject to the spelling safeguard.
@@ -707,6 +729,11 @@ fn stutterWord(text: []const u8) bool {
     return true;
 }
 fn cleanRangesEqual(source: []const u8, tokens: []const Token, deleted: []const bool, protected: []const bool, a: usize, b: usize, len: usize) bool {
+    // Validate every source gap, including the boundary between phrase copies
+    // and any copies already removed earlier in this run.
+    for (a..b + len - 1) |i| {
+        if (!horizontalGap(source[tokens[i].end..tokens[i + 1].start])) return false;
+    }
     for (0..len) |j| {
         if (deleted[a + j] or deleted[b + j] or protected[a + j] or protected[b + j] or hasDecorationInside(source, tokens, a + j) or hasDecorationInside(source, tokens, b + j) or !asciiEq(tokens[a + j].text, tokens[b + j].text)) return false;
     }
@@ -955,6 +982,47 @@ test "clean protects quoted literal technical and glossary text" {
     try expectClean("say 'um' “uh” `er` and don't erm", "say 'um' “uh” `er` and don't", &.{});
     try expectClean("visit /tmp/um email um@example.com then um leave", "visit /tmp/um email um@example.com then leave", &.{});
     try expectClean("say all say all um", "say all say all", &.{"say all"});
+}
+
+test "clean repeated contractions preserve quotes technical spans and glossary" {
+    try expectClean("we're we're ready", "we're ready", &.{});
+    try expectClean("don't don't do that", "don't do that", &.{});
+    try expectClean("we’re we’re ready", "we’re ready", &.{});
+    try expectClean("don’t don’t do that", "don’t do that", &.{});
+    try expectClean("We're we're ready", "We're ready", &.{});
+    try expectClean("we’re um we’re we’re ready", "we’re ready", &.{});
+    try expectClean("we’re ready left left", "we’re ready left", &.{});
+    const unchanged = [_][]const u8{
+        "\"we're we're\"",
+        "'we’re we’re ready'",
+        "‘we’re we’re ready’",
+        "“don’t don’t do that”",
+        "`we're we're`",
+        "we're_id we're_id",
+        "we’re_id we’re_id",
+        "foo''bar foo''bar",
+        "foo’’bar foo’’bar",
+        "WE'RE WE'RE",
+        "we'Re we'Re",
+        "we're\nwe're",
+    };
+    for (unchanged) |text| try expectClean(text, text, &.{});
+    try expectClean("we're we're ready", "we're we're ready", &.{"we're"});
+    try expectClean("we’re we’re ready", "we’re we’re ready", &.{"we’re"});
+    try expectClean("‘we’re we’re ready’ left left", "‘we’re we’re ready’ left", &.{});
+}
+
+test "clean repeated phrases never cross source line or sentence boundaries" {
+    const unchanged = [_][]const u8{
+        "use this\nuse this",  "use this\r\nuse this",    "use this\ruse this",
+        "use\nthis use\nthis", "use\r\nthis use\r\nthis", "use this. use this",
+        "use this; use this",  "use this: use this",      "use this! use this",
+        "use this? use this",  "use this\n\nuse this",
+    };
+    for (unchanged) |text| try expectClean(text, text, &.{});
+    try expectClean("use this use this\nuse this", "use this\nuse this", &.{});
+    try expectClean("use this\nuse this use this", "use this\nuse this", &.{});
+    try expectClean("use this\tuse this use this", "use this", &.{});
 }
 
 test "clean repetition is exact adjacent and at least two tokens" {
