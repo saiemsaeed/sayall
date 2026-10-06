@@ -141,29 +141,40 @@ pub fn clean(gpa: Allocator, transcript: []const u8, glossary: []const []const u
             spelling[next_index] = spelling[i];
         }
     }
+    // Compare surviving words after filler/stutter removal, but keep original
+    // token indexes so literal protections and source boundaries remain intact.
+    const phrase_indexes = try gpa.alloc(usize, tokens.len);
+    defer gpa.free(phrase_indexes);
     // Exact adjacent phrase repetition (two or more words).
     // Each run is compared to its retained first phrase so three or more
     // copies collapse fully rather than leaving the final copy behind.
     var n: usize = 8;
     while (n >= 2) : (n -= 1) {
+        var count: usize = 0;
+        for (deleted, 0..) |is_deleted, index| {
+            if (is_deleted) continue;
+            phrase_indexes[count] = index;
+            count += 1;
+        }
+        const indexes = phrase_indexes[0..count];
         var base: usize = 0;
-        while (base + n * 2 <= tokens.len) {
+        while (base + n * 2 <= indexes.len) {
             // Uniform word runs belong to the guarded single-word pass.
             // Do not bypass its protections by grouping four copies as two
             // identical two-word phrases (e.g. "no no no no").
             var uniform = true;
-            for (tokens[base + 1 .. base + n]) |token| uniform = uniform and asciiEq(tokens[base].text, token.text);
+            for (indexes[base + 1 .. base + n]) |index| uniform = uniform and asciiEq(tokens[indexes[base]].text, tokens[index].text);
             if (uniform) {
                 base += 1;
                 continue;
             }
             var candidate = base + n;
-            if (!cleanRangesEqual(transcript, tokens, deleted, protected, base, candidate, n)) {
+            if (!cleanRangesEqual(transcript, tokens, deleted, protected, indexes, base, candidate, n)) {
                 base += 1;
                 continue;
             }
-            while (candidate + n <= tokens.len and cleanRangesEqual(transcript, tokens, deleted, protected, base, candidate, n)) : (candidate += n) {
-                for (candidate..candidate + n) |j| deleted[j] = true;
+            while (candidate + n <= indexes.len and cleanRangesEqual(transcript, tokens, deleted, protected, indexes, base, candidate, n)) : (candidate += n) {
+                for (indexes[candidate .. candidate + n]) |index| deleted[index] = true;
             }
             base = candidate;
         }
@@ -728,14 +739,18 @@ fn stutterWord(text: []const u8) bool {
     }) |word| if (asciiEq(text, word)) return false;
     return true;
 }
-fn cleanRangesEqual(source: []const u8, tokens: []const Token, deleted: []const bool, protected: []const bool, a: usize, b: usize, len: usize) bool {
-    // Validate every source gap, including the boundary between phrase copies
-    // and any copies already removed earlier in this run.
-    for (a..b + len - 1) |i| {
-        if (!horizontalGap(source[tokens[i].end..tokens[i + 1].start])) return false;
+fn cleanRangesEqual(source: []const u8, tokens: []const Token, deleted: []const bool, protected: []const bool, indexes: []const usize, a: usize, b: usize, len: usize) bool {
+    // Check original gaps even around removed words. A removed filler/stutter
+    // may carry a comma, but never erase a sentence or line boundary.
+    for (indexes[a]..indexes[b + len - 1]) |i| {
+        if (deleted[i]) {
+            if (!commaOrSpaceGap(source, tokens[i], tokens[i + 1])) return false;
+        } else if (!horizontalGap(source[tokens[i].end..tokens[i + 1].start])) return false;
     }
     for (0..len) |j| {
-        if (deleted[a + j] or deleted[b + j] or protected[a + j] or protected[b + j] or hasDecorationInside(source, tokens, a + j) or hasDecorationInside(source, tokens, b + j) or !asciiEq(tokens[a + j].text, tokens[b + j].text)) return false;
+        const left = indexes[a + j];
+        const right = indexes[b + j];
+        if (deleted[left] or deleted[right] or protected[left] or protected[right] or hasDecorationInside(source, tokens, left) or hasDecorationInside(source, tokens, right) or !asciiEq(tokens[left].text, tokens[right].text)) return false;
     }
     return true;
 }
@@ -1023,6 +1038,20 @@ test "clean repeated phrases never cross source line or sentence boundaries" {
     try expectClean("use this use this\nuse this", "use this\nuse this", &.{});
     try expectClean("use this\nuse this use this", "use this\nuse this", &.{});
     try expectClean("use this\tuse this use this", "use this", &.{});
+}
+
+test "clean composes word filler and phrase repetition passes" {
+    const cases = [_][]const u8{
+        "use use this use use this", "use this use use this",
+        "use use this use this",     "use use this use use this use use this",
+        "use um this use uh this",   "use, use this use, use this",
+    };
+    for (cases) |text| try expectClean(text, "use this", &.{});
+    try expectClean("Use use this use use this", "Use this", &.{});
+    try expectClean("use use this\nuse use this", "use this\nuse this", &.{});
+    try expectClean("use use this um. use use this", "use this use this", &.{});
+    try expectClean("use use this use use this", "use use this use use this", &.{"use"});
+    try expectClean("\"use use this use use this\"", "\"use use this use use this\"", &.{});
 }
 
 test "clean repetition is exact adjacent and at least two tokens" {
@@ -1364,7 +1393,7 @@ test "clean preserves ambiguous single repeats and boundaries" {
 test "full dictation removes plain and comma separated stutters" {
     try expectClean(
         "I I use use this tool to work I use, use this tool to work. I use, use this tool to work I use use this tool to work",
-        "I use this tool to work I use this tool to work. I use this tool to work I use this tool to work",
+        "I use this tool to work I use this tool to work. I use this tool to work",
         &.{},
     );
 }
