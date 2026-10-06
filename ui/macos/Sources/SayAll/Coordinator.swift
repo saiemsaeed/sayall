@@ -202,7 +202,8 @@ final class Coordinator {
         set(.idle, "Ready — Control+/ to start")
     }
     private func audioCaptureFailed() {
-        guard let id = operationID, state == .starting || state == .recording else { return }
+        guard let id = operationID, state == .starting || state == .recording || state == .stopping else { return }
+        task?.cancel()
         audioLevel = 0
         maximumTimer?.invalidate()
         maximumTimer = nil
@@ -283,7 +284,10 @@ final class Coordinator {
             streamSession = session
             set(.recording, "Recording — Control+/ to stop")
             persistStartup(outcome: "recording_ready", recordingReady: true)
-            maximumTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: false) { [weak self] _ in Task { @MainActor in self?.stop() } }
+            let remaining = max(0.001, 300 - Double(capture.captureElapsedNanoseconds) / 1_000_000_000)
+            maximumTimer = Timer.scheduledTimer(withTimeInterval: remaining, repeats: false) { [weak self] _ in
+                Task { @MainActor in self?.stop(automatically: true) }
+            }
         } catch let failure as HelperFailure {
             capture.cancel()
             persistStartup(outcome: "helper_error")
@@ -298,31 +302,30 @@ final class Coordinator {
             finish(id, as: .error, message: "Could not start the selected microphone", resetAfter: 3)
         }
     }
-    private func stop() {
-        guard let id = operationID else { return }
+    private func stop(automatically: Bool = false) {
+        guard let id = operationID, state == .recording else { return }
         let stopStarted = DispatchTime.now().uptimeNanoseconds
         audioLevel = 0
         set(.stopping, "Stopping recording…"); maximumTimer?.invalidate(); maximumTimer = nil
         let streamHelper = streamSession
         streamSession = nil
-        let recording: AudioCapture.Recording
-        do { recording = try capture.stop() }
-        catch AudioCapture.CaptureError.tooShort {
-            task = Task {
-                await streamHelper?.cancelAndWait()
-                finish(id, as: .error, message: "Recording was too short")
-            }
-            return
-        }
-        catch {
-            task = Task {
-                await streamHelper?.cancelAndWait()
-                finish(id, as: .error, message: "Could not prepare the recording", resetAfter: 3)
-            }
-            return
-        }
-        set(.processing, "Transcribing with Deepgram…")
+        let deadline = Result { try capture.stopTailDeadline(
+            configuredMs: operationConfig?.stopTailMs ?? 10, automatic: automatically) }
         task = Task {
+            let recording: AudioCapture.Recording
+            do {
+                recording = try await capture.stop(atTailDeadline: deadline.get())
+            } catch {
+                // Cancellation already tears down capture. Never touch a newer
+                // operation's capture after resuming from the tail suspension.
+                let ownsCapture = operationID == id && !Task.isCancelled
+                if ownsCapture { capture.cancel() }
+                await streamHelper?.cancelAndWait()
+                guard ownsCapture, operationID == id, !Task.isCancelled else { return }
+                let tooShort = (error as? AudioCapture.CaptureError) == .tooShort
+                finish(id, as: .error, message: tooShort ? "Recording was too short" : "Could not prepare the recording", resetAfter: 3)
+                return
+            }
             let processingStarted = Date()
             defer {
                 try? FileManager.default.removeItem(at: recording.directoryURL)
@@ -331,6 +334,7 @@ final class Coordinator {
                 await streamHelper?.cancelAndWait()
                 return
             }
+            set(.processing, "Transcribing with Deepgram…")
             guard let config = operationConfig else {
                 finish(id, as: .error, message: "SayAll configuration is unavailable")
                 return

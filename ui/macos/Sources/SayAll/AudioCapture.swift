@@ -140,7 +140,7 @@ enum MicrophoneSelection {
 }
 
 final class AudioCapture {
-    enum CaptureError: Error { case format, deviceUnavailable, tooShort, tooLong }
+    enum CaptureError: Error, Equatable { case format, deviceUnavailable, tooShort, tooLong }
 #if DEBUG
     private static let maximumFixtureBytes: off_t = 100 * 1_024 * 1_024
     private static let fixtureChunkDuration = 0.02
@@ -284,6 +284,12 @@ final class AudioCapture {
     private var wavURL: URL?
     private var pcmURL: URL?
     private var framesWritten: AVAudioFramePosition = 0
+    private var captureStartedUptimeNanoseconds: UInt64?
+    var captureElapsedNanoseconds: UInt64 {
+        guard let started = captureStartedUptimeNanoseconds else { return 0 }
+        let now = DispatchTime.now().uptimeNanoseconds
+        return now >= started ? now - started : 0
+    }
     private var firstPCMWriteUptimeNanoseconds: UInt64?
     private var captureFailed = false
     private var streamSourceFailed = false
@@ -346,6 +352,7 @@ final class AudioCapture {
             if let fixtureURL = try Self.debugFixtureURL() {
                 let generation = UUID()
                 captureGeneration = generation
+                captureStartedUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
                 try startFixture(url: fixtureURL, generation: generation)
                 return Recording(directoryURL: directory, wavURL: wavURL, pcmURL: pcmURL,
                     streamSourceFailed: false,
@@ -385,6 +392,7 @@ final class AudioCapture {
             }
             inputUnit.failureHandler = { [weak self] in self?.markUnexpectedFailure(generation: generation) }
             phaseStarted = DispatchTime.now().uptimeNanoseconds
+            captureStartedUptimeNanoseconds = phaseStarted
             try inputUnit.start()
             let timing = StartTiming(
                 filePreparationMs: filePreparationMs,
@@ -400,6 +408,41 @@ final class AudioCapture {
             inputDeviceID = nil
             throw error
         }
+    }
+
+    // Snapshot eligibility before waiting: the tail must not rescue a short tap.
+    private func tailNanoseconds(configuredMs: Int, automatic: Bool) throws -> UInt64 {
+        lock.lock()
+        let frames = framesWritten
+        let failed = captureFailed
+        lock.unlock()
+        try Self.validateCapture(frames: frames, failed: failed)
+        return Self.stopTailNanoseconds(configuredMs: configuredMs, frames: frames,
+            elapsedNanoseconds: captureElapsedNanoseconds, automatic: automatic)
+    }
+
+    static func stopTailNanoseconds(configuredMs: Int, frames: AVAudioFramePosition,
+                                   elapsedNanoseconds: UInt64, automatic: Bool) -> UInt64 {
+        let limit: UInt64 = 300_000_000_000
+        guard !automatic, frames >= minimumFrames, frames < maximumFrames,
+              elapsedNanoseconds >= 300_000_000, elapsedNanoseconds < limit else { return 0 }
+        let audioRemaining = UInt64(maximumFrames - frames) * 62_500 // 16 kHz
+        return min(UInt64(max(0, min(configuredMs, 1000))) * 1_000_000,
+                   min(limit - elapsedNanoseconds, audioRemaining))
+    }
+
+    func stopTailDeadline(configuredMs: Int, automatic: Bool = false) throws -> UInt64 {
+        let requested = DispatchTime.now().uptimeNanoseconds
+        return requested + (try tailNanoseconds(configuredMs: configuredMs, automatic: automatic))
+    }
+
+    @MainActor
+    func stop(atTailDeadline deadline: UInt64) async throws -> Recording {
+        try Task.checkCancellation()
+        let now = DispatchTime.now().uptimeNanoseconds
+        if deadline > now { try await Task.sleep(nanoseconds: deadline - now) }
+        try Task.checkCancellation()
+        return try stop()
     }
 
     func stop() throws -> Recording {

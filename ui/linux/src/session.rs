@@ -740,7 +740,8 @@ fn stop_tail_duration(
     {
         return Duration::ZERO;
     }
-    Duration::from_secs(1).min(Duration::from_secs(cfg.max_seconds as u64).saturating_sub(recorded))
+    Duration::from_millis(cfg.stop_tail_ms as u64)
+        .min(Duration::from_secs(cfg.max_seconds as u64).saturating_sub(recorded))
 }
 
 fn finish_active<F>(
@@ -936,15 +937,15 @@ mod tests {
     use std::sync::{Barrier, atomic::AtomicUsize};
 
     #[test]
-    fn manual_stop_tail_is_one_second_bounded_by_recording_limit() {
+    fn manual_stop_tail_defaults_to_ten_ms_bounded_by_recording_limit() {
         let cfg = config::RecordingConfig::default();
         assert_eq!(
             stop_tail_duration(Duration::from_secs(2), &cfg, StopReason::User),
-            Duration::from_secs(1)
+            Duration::from_millis(10)
         );
         assert_eq!(
-            stop_tail_duration(Duration::from_millis(299_750), &cfg, StopReason::User),
-            Duration::from_millis(250)
+            stop_tail_duration(Duration::from_millis(299_995), &cfg, StopReason::User),
+            Duration::from_millis(5)
         );
         assert_eq!(
             stop_tail_duration(Duration::from_secs(300), &cfg, StopReason::User),
@@ -957,8 +958,37 @@ mod tests {
     }
 
     #[test]
+    fn manual_stop_tail_honors_configured_values_including_disabled() {
+        for stop_tail_ms in [0, 1, 25, 1000] {
+            let cfg = config::RecordingConfig {
+                stop_tail_ms,
+                ..config::RecordingConfig::default()
+            };
+            assert_eq!(
+                stop_tail_duration(Duration::from_secs(2), &cfg, StopReason::User),
+                Duration::from_millis(stop_tail_ms as u64)
+            );
+            assert_eq!(
+                stop_tail_duration(Duration::from_millis(299_995), &cfg, StopReason::User),
+                Duration::from_millis(u64::from(stop_tail_ms.min(5)))
+            );
+            assert_eq!(
+                stop_tail_duration(Duration::from_secs(2), &cfg, StopReason::DurationLimit),
+                Duration::ZERO
+            );
+            assert_eq!(
+                stop_tail_duration(Duration::from_millis(299), &cfg, StopReason::User),
+                Duration::ZERO
+            );
+        }
+    }
+
+    #[test]
     fn worker_startup_time_counts_toward_the_manual_stop_limit() {
-        let cfg = config::RecordingConfig::default();
+        let cfg = config::RecordingConfig {
+            stop_tail_ms: 1000,
+            ..config::RecordingConfig::default()
+        };
         let worker_startup = Duration::from_secs(2);
         let since_worker_ready = Duration::from_millis(297_750);
         // Only 250ms remain in the actual capture, although a timer started
@@ -986,7 +1016,7 @@ mod tests {
         );
         assert_eq!(
             stop_tail_duration(Duration::from_millis(300), &cfg, StopReason::User),
-            Duration::from_secs(1)
+            Duration::from_millis(10)
         );
     }
 

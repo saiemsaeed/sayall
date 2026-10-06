@@ -16,7 +16,23 @@ const CONFIG_MAX: usize = 1024 * 1024;
 pub struct RecordingConfig {
     pub max_seconds: u32,
     pub min_ms: u32,
+    #[serde(deserialize_with = "deserialize_stop_tail_ms")]
+    pub stop_tail_ms: u32,
     pub source: String,
+}
+
+// Zig and Foundation accept whole numeric values such as 10.0 or 1e1.
+// Keep the shared setting consistent without accepting strings or fractions.
+fn deserialize_stop_tail_ms<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<u32, D::Error> {
+    let value = f64::deserialize(deserializer)?;
+    if !(0.0..=u32::MAX as f64).contains(&value) || value.fract() != 0.0 {
+        return Err(serde::de::Error::custom(
+            "recording.stop_tail_ms must be a nonnegative whole number",
+        ));
+    }
+    Ok(value as u32)
 }
 
 impl Default for RecordingConfig {
@@ -24,6 +40,7 @@ impl Default for RecordingConfig {
         Self {
             max_seconds: 300,
             min_ms: 300,
+            stop_tail_ms: 10,
             source: String::new(),
         }
     }
@@ -764,6 +781,9 @@ fn validate(value: &RecordingConfig) -> io::Result<()> {
     if value.min_ms > value.max_seconds * 1000 {
         return Err(invalid("recording.min_ms exceeds max_seconds"));
     }
+    if value.stop_tail_ms > 1000 {
+        return Err(invalid("recording.stop_tail_ms must be between 0 and 1000"));
+    }
     if value
         .source
         .chars()
@@ -832,6 +852,61 @@ mod tests {
         value.min_ms = 1000;
         value.source = "bad\nsource".into();
         assert!(validate(&value).is_err());
+    }
+
+    #[test]
+    fn recording_tail_defaults_and_validation_match_canonical_config() {
+        for text in [
+            "{}",
+            r#"{"recording":{}}"#,
+            r#"{"recording":{"min_ms":200,"max_seconds":5}}"#,
+        ] {
+            let cfg: Config = serde_json::from_str(text).unwrap();
+            assert_eq!(cfg.recording.stop_tail_ms, 10);
+            validate(&cfg.recording).unwrap();
+        }
+        for value in [0, 1, 10, 25, 1000, 1001, u32::MAX] {
+            let text = format!(r#"{{"recording":{{"stop_tail_ms":{value}}}}}"#);
+            let cfg: Config = serde_json::from_str(&text).unwrap();
+            assert_eq!(cfg.recording.stop_tail_ms, value);
+            assert_eq!(validate(&cfg.recording).is_ok(), value <= 1000);
+        }
+        for value in ["10.0", "1e1", "1e+1", "100e-1"] {
+            let text = format!(r#"{{"recording":{{"stop_tail_ms":{value}}}}}"#);
+            let cfg: Config = serde_json::from_str(&text).unwrap();
+            assert_eq!(cfg.recording.stop_tail_ms, 10);
+            validate(&cfg.recording).unwrap();
+        }
+        for value in [
+            "-1",
+            "0.5",
+            "null",
+            "true",
+            r#""10""#,
+            r#""invalid""#,
+            "4294967296",
+        ] {
+            let text = format!(r#"{{"recording":{{"stop_tail_ms":{value}}}}}"#);
+            assert!(serde_json::from_str::<Config>(&text).is_err());
+        }
+    }
+
+    #[test]
+    fn recording_tail_reaches_session_config_and_invalid_values_fail_loading() {
+        for tail in [None, Some(0), Some(25), Some(1000), Some(1001)] {
+            let mut value = serde_json::json!({"stt":{"api_key":"test-key"}});
+            if let Some(tail) = tail {
+                value["recording"] = serde_json::json!({"stop_tail_ms":tail});
+            }
+            let bytes = serde_json::to_vec(&value).unwrap();
+            let dir = ConfigDir::new(&bytes);
+            let session = project_session_config(&bytes, &dir.0);
+            if tail == Some(1001) {
+                assert!(session.is_err());
+            } else {
+                assert_eq!(session.unwrap().recording.stop_tail_ms, tail.unwrap_or(10));
+            }
+        }
     }
 
     #[test]
