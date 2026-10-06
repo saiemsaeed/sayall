@@ -124,10 +124,11 @@ sayall mic-test
 Verify `sayall status` reports `idle`, then press `Ctrl+Slash`, speak, and press
 it again. The transcript should be typed into the focused window.
 On Linux, a manual stop enters the `stopping` state immediately but keeps the
-microphone recording for up to one additional second to capture speech at the
-shortcut boundary before finalizing transcription. This adds up to one second
-to stop-to-result latency. The tail is shortened near the recording limit and
-skipped for automatic limit stops, too-short recordings, and shutdown.
+microphone recording for an additional **10 ms by default** to capture speech
+at the shortcut boundary before finalizing transcription. Configure this with
+`recording.stop_tail_ms` (0–1000 ms; `0` disables it). The tail is shortened near
+the recording limit and skipped for automatic limit stops, too-short recordings,
+and shutdown. This changes capture duration, not the wait for a final transcript.
 
 View or customize the managed shortcut at any time:
 
@@ -531,7 +532,7 @@ the process environment):
   },
   "processing": { "mode": "verbatim" },
   "output": { "method": "type", "trailing_space": true },
-  "recording": { "max_seconds": 300, "min_ms": 300, "source": "" },
+  "recording": { "max_seconds": 300, "min_ms": 300, "stop_tail_ms": 10, "source": "" },
   "metrics": { "enabled": true, "history_max_entries": 1000, "expose_api": true },
   "hud": { "show_timer": true, "theme": "omarchy", "shape": "rounded" },
   "notifications": true
@@ -612,12 +613,20 @@ specific input, set `recording.source` to a PipeWire node name or serial:
 "recording": {
   "max_seconds": 300,
   "min_ms": 300,
+  "stop_tail_ms": 10,
   "source": ""
 }
 ```
 
 An empty `source` follows the OS default, including future default-device
-changes.
+changes. `recording.stop_tail_ms` controls the Linux manual-stop capture tail:
+use `0` to disable it, `10` for the default, or up to `1000` for more end-of-speech
+padding. Only whole milliseconds from 0 through 1000 are valid. Existing
+configs without this field also use 10 ms; add `1000` to retain the previous
+one-second behavior. The config is loaded at the start of each recording, so
+changes apply to the next recording without restarting the app. Capture and
+streaming remain live during the tail, and the app still waits normally for the
+final transcript afterward. macOS does not use this Linux-specific setting.
 
 Output method `clipboard` copies without inserting. On macOS, `type` inserts
 at the verified original cursor using clipboard-backed `Command+V`; `paste` is

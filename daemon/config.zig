@@ -19,6 +19,8 @@ pub const OutputConfig = struct {
 pub const RecordingConfig = struct {
     max_seconds: u32 = 300,
     min_ms: u32 = 300,
+    /// Linux manual-stop capture tail (0 disables it; maximum 1000 ms).
+    stop_tail_ms: u32 = 10,
     /// PipeWire node name/serial to record from (empty = default source).
     source: []const u8 = "",
 };
@@ -319,6 +321,8 @@ pub fn validate(cfg: *const Config) ValidationError!void {
         return invalid("recording.max_seconds must be between 1 and 3600");
     if (cfg.recording.min_ms > cfg.recording.max_seconds * 1000)
         return invalid("recording.min_ms must not exceed max_seconds");
+    if (cfg.recording.stop_tail_ms > 1000)
+        return invalid("recording.stop_tail_ms must be between 0 and 1000");
     if (std.mem.findAny(u8, cfg.recording.source, &.{ 0, '\r', '\n' }) != null)
         return invalid("recording.source contains invalid characters");
     if (cfg.metrics.history_max_entries > 100_000)
@@ -402,6 +406,7 @@ test "defaults are sensible" {
     try std.testing.expectEqualStrings("type", cfg.output.method);
     try std.testing.expect(cfg.output.trailing_space);
     try std.testing.expectEqual(@as(u32, 300), cfg.recording.max_seconds);
+    try std.testing.expectEqual(@as(u32, 10), cfg.recording.stop_tail_ms);
     try std.testing.expect(cfg.hud.show_timer);
     try std.testing.expectEqualStrings("omarchy", cfg.hud.theme);
     try std.testing.expectEqualStrings("rounded", cfg.hud.shape);
@@ -414,9 +419,39 @@ test "default template parses validates and keeps API keys empty" {
     defer parsed.deinit();
     try validate(&parsed.value);
     try std.testing.expect(parsed.value.stt.smart_format);
+    try std.testing.expectEqual(@as(u32, 10), parsed.value.recording.stop_tail_ms);
     try std.testing.expectEqualStrings("", parsed.value.stt.api_key);
     try std.testing.expectEqualStrings("", parsed.value.llm.api_key);
     try std.testing.expectEqual(processing.Mode.verbatim, parsed.value.processing.mode.?);
+}
+
+test "recording tail defaults for old configs and honors explicit values" {
+    for ([_]struct { json: []const u8, expected: u32 }{
+        .{ .json = "{}", .expected = 10 },
+        .{ .json = "{\"recording\":{}}", .expected = 10 },
+        .{ .json = "{\"recording\":{\"min_ms\":200,\"max_seconds\":5}}", .expected = 10 },
+        .{ .json = "{\"recording\":{\"stop_tail_ms\":0}}", .expected = 0 },
+        .{ .json = "{\"recording\":{\"stop_tail_ms\":25}}", .expected = 25 },
+        .{ .json = "{\"recording\":{\"stop_tail_ms\":1000}}", .expected = 1000 },
+    }) |case| {
+        const parsed = try std.json.parseFromSlice(Config, std.testing.allocator, case.json, .{});
+        defer parsed.deinit();
+        try validate(&parsed.value);
+        try std.testing.expectEqual(case.expected, parsed.value.recording.stop_tail_ms);
+    }
+    var cfg: Config = .{};
+    for ([_]u32{ 1001, std.math.maxInt(u32) }) |value| {
+        cfg.recording.stop_tail_ms = value;
+        try std.testing.expectError(error.InvalidConfig, validate(&cfg));
+    }
+    for ([_][]const u8{ "-1", "0.5", "null", "true", "\"invalid\"", "4294967296" }) |value| {
+        const json = try std.fmt.allocPrint(std.testing.allocator, "{{\"recording\":{{\"stop_tail_ms\":{s}}}}}", .{value});
+        defer std.testing.allocator.free(json);
+        if (std.json.parseFromSlice(Config, std.testing.allocator, json, .{})) |parsed| {
+            parsed.deinit();
+            return error.TestUnexpectedResult;
+        } else |_| {}
+    }
 }
 
 test "processing migration matrix and explicit mode precedence" {
