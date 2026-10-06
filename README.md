@@ -224,13 +224,17 @@ zig build test
 zig build check-darwin-core   # portable-core check; does not build SayAll.app
 zig build check-windows-core  # compile-only; no Windows product or artifact
 zig build -Doptimize=ReleaseFast
+zig build process -Doptimize=ReleaseFast  # required: default build does not rebuild the worker
+zig build test-batch
 cargo test --locked --manifest-path ui/linux/Cargo.toml
 cargo build --locked --release --manifest-path ui/linux/Cargo.toml
+# Co-locate the host with the new worker; otherwise it can use /usr/lib's worker.
+install -m 755 ui/linux/target/release/sayall-hud zig-out/bin/sayall-hud
 
 # Stop the packaged host before running a checkout build; both use the same
 # socket and configuration.
 systemctl --user stop sayall-hud.service
-./ui/linux/target/release/sayall-hud --autostart
+./zig-out/bin/sayall-hud --autostart
 ```
 
 In another terminal, use `./zig-out/bin/sayall status` and `toggle`.
@@ -511,7 +515,7 @@ the process environment):
     "model": "nova-3",
     "language": "en",
     "region": "eu",
-    "smart_format": false,
+    "smart_format": true,
     "punctuate": false,
     "dictation": false,
     "numerals": false,
@@ -534,11 +538,13 @@ the process environment):
 }
 ```
 
-Deepgram formatting is opt-in. Set the corresponding `stt` flags to `true` to
-enable Smart Format, automatic punctuation, spoken dictation commands, numeric
-digits, or abbreviated measurements. SayAll sends every flag explicitly to
-Deepgram for both streaming transcription and the REST fallback; omitted flags
-default to `false`. Deepgram requires `punctuate` when `dictation` is enabled.
+Deepgram Smart Format is enabled by default, including in `sayall config init`.
+It formats recognized alphanumeric sequences and other entities, and includes
+punctuation. Set `stt.smart_format` to `false` to opt out; existing explicit
+settings are preserved. Other formatting flags (`punctuate`, `dictation`,
+`numerals`, and `measurements`) default to `false`. SayAll sends every flag
+explicitly to Deepgram for both streaming transcription and the REST fallback.
+Deepgram requires `punctuate` when `dictation` is enabled.
 
 `processing.mode` accepts `verbatim`, `clean`, or `polished`. Verbatim is the
 default and sends no transcript to Cerebras. Clean performs deterministic local
@@ -549,6 +555,28 @@ configurations that omit `processing.mode` and set `llm.enabled` to `true`
 retain their legacy formatting behavior for this migration cycle. The legacy
 `llama-3.1-8b-instant` model remains syntactically accepted for that
 compatibility path but cannot be selected for Polished mode.
+
+Clean collapses adjacent repeated English prose words by default, including
+standalone repetitions: `left left` → `left`, `right right` → `right`, and
+`I use, use this` → `I use this`. Contractions with internal straight or curly
+apostrophes also collapse (`we're we're` → `we're`, `we’re we’re` → `we’re`).
+It preserves the first copy's spelling and
+final copy's punctuation, and handles repeats separated by removed fillers.
+No sentence-role, emphasis, or proper-name inference is performed.
+
+Explicit exceptions (defined in `stutterWord` in `daemon/llm/cleanup_engine.zig`)
+include `no`, `very`, `had`, `her`, auxiliary verbs, conjunctions `and`/`or`,
+quantifiers, and number words. Digits, acronyms, mixed-case identifiers, quoted,
+technical, and glossary spans remain protected. Single letters remain unchanged
+except `I`, which is still protected next to other dictated letters or digits.
+Repetition removal does not cross sentence boundaries or line breaks.
+
+**Clean is intentionally aggressive:** unlisted intentional repetitions can be
+shortened and meaning can change. For example, `Rose rose to leave` becomes
+`Rose to leave`, and `I value value my parents taught me` loses one `value`.
+Use Verbatim for exact preservation, or add literal terms/names to the glossary.
+Enable Clean with `"processing": { "mode": "clean" }`; Polished also uses this
+Clean stage. This does not change `2` into `two`.
 
 `hud.show_timer` defaults to `true` and displays recording duration as `mm:ss`.
 Set it to `false` for the centered recording layout without a timer or reserved

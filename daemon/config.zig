@@ -380,13 +380,19 @@ fn resolveEnvRef(env: *const std.process.Environ.Map, value: []const u8) []const
     return value;
 }
 
+test "explicit smart format opt-out is preserved" {
+    const parsed = try std.json.parseFromSlice(Config, std.testing.allocator, "{\"stt\":{\"smart_format\":false}}", .{});
+    defer parsed.deinit();
+    try std.testing.expect(!parsed.value.stt.smart_format);
+}
+
 test "defaults are sensible" {
     const cfg: Config = .{};
     try std.testing.expectEqualStrings("deepgram", cfg.stt.provider);
     try std.testing.expectEqualStrings("nova-3", cfg.stt.model);
     try std.testing.expectEqual(@as(usize, 0), cfg.stt.keyterms.len);
     try std.testing.expectEqualStrings("global", cfg.stt.region);
-    try std.testing.expect(!cfg.stt.smart_format);
+    try std.testing.expect(cfg.stt.smart_format);
     try std.testing.expect(!cfg.stt.punctuate);
     try std.testing.expect(!cfg.stt.dictation);
     try std.testing.expect(!cfg.stt.numerals);
@@ -407,6 +413,7 @@ test "default template parses validates and keeps API keys empty" {
     const parsed = try std.json.parseFromSlice(Config, std.testing.allocator, template, .{});
     defer parsed.deinit();
     try validate(&parsed.value);
+    try std.testing.expect(parsed.value.stt.smart_format);
     try std.testing.expectEqualStrings("", parsed.value.stt.api_key);
     try std.testing.expectEqualStrings("", parsed.value.llm.api_key);
     try std.testing.expectEqual(processing.Mode.verbatim, parsed.value.processing.mode.?);

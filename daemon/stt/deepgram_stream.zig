@@ -449,14 +449,14 @@ test "streaming path uses effective keyterms" {
     ));
 }
 
-test "streaming path disables formatting by default" {
+test "streaming path enables smart format by default" {
     const cfg: config.SttConfig = .{};
     const path = try listenPath(std.testing.allocator, &cfg);
     defer std.testing.allocator.free(path);
     try std.testing.expect(std.mem.indexOf(
         u8,
         path,
-        "&smart_format=false&punctuate=false&dictation=false&numerals=false&measurements=false&",
+        "&smart_format=true&punctuate=false&dictation=false&numerals=false&measurements=false&",
     ) != null);
 }
 

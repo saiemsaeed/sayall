@@ -195,7 +195,7 @@ struct ConfigurationLoader {
             deepgramLanguage: language,
             deepgramRegion: region,
             deepgramKeyterms: keyterms,
-            smartFormat: document.stt?.smartFormat ?? false,
+            smartFormat: document.stt?.smartFormat ?? true,
             punctuate: document.stt?.punctuate ?? false,
             dictation: document.stt?.dictation ?? false,
             numerals: document.stt?.numerals ?? false,

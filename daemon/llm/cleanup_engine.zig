@@ -99,7 +99,7 @@ fn countedListStart(tokens: []const Token, noun: usize) usize {
     return direct;
 }
 
-/// Deterministic conservative cleanup. The returned slice is allocator-owned.
+/// Deterministic local cleanup with explicit protections. The returned slice is allocator-owned.
 pub fn clean(gpa: Allocator, transcript: []const u8, glossary: []const []const u8) Error![]u8 {
     const tokens = tokenize(gpa, transcript) catch |err| switch (err) {
         error.TranscriptTooLarge => return gpa.dupe(u8, transcript),
@@ -113,23 +113,68 @@ pub fn clean(gpa: Allocator, transcript: []const u8, glossary: []const []const u
     @memset(deleted, false);
     const protected = try protectionMap(gpa, transcript, tokens, glossary);
     defer gpa.free(protected);
+    const spelling = try gpa.alloc(usize, tokens.len);
+    defer gpa.free(spelling);
+    for (spelling, 0..) |*index, i| index.* = i;
     for (tokens, 0..) |t, i| {
         if (!protected[i] and filler(t.text)) deleted[i] = true;
     }
-    // Exact adjacent phrase repetition. Never remove a one-word repetition.
+    // Keep source-run membership stable as repeated copies are deleted.
+    const omitted_fillers = try gpa.dupe(bool, deleted);
+    defer gpa.free(omitted_fillers);
+    // Collapse ordinary-word stutters, excluding common meaningful repeats.
+    // Retain the last copy's punctuation and the first copy's spelling.
+    // Deepgram can insert a comma or capitalize a repeated word. A comma is
+    // allowed here, but sentence boundaries, line breaks and literals are not.
+    for (tokens[0 .. tokens.len - 1], 0..) |t, i| {
+        if (deleted[i]) continue;
+        const next_index = nextContextToken(transcript, tokens, omitted_fillers, i) orelse continue;
+        const next = tokens[next_index];
+        const context_start = if (t.text.len == 1) repetitionContextStart(transcript, tokens, omitted_fillers, i) else i;
+        if (!protected[i] and !protected[next_index] and
+            stutterWord(t.text) and stutterWord(next.text) and asciiEq(t.text, next.text) and
+            !spelledLetterContext(transcript, tokens, omitted_fillers, context_start) and
+            tokenChunkStart(transcript, t) == t.start and
+            tokenChunkStart(transcript, next) == next.start)
+        {
+            deleted[i] = true;
+            spelling[next_index] = spelling[i];
+        }
+    }
+    // Compare surviving words after filler/stutter removal, but keep original
+    // token indexes so literal protections and source boundaries remain intact.
+    const phrase_indexes = try gpa.alloc(usize, tokens.len);
+    defer gpa.free(phrase_indexes);
+    // Exact adjacent phrase repetition (two or more words).
     // Each run is compared to its retained first phrase so three or more
     // copies collapse fully rather than leaving the final copy behind.
     var n: usize = 8;
     while (n >= 2) : (n -= 1) {
+        var count: usize = 0;
+        for (deleted, 0..) |is_deleted, index| {
+            if (is_deleted) continue;
+            phrase_indexes[count] = index;
+            count += 1;
+        }
+        const indexes = phrase_indexes[0..count];
         var base: usize = 0;
-        while (base + n * 2 <= tokens.len) {
-            var candidate = base + n;
-            if (!cleanRangesEqual(transcript, tokens, deleted, protected, base, candidate, n)) {
+        while (base + n * 2 <= indexes.len) {
+            // Uniform word runs belong to the guarded single-word pass.
+            // Do not bypass its protections by grouping four copies as two
+            // identical two-word phrases (e.g. "no no no no").
+            var uniform = true;
+            for (indexes[base + 1 .. base + n]) |index| uniform = uniform and asciiEq(tokens[indexes[base]].text, tokens[index].text);
+            if (uniform) {
                 base += 1;
                 continue;
             }
-            while (candidate + n <= tokens.len and cleanRangesEqual(transcript, tokens, deleted, protected, base, candidate, n)) : (candidate += n) {
-                for (candidate..candidate + n) |j| deleted[j] = true;
+            var candidate = base + n;
+            if (!cleanRangesEqual(transcript, tokens, deleted, protected, indexes, base, candidate, n)) {
+                base += 1;
+                continue;
+            }
+            while (candidate + n <= indexes.len and cleanRangesEqual(transcript, tokens, deleted, protected, indexes, base, candidate, n)) : (candidate += n) {
+                for (indexes[candidate .. candidate + n]) |index| deleted[index] = true;
             }
             base = candidate;
         }
@@ -153,7 +198,7 @@ pub fn clean(gpa: Allocator, transcript: []const u8, glossary: []const []const u
     var survivors: usize = 0;
     for (deleted) |is_deleted| survivors += @intFromBool(!is_deleted);
     if (survivors == 0) return gpa.dupe(u8, transcript);
-    return renderClean(gpa, transcript, tokens, deleted);
+    return renderClean(gpa, transcript, tokens, deleted, spelling);
 }
 
 /// Parse, validate and render v2. Malformed or unsafe plans are rejected so
@@ -269,6 +314,13 @@ pub fn tokenize(gpa: Allocator, text: []const u8) Error![]Token {
                 protected = true;
                 quote = if (quote == c) 0 else if (quote == 0) c else quote;
             } else if (q + 2 < e and c == 0xe2 and text[q + 1] == 0x80 and text[q + 2] >= 0x98 and text[q + 2] <= 0x9d) {
+                // U+2019 inside a word is an apostrophe, not a quote boundary.
+                // Do not close an enclosing quotation or protect the rest of
+                // an otherwise unquoted sentence because of a contraction.
+                if (internalApostropheWidth(text, q) == 3) {
+                    q += 2;
+                    continue;
+                }
                 protected = true;
                 curly_quote = switch (text[q + 2]) {
                     0x98 => 0x99,
@@ -287,14 +339,21 @@ pub fn tokenize(gpa: Allocator, text: []const u8) Error![]Token {
     return out.toOwnedSlice(gpa);
 }
 
-fn renderClean(gpa: Allocator, source: []const u8, tokens: []const Token, deleted: []const bool) ![]u8 {
+fn appendCleanToken(out: *std.ArrayList(u8), gpa: Allocator, source: []const u8, tokens: []const Token, index: usize, spelling: []const usize) !void {
+    const token = tokens[index];
+    try out.appendSlice(gpa, source[tokenChunkStart(source, token)..token.start]);
+    try out.appendSlice(gpa, tokens[spelling[index]].text);
+    try out.appendSlice(gpa, source[token.end..tokenChunkEnd(source, token)]);
+}
+
+fn renderClean(gpa: Allocator, source: []const u8, tokens: []const Token, deleted: []const bool, spelling: []const usize) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(gpa);
     var first: usize = 0;
     while (deleted[first]) first += 1;
     const first_start = tokenChunkStart(source, tokens[first]);
     if (first == 0) try out.appendSlice(gpa, source[0..first_start]);
-    try out.appendSlice(gpa, source[first_start..tokenChunkEnd(source, tokens[first])]);
+    try appendCleanToken(&out, gpa, source, tokens, first, spelling);
     var previous = first;
     var i = first + 1;
     while (i < tokens.len) : (i += 1) {
@@ -309,8 +368,7 @@ fn renderClean(gpa: Allocator, source: []const u8, tokens: []const Token, delete
         } else {
             try out.appendSlice(gpa, gap);
         }
-        const start = tokenChunkStart(source, tokens[i]);
-        try out.appendSlice(gpa, source[start..tokenChunkEnd(source, tokens[i])]);
+        try appendCleanToken(&out, gpa, source, tokens, i, spelling);
         previous = i;
     }
     var deleted_after = false;
@@ -555,9 +613,144 @@ fn validNumberCore(s: []const u8) bool {
 fn endsWithIgnoreCase(s: []const u8, suffix: []const u8) bool {
     return s.len >= suffix.len and asciiEq(s[s.len - suffix.len ..], suffix);
 }
-fn cleanRangesEqual(source: []const u8, tokens: []const Token, deleted: []const bool, protected: []const bool, a: usize, b: usize, len: usize) bool {
+fn horizontalGap(gap: []const u8) bool {
+    if (gap.len == 0) return false;
+    for (gap) |c| if (c != ' ' and c != '\t') return false;
+    return true;
+}
+fn internalApostropheWidth(text: []const u8, index: usize) usize {
+    const width: usize = if (text[index] == '\'') 1 else if (std.mem.startsWith(u8, text[index..], "’")) 3 else return 0;
+    if (index == 0 or index + width >= text.len) return 0;
+    return if (std.ascii.isAlphanumeric(text[index - 1]) and std.ascii.isAlphanumeric(text[index + width])) width else 0;
+}
+
+fn proseWord(text: []const u8) bool {
+    if (text.len == 0) return false;
+    var i: usize = 0;
+    while (i < text.len) {
+        if (std.ascii.isAlphabetic(text[i])) {
+            i += 1;
+        } else {
+            const width = internalApostropheWidth(text, i);
+            if (width == 0) return false;
+            i += width;
+        }
+    }
+    return true;
+}
+// Context belongs to the whole source run even when an earlier copy was
+// protected rather than deleted. Otherwise later copies can bypass a guard.
+fn repetitionContextStart(source: []const u8, tokens: []const Token, omitted: []const bool, index: usize) usize {
+    var start = index;
+    while (previousContextToken(source, tokens, omitted, start)) |previous| {
+        if (!asciiEq(tokens[previous].text, tokens[index].text)) break;
+        start = previous;
+    }
+    return start;
+}
+
+fn repetitionContextEnd(source: []const u8, tokens: []const Token, omitted: []const bool, index: usize) usize {
+    var last = index;
+    while (nextContextToken(source, tokens, omitted, last)) |next| {
+        if (!asciiEq(tokens[next].text, tokens[index].text)) break;
+        last = next;
+    }
+    return last;
+}
+
+// Lowercase a/i can be articles/pronouns or literal letters. Preserve a run
+// adjacent to another letter or a digit token so spelling "g a a" or "a a 9"
+// is never mistaken for a prose stutter.
+fn spelledLetterContext(source: []const u8, tokens: []const Token, omitted: []const bool, index: usize) bool {
+    if (tokens[index].text.len != 1) return false;
+    const last = repetitionContextEnd(source, tokens, omitted, index);
+    if (previousContextToken(source, tokens, omitted, index)) |previous| {
+        if (letterOrDigits(tokens[previous].text)) return true;
+    }
+    const next = nextContextToken(source, tokens, omitted, last) orelse return false;
+    return letterOrDigits(tokens[next].text);
+}
+fn letterOrDigits(text: []const u8) bool {
+    return (text.len == 1 and std.ascii.isAlphabetic(text[0])) or (text.len > 0 and std.ascii.isDigit(text[0]));
+}
+fn commaOrSpaceGap(source: []const u8, left: Token, right: Token) bool {
+    const end = tokenChunkEnd(source, left);
+    const suffix = source[left.end..end];
+    return (suffix.len == 0 or std.mem.eql(u8, suffix, ",")) and horizontalGap(source[end..right.start]);
+}
+
+fn nextContextToken(source: []const u8, tokens: []const Token, deleted: []const bool, index: usize) ?usize {
+    var previous = index;
+    while (previous + 1 < tokens.len) {
+        const next = previous + 1;
+        if (!commaOrSpaceGap(source, tokens[previous], tokens[next])) return null;
+        if (!deleted[next]) return next;
+        previous = next;
+    }
+    return null;
+}
+
+// Context follows surviving words, but deletion must not erase evidence of
+// a sentence/line boundary. Each original gap is checked while skipping.
+fn previousContextToken(source: []const u8, tokens: []const Token, deleted: []const bool, index: usize) ?usize {
+    var previous = index;
+    while (previous > 0) {
+        previous -= 1;
+        if (!commaOrSpaceGap(source, tokens[previous], tokens[previous + 1])) return null;
+        if (!deleted[previous]) return previous;
+    }
+    return null;
+}
+
+fn stutterWord(text: []const u8) bool {
+    // This is an English prose heuristic, not inference of speaker intent.
+    // Keep digits, identifiers, acronyms, and spelled-out letter sequences.
+    if (!proseWord(text)) return false;
+    // "a a batteries" can be AA, not a repeated article. A neighboring
+    // third letter is not required for this ambiguity. Only the pronoun I
+    // remains eligible, subject to the spelling safeguard.
+    if (text.len == 1) return asciiEq(text, "i");
+    for (text[1..]) |c| if (std.ascii.isUpper(c)) return false;
+    // Object/possessive "her" and auxiliary/copular verbs can legitimately
+    // repeat with different roles: "her her book", "what it is is unclear",
+    // "I do do that", "they can can tomatoes". Without grammatical parsing,
+    // preserve these even when they could also be an accidental stutter.
+    for ([_][]const u8{
+        "her",   "am",   "are",   "is",     "was",  "were",  "be",  "been",  "being",
+        "have",  "has",  "had",   "do",     "does", "did",   "can", "could", "may",
+        "might", "must", "shall", "should", "will", "would",
+        // Conjunctions can themselves name operators without quotes:
+        // "both and and or operators". Keep this closed class ambiguous.
+        "and", "or",
+    }) |word| if (asciiEq(text, word)) return false;
+    // Explicit emphasis, grammatical, and numeric exceptions. No inference
+    // of unlisted intentional repetitions is attempted. Quotes and glossary
+    // spans are protected separately by the caller.
+    for ([_][]const u8{
+        "no",      "not",     "never",    "yes",      "very",     "really",  "so",      "too",       "more",     "less",
+        "much",    "quite",   "that",     "had",      "bye",      "go",      "hear",    "knock",     "bang",     "zero",
+        "oh",      "one",     "two",      "three",    "four",     "five",    "six",     "seven",     "eight",    "nine",
+        "ten",     "eleven",  "twelve",   "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen",
+        "twenty",  "thirty",  "forty",    "fifty",    "sixty",    "seventy", "eighty",  "ninety",    "hundred",  "thousand",
+        "million", "billion", "trillion",
+        // Quantifiers can intensify even before connectors: "many many of".
+        "many",     "few",      "fewer",   "fewest",  "little",    "most",     "least",
+        "some",    "any",     "all",      "both",     "each",     "every",   "either",  "neither",   "enough",   "several",
+    }) |word| if (asciiEq(text, word)) return false;
+    return true;
+}
+fn cleanRangesEqual(source: []const u8, tokens: []const Token, deleted: []const bool, protected: []const bool, indexes: []const usize, a: usize, b: usize, len: usize) bool {
+    // Check original gaps even around removed words. A removed filler/stutter
+    // may carry a comma, but never erase a sentence or line boundary.
+    for (indexes[a]..indexes[b + len - 1]) |i| {
+        if (deleted[i]) {
+            if (!commaOrSpaceGap(source, tokens[i], tokens[i + 1])) return false;
+        } else if (!horizontalGap(source[tokens[i].end..tokens[i + 1].start])) return false;
+    }
     for (0..len) |j| {
-        if (deleted[a + j] or deleted[b + j] or protected[a + j] or protected[b + j] or hasDecorationInside(source, tokens, a + j) or hasDecorationInside(source, tokens, b + j) or !asciiEq(tokens[a + j].text, tokens[b + j].text)) return false;
+        const left = indexes[a + j];
+        const right = indexes[b + j];
+        if (deleted[left] or deleted[right] or protected[left] or protected[right] or hasDecorationInside(source, tokens, left) or hasDecorationInside(source, tokens, right) or !asciiEq(tokens[left].text, tokens[right].text)) return false;
     }
     return true;
 }
@@ -806,11 +999,414 @@ test "clean protects quoted literal technical and glossary text" {
     try expectClean("say all say all um", "say all say all", &.{"say all"});
 }
 
+test "clean repeated contractions preserve quotes technical spans and glossary" {
+    try expectClean("we're we're ready", "we're ready", &.{});
+    try expectClean("don't don't do that", "don't do that", &.{});
+    try expectClean("we’re we’re ready", "we’re ready", &.{});
+    try expectClean("don’t don’t do that", "don’t do that", &.{});
+    try expectClean("We're we're ready", "We're ready", &.{});
+    try expectClean("we’re um we’re we’re ready", "we’re ready", &.{});
+    try expectClean("we’re ready left left", "we’re ready left", &.{});
+    const unchanged = [_][]const u8{
+        "\"we're we're\"",
+        "'we’re we’re ready'",
+        "‘we’re we’re ready’",
+        "“don’t don’t do that”",
+        "`we're we're`",
+        "we're_id we're_id",
+        "we’re_id we’re_id",
+        "foo''bar foo''bar",
+        "foo’’bar foo’’bar",
+        "WE'RE WE'RE",
+        "we'Re we'Re",
+        "we're\nwe're",
+    };
+    for (unchanged) |text| try expectClean(text, text, &.{});
+    try expectClean("we're we're ready", "we're we're ready", &.{"we're"});
+    try expectClean("we’re we’re ready", "we’re we’re ready", &.{"we’re"});
+    try expectClean("‘we’re we’re ready’ left left", "‘we’re we’re ready’ left", &.{});
+}
+
+test "clean repeated phrases never cross source line or sentence boundaries" {
+    const unchanged = [_][]const u8{
+        "use this\nuse this",  "use this\r\nuse this",    "use this\ruse this",
+        "use\nthis use\nthis", "use\r\nthis use\r\nthis", "use this. use this",
+        "use this; use this",  "use this: use this",      "use this! use this",
+        "use this? use this",  "use this\n\nuse this",
+    };
+    for (unchanged) |text| try expectClean(text, text, &.{});
+    try expectClean("use this use this\nuse this", "use this\nuse this", &.{});
+    try expectClean("use this\nuse this use this", "use this\nuse this", &.{});
+    try expectClean("use this\tuse this use this", "use this", &.{});
+}
+
+test "clean composes word filler and phrase repetition passes" {
+    const cases = [_][]const u8{
+        "use use this use use this", "use this use use this",
+        "use use this use this",     "use use this use use this use use this",
+        "use um this use uh this",   "use, use this use, use this",
+    };
+    for (cases) |text| try expectClean(text, "use this", &.{});
+    try expectClean("Use use this use use this", "Use this", &.{});
+    try expectClean("use use this\nuse use this", "use this\nuse this", &.{});
+    try expectClean("use use this um. use use this", "use this use this", &.{});
+    try expectClean("use use this use use this", "use use this use use this", &.{"use"});
+    try expectClean("\"use use this use use this\"", "\"use use this use use this\"", &.{});
+}
+
 test "clean repetition is exact adjacent and at least two tokens" {
     try expectClean("we should go now go now please", "we should go now please", &.{});
     try expectClean("go now go now go now please", "go now please", &.{});
     try expectClean("very very good", "very very good", &.{});
     try expectClean("go to, go to work", "go to, go to work", &.{});
+}
+
+test "clean collapses standalone repeats without needing sentence context" {
+    const cases = [_][2][]const u8{
+        .{ "left left", "left" },           .{ "right right", "right" },
+        .{ "Left left", "Left" },           .{ "left, left.", "left." },
+        .{ "left left left left", "left" }, .{ "right right!", "right!" },
+        .{ "left um left", "left" },        .{ "test test", "test" },
+    };
+    for (cases) |case| try expectClean(case[0], case[1], &.{});
+    try expectClean("left left", "left left", &.{"left"});
+    try expectClean("say \"left left\"", "say \"left left\"", &.{});
+    try expectClean("left. left", "left. left", &.{});
+    try expectClean("left\nleft", "left\nleft", &.{});
+}
+
+test "clean collapses common single word stutters and preserves final punctuation" {
+    try expectClean("I I use use this", "I use this", &.{});
+    try expectClean("please use use use this.", "please use this.", &.{});
+    try expectClean("in the the file and and in in here", "in the file and and in here", &.{});
+    try expectClean("please use\tuse this", "please use this", &.{});
+    try expectClean("I use, use this tool to work.", "I use this tool to work.", &.{});
+    try expectClean("Please use use use, use this.", "Please use this.", &.{});
+    try expectClean("I, I use, use this.", "I use this.", &.{});
+    try expectClean("I I, think this", "I, think this", &.{});
+    try expectClean("I use use, this", "I use, this", &.{});
+    try expectClean("Please use use use, this", "Please use, this", &.{});
+    try expectClean("The the tool", "The tool", &.{});
+}
+
+test "clean stutter context skips removed fillers without crossing sentence boundaries" {
+    try expectClean("I um use use this", "I use this", &.{});
+    try expectClean("please uh test test this", "please test this", &.{});
+    try expectClean("I um uh use use use this", "I use this", &.{});
+    try expectClean("I um use use uh this", "I use this", &.{});
+    try expectClean("please test test uh the change", "please test the change", &.{});
+    try expectClean("I use use, um this", "I use, this", &.{});
+    try expectClean("I use use um. this", "I use this", &.{});
+    try expectClean("Is um this uh expected expected to work", "Is this expected to work", &.{});
+    try expectClean("This is um the test test for cleanup", "This is the test for cleanup", &.{});
+    try expectClean("This is the um test test for cleanup", "This is the test for cleanup", &.{});
+    try expectClean("I. um use use this", "I. use this", &.{});
+    try expectClean("I um. use use this", "I use this", &.{});
+}
+
+test "clean joins repetitions exposed by filler deletion with source boundaries intact" {
+    try expectClean("I use um use this", "I use this", &.{});
+    try expectClean("please use um use uh use this", "please use this", &.{});
+    try expectClean("I use, um, use this", "I use this", &.{});
+    try expectClean("I use um. use this", "I use use this", &.{});
+    try expectClean("I use um\nuse this", "I use\nuse this", &.{});
+    try expectClean("Rose um rose rose to leave", "Rose to leave", &.{});
+    try expectClean("I use um Use use this", "I use this", &.{});
+    try expectClean("I use um use this", "I use use this", &.{"use"});
+    try expectClean("I watched the The Office finale", "I watched the Office finale", &.{});
+    try expectClean("I watched the um The Office finale", "I watched the Office finale", &.{});
+    try expectClean("I watched the The Office finale", "I watched the The Office finale", &.{"The Office"});
+    try expectClean("The um the tool", "The tool", &.{});
+}
+
+test "clean collapses every member of an eligible repeated word run" {
+    for (2..9) |copies| {
+        var source: std.ArrayList(u8) = .empty;
+        defer source.deinit(std.testing.allocator);
+        try source.appendSlice(std.testing.allocator, "please ");
+        for (0..copies) |_| try source.appendSlice(std.testing.allocator, "use ");
+        try source.appendSlice(std.testing.allocator, "this");
+        try expectClean(source.items, "please use this", &.{});
+    }
+    try expectClean("please use, use use, use this", "please use this", &.{});
+}
+
+test "clean collapses ordinary words beyond the original allowlist" {
+    try expectClean("Is this expected expected to work?", "Is this expected to work?", &.{});
+    try expectClean("This is the test test for clean mode.", "This is the test for clean mode.", &.{});
+    try expectClean("you you know", "you know", &.{});
+    try expectClean("Please test test test, test this.", "Please test this.", &.{});
+    try expectClean("this this thing needs changes; please remove remove the duplicates", "this thing needs changes; please remove the duplicates", &.{});
+    try expectClean("test test", "test test", &.{"test"});
+    try expectClean("say \"test test\" and `expected expected`", "say \"test test\" and `expected expected`", &.{});
+    const protected = [_][]const u8{
+        "2 2 times",      "two two times",  "one one zero zero",   "hundred hundred",
+        "very very good", "had had enough", "that that works",     "no no",
+        "bye bye",        "fooBar fooBar",  "HTTP HTTP",           "g g l l",
+        "A A",            "v2 v2",          "test_test test_test", "test. test",
+        "test\ntest",     "test; test",
+        "test… test",
+        "café café",
+    };
+    for (protected) |text| try expectClean(text, text, &.{});
+}
+
+test "clean uses explicit exceptions rather than object complement inference" {
+    const cases = [_][2][]const u8{
+        .{ "What makes you you?", "What makes you?" },
+        .{ "I consider work work", "I consider work" },
+        .{ "What really makes you you every day?", "What really makes you every day?" },
+        .{ "They considered work work and play play", "They considered work and play" },
+        .{ "I call a test test", "I call a test" },
+        .{ "We find work work even on weekends", "We find work even on weekends" },
+        .{ "They MADE you you", "They MADE you" },
+        .{ "Keep work work", "Keep work" },
+        .{ "I consider work, work", "I consider work" },
+    };
+    for (cases) |case| try expectClean(case[0], case[1], &.{});
+    try expectClean("you you know work work starts now", "you know work starts now", &.{});
+    try expectClean("Consider this. Please test test this", "Consider this. Please test this", &.{});
+    try expectClean("Consider this\nplease test test this", "Consider this\nplease test this", &.{});
+    try expectClean("I use use this and consider work work", "I use this and consider work", &.{});
+    try expectClean("Can you make make this?", "Can you make this?", &.{});
+}
+
+test "clean does not infer pronoun focus from nearby words" {
+    const cases = [_][2][]const u8{
+        .{ "You, you alone can fix this", "You alone can fix this" },
+        .{ "I I myself will do it", "I myself will do it" },
+        .{ "You you are the only one who can help", "You are the only one who can help" },
+        .{ "We we personally approved this", "We personally approved this" },
+        .{ "I I think this is only a test", "I think this is only a test" },
+        .{ "I I typed \"only\"", "I typed \"only\"" },
+    };
+    for (cases) |case| try expectClean(case[0], case[1], &.{});
+    try expectClean("I um I alone can do it", "I alone can do it", &.{});
+    try expectClean("you you know this", "you know this", &.{});
+    try expectClean("I I use this. You alone can fix that", "I use this. You alone can fix that", &.{});
+}
+
+test "clean preserves unquoted conjunction names and protected uniform runs" {
+    const unchanged = [_][]const u8{
+        "Explain both and and or operators",
+        "Explain both or or and operators",
+        "and and or operators",
+        "no no no no",
+        "a a a a batteries",
+        "and and and and or operators",
+        "very very very very good",
+    };
+    for (unchanged) |text| try expectClean(text, text, &.{});
+}
+
+test "clean normalizes unprotected homographs without semantic inference" {
+    const cases = [_][2][]const u8{
+        .{ "I fish fish that migrate", "I fish that migrate" },
+        .{ "I paint paint that dries quickly", "I paint that dries quickly" },
+        .{ "I hope hope is enough", "I hope is enough" },
+        .{ "I hope hope will prevail", "I hope will prevail" },
+        .{ "I use use to describe practical utility", "I use to describe practical utility" },
+        .{ "I spray spray to repel insects", "I spray to repel insects" },
+        .{ "I use use this way", "I use this way" },
+        .{ "I use use this year", "I use this year" },
+        .{ "I paint paint the old-fashioned way", "I paint the old-fashioned way" },
+        .{ "I paint paint the very unusual old-fashioned way", "I paint the very unusual old-fashioned way" },
+        .{ "I paint paint the \"old-fashioned\" way", "I paint the \"old-fashioned\" way" },
+        .{ "I use use this particular academic year", "I use this particular academic year" },
+        .{ "I spray spray a little while", "I spray a little while" },
+        .{ "I value value my parents taught me", "I value my parents taught me" },
+    };
+    for (cases) |case| try expectClean(case[0], case[1], &.{});
+    try expectClean("I value value my parents taught me", "I value value my parents taught me", &.{"value"});
+    try expectClean("I use use this tool", "I use this tool", &.{});
+    try expectClean("Is it expected expected to work", "Is it expected to work", &.{});
+}
+
+test "clean does not infer relative clause roles" {
+    const cases = [_][2][]const u8{
+        .{ "What happens happens for a reason", "What happens for a reason" },
+        .{ "Whatever happens happens for a reason", "Whatever happens for a reason" },
+        .{ "Whoever calls calls to ask for help", "Whoever calls to ask for help" },
+        .{ "What works works for everyone", "What works for everyone" },
+        .{ "Whatever remains remains in place", "Whatever remains in place" },
+    };
+    for (cases) |case| try expectClean(case[0], case[1], &.{});
+    try expectClean("What works works. I use use this", "What works. I use this", &.{});
+}
+
+test "clean uses glossary protection rather than guessing proper names" {
+    const cases = [_][2][]const u8{
+        .{ "Rose rose to leave", "Rose to leave" },
+        .{ "rose rose to leave", "rose to leave" },
+        .{ "Today Rose rose to leave", "Today Rose to leave" },
+        .{ "Mark mark the spot", "Mark the spot" },
+        .{ "Bora Bora is beautiful", "Bora is beautiful" },
+        .{ "Duran Duran are performing", "Duran are performing" },
+        .{ "Stop. Rose rose to leave", "Stop. Rose to leave" },
+        .{ "Use use this", "Use this" },
+        .{ "Rose rose rose to leave", "Rose to leave" },
+        .{ "I use Use for work", "I use for work" },
+        .{ "We listen to The The on repeat", "We listen to The on repeat" },
+        .{ "I use Use use this", "I use this" },
+    };
+    for (cases) |case| try expectClean(case[0], case[1], &.{});
+    try expectClean("Bora Bora is beautiful", "Bora Bora is beautiful", &.{"Bora Bora"});
+    try expectClean("I use use this", "I use this", &.{});
+    try expectClean("Please make make make this change", "Please make this change", &.{});
+}
+
+test "clean treats noun verb homographs and imperatives consistently" {
+    const cases = [_][2][]const u8{
+        .{ "The police police the area", "The police the area" },
+        .{ "Police police the area", "Police the area" },
+        .{ "The local police police the area", "The local police the area" },
+        .{ "The band band together", "The band together" },
+        .{ "The crowd crowd around the stage", "The crowd around the stage" },
+        .{ "Fish fish in shallow water", "Fish in shallow water" },
+        .{ "People people the planet", "People the planet" },
+        .{ "The fish fish in schools", "The fish in schools" },
+    };
+    for (cases) |case| try expectClean(case[0], case[1], &.{});
+    try expectClean("Make make make this change", "Make this change", &.{});
+    try expectClean("Please make make make this change", "Please make this change", &.{});
+    try expectClean("Please find find find the file", "Please find the file", &.{});
+    try expectClean("Please test test this change", "Please test this change", &.{});
+    try expectClean("This is the test test for clean mode", "This is the test for clean mode", &.{});
+    try expectClean("This is the test test test for clean mode", "This is the test for clean mode", &.{});
+}
+
+test "clean normalizes prepositions without guessing grammatical roles" {
+    const cases = [_][2][]const u8{
+        .{ "This is what I was looking for for years", "This is what I was looking for years" },
+        .{ "What did you put it in in the morning?", "What did you put it in the morning?" },
+        .{ "That is what I held on on Tuesday", "That is what I held on Tuesday" },
+        .{ "The person I spoke to to get help", "The person I spoke to get help" },
+        .{ "This is what I gave up up north", "This is what I gave up north" },
+        .{ "I was looking for, for years", "I was looking for years" },
+        .{ "Is this this person's book?", "Is this person's book?" },
+        .{ "Are these these people's belongings?", "Are these people's belongings?" },
+    };
+    for (cases) |case| try expectClean(case[0], case[1], &.{});
+    try expectClean("in in this room", "in this room", &.{});
+    try expectClean("We waited. In in this room", "We waited. In this room", &.{});
+    try expectClean("I I was looking for for years", "I was looking for years", &.{});
+}
+
+test "clean protects repeated letters beside other dictated letters and digits" {
+    const unchanged = [_][]const u8{
+        "spell a a b",      "spell g a a please", "spell g, a a please",
+        "a a 99",           "a a 2nd",            "i i 99",
+        "say g i i please",
+    };
+    for (unchanged) |text| try expectClean(text, text, &.{});
+    try expectClean("I I use this", "I use this", &.{});
+    try expectClean("I have a a problem", "I have a a problem", &.{});
+    try expectClean("use a a batteries", "use a a batteries", &.{});
+    try expectClean("I use a a batteries", "I use a a batteries", &.{});
+    try expectClean("insert a, a batteries", "insert a, a batteries", &.{});
+}
+
+test "clean normalizes unprotected pronouns regardless of clause position" {
+    const cases = [_][2][]const u8{
+        .{ "I told you you were wrong", "I told you were wrong" },
+        .{ "I assure you you can do it", "I assure you can do it" },
+        .{ "We warned you you would regret it", "We warned you would regret it" },
+        .{ "They convinced me me being there mattered", "They convinced me being there mattered" },
+        .{ "I told it it was wrong", "I told it was wrong" },
+        .{ "It is you you should ask", "It is you should ask" },
+        .{ "Are you you today?", "Are you today?" },
+        .{ "I told you, you were wrong", "I told you were wrong" },
+    };
+    for (cases) |case| try expectClean(case[0], case[1], &.{});
+    try expectClean("You you know", "You know", &.{});
+    try expectClean("I I I use this", "I use this", &.{});
+    try expectClean("um I I use this", "I use this", &.{});
+    try expectClean("Stop. You you know", "Stop. You know", &.{});
+    try expectClean("if you you know", "if you know", &.{});
+}
+
+test "clean protects listed emphasis words rather than inferring intent" {
+    const cases = [_][2][]const u8{
+        .{ "It happened long long ago", "It happened long ago" },
+        .{ "It lasted long long into the night", "It lasted long into the night" },
+        .{ "He traveled far far from home", "He traveled far from home" },
+        .{ "It lasted long long after midnight", "It lasted long after midnight" },
+        .{ "She stood close close by the door", "She stood close by the door" },
+        .{ "He went far far away", "He went far away" },
+        .{ "There were many many failures", "There were many many failures" },
+        .{ "Do you want coffee coffee, or a latte?", "Do you want coffee, or a latte?" },
+        .{ "Do you want coffee coffee and a croissant?", "Do you want coffee and a croissant?" },
+        .{ "I want coffee coffee this time", "I want coffee this time" },
+        .{ "She prefers tea tea or hot chocolate", "She prefers tea or hot chocolate" },
+        .{ "There were many many of them", "There were many many of them" },
+        .{ "a tiny tiny particle", "a tiny particle" },
+        .{ "a large large building", "a large building" },
+        .{ "deep deep underground", "deep underground" },
+        .{ "better better results", "better results" },
+        .{ "It was enormous enormous", "It was enormous" },
+        .{ "a bright, bright light", "a bright light" },
+        .{ "a tiny tiny tiny particle", "a tiny particle" },
+        .{ "long long. Another sentence", "long. Another sentence" },
+        .{ "use use", "use" },
+    };
+    for (cases) |case| try expectClean(case[0], case[1], &.{});
+    try expectClean("I I saw a tiny tiny particle", "I saw a tiny particle", &.{});
+    try expectClean("please test test this. It is expected expected to work", "please test this. It is expected to work", &.{});
+}
+
+test "clean preserves grammatical duplicates without disabling unrelated stutter cleanup" {
+    const grammatical = [_][]const u8{
+        "I gave her her book",
+        "Give her her keys",
+        "What it is is unclear",
+        "What it was was unclear",
+        "I do do that",
+        "They can can tomatoes",
+        "Her her book", // case changes and commas do not prove a stutter
+        "I gave her, her book",
+        "She had had enough",
+        "I know that that works",
+    };
+    for (grammatical) |text| try expectClean(text, text, &.{});
+    try expectClean("I I gave her her book. This is the test test of this feature", "I gave her her book. This is the test of this feature", &.{});
+}
+
+test "clean preserves ambiguous single repeats and boundaries" {
+    const unchanged = [_][]const u8{
+        "no no not not very very really really",
+        "she had had enough and said that that works",
+        "1 1 two two AB12 AB12 USE USE",
+        "use; use this",
+        "use: use this",
+        "use. use this",
+        "use\nuse this",
+        "USE, USE this",
+        "say `use use` and \"use use\"",
+        "use /tmp/use /tmp/use",
+        "use (use) this",
+    };
+    for (unchanged) |text| try expectClean(text, text, &.{});
+    try expectClean("use use this", "use use this", &.{"use"});
+    try expectClean("use use this", "use use this", &.{"use this"});
+}
+
+test "full dictation removes plain and comma separated stutters" {
+    try expectClean(
+        "I I use use this tool to work I use, use this tool to work. I use, use this tool to work I use use this tool to work",
+        "I use this tool to work I use this tool to work. I use this tool to work",
+        &.{},
+    );
+}
+
+test "clean combines stutters fillers and phrases without changing numbers" {
+    const source = "um I I use use the configuration and we should we should set 2 actually 3";
+    const expected = "I use the configuration and we should set 3";
+    try expectClean(source, expected, &.{});
+    try expectClean(expected, expected, &.{});
+    try expectClean("please use use these 2 files and one folder", "please use these 2 files and one folder", &.{});
+    try expectClean("use use", "use", &.{});
+    try expectClean("use", "use", &.{});
+    try expectClean("", "", &.{});
 }
 
 test "clean accepts only locally provable scalar backtracks" {

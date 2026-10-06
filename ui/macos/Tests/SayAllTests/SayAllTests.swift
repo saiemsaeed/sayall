@@ -1405,6 +1405,19 @@ final class ConfigurationLoaderTests: XCTestCase {
                 metricsEnabled: false, metricsHistoryMaxEntries: 12))
     }
 
+    func testExplicitSmartFormatOptOut() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let directory = home.appendingPathComponent("config/sayall")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        try Data(#"{"stt":{"api_key":"test","smart_format":false}}"#.utf8)
+            .write(to: directory.appendingPathComponent("config.json"))
+        let settings = try ConfigurationLoader(
+            environment: ["XDG_CONFIG_HOME": home.appendingPathComponent("config").path],
+            homeDirectory: home).load()
+        XCTAssertFalse(settings.smartFormat)
+    }
+
     func testEnvironmentOverridesAndReferences() throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let directory = home.appendingPathComponent("config/sayall")
@@ -1417,7 +1430,7 @@ final class ConfigurationLoaderTests: XCTestCase {
         XCTAssertEqual(try ConfigurationLoader(environment: environment, homeDirectory: home).load(),
             ProviderSettings(deepgramAPIKey: "resolved", deepgramModel: "nova-3", deepgramLanguage: "en",
                 deepgramRegion: "global", deepgramKeyterms: [],
-                smartFormat: false, punctuate: false, dictation: false, numerals: false, measurements: false,
+                smartFormat: true, punctuate: false, dictation: false, numerals: false, measurements: false,
                 streamingEnabled: true,
                 streamFinalizeTimeoutMs: 2_000, llmAPIKey: "override", llmModel: "gpt-oss-120b",
                 llmBaseURL: "https://api.cerebras.ai/v1/chat/completions", processingProfile: .verbatim,
