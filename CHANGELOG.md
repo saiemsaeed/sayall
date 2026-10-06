@@ -5,11 +5,34 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-10-06
+
 ### Added
 
 - Added `recording.stop_tail_ms` for the Linux and macOS manual-stop capture tail, defaulting
   to 10 ms. Set it from 0 (disabled) through 1000 ms; the tail never extends past
   the recording limit and is skipped for short taps, automatic stops, and shutdown.
+
+### Changed
+
+- Enabled Deepgram Smart Format by default on Linux and macOS, while preserving
+  explicit `smart_format: false` settings.
+- Simplified Clean repetition removal to collapse adjacent repeated prose words
+  by default, including contractions and filler-separated repetitions. Explicit
+  exceptions, quoted text, technical terms, glossary entries, numbers, and
+  dictated letters remain protected; Verbatim is unchanged. Intentional unlisted
+  repetition can lose meaning: use Verbatim or glossary protection when needed.
+- Enforced streaming transcription quality independently from REST results in
+  the release gate, with maximum WER 0.09 and CER 0.03.
+
+### Fixed
+
+- Preserved line boundaries during repeated-phrase cleanup and collapsed phrase
+  repetitions exposed by word or filler cleanup.
+- Anchored Linux recording limits to capture startup, including worker startup
+  time; macOS now also anchors its automatic-stop timer to capture startup.
+- Stopped reporting absent legacy Linux services as cleanup failures while
+  retaining visible errors for genuine cleanup or host restart failures.
 
 ## [0.3.2] - 2026-09-15
 
@@ -435,7 +458,8 @@ Initial release, tested and supported on x86-64 Arch Linux with Omarchy.
 - Persistent privacy-safe transcription metrics and microphone diagnostics.
 - systemd user services and Hyprland hotkey integration.
 
-[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/saiemsaeed/sayall/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/saiemsaeed/sayall/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/saiemsaeed/sayall/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/saiemsaeed/sayall/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/saiemsaeed/sayall/compare/v0.2.11...v0.3.0
