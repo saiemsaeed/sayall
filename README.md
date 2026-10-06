@@ -551,43 +551,25 @@ retain their legacy formatting behavior for this migration cycle. The legacy
 `llama-3.1-8b-instant` model remains syntactically accepted for that
 compatibility path but cannot be selected for Polished mode.
 
-Clean collapses adjacent repeated English prose words when the continuation
-supports a stutter: for example, `please test test this`, `is expected expected
-to work`, `you you know`, `I use, use this`, and `The the tool`. It preserves the first
-copy's spelling and the final copy's punctuation. This is a heuristic: use
-Verbatim when intentional repetition must be preserved exactly. It keeps ambiguous
-repetitions such as `no no`, `very very`, and `had had`, as well as repeated
-numeric digits and number words, acronyms, and mixed-case identifiers. Single-character
-repetitions are preserved (including `a a batteries`, which may mean AA), except
-for `I` in a supported pronoun context. Repeated `and`/`or` remain intact because
-they can name operators in unquoted technical prose. Grammatical
-duplicates involving `her` or auxiliary/copular verbs remain untouched (for
-example, `I gave her her book`, `what it is is unclear`, and `I do do that`), even
-when those words might instead be accidental stutters. Repeated pronouns,
-demonstratives, and prepositions are only collapsed in clause-start positions;
-grammatical overlaps such as `I told you you were wrong`, `is this this person's
-book`, and `looking for for years` remain intact. Clean also preserves
-repetitions after object-complement predicates in the same clause, such as
-`What makes you you?` or `I consider work work`. This contextual safeguard can
-leave genuine stutters untouched rather than risk deleting meaningful words.
-Determiner-led noun phrases and common bare noun/verb homographs are also
-protected, for example `The police police the area` and `Fish fish in schools`.
-Potential proper names and bare sentence-initial content-word repetitions are
-preserved (`Rose rose to leave`, `Bora Bora is beautiful`). This also means bare
-imperative stutters such as `Use use this` can remain unchanged; `I use use this`
-and `please use use this` have clearer context and are cleaned.
-Repeated content words before other content words or without a continuation
-remain intact, preserving productive emphasis such as `long long ago`,
-`tiny tiny particles`, and `many many failures`. Content-word stutters also
-require a predicate position (such as after a subject pronoun, auxiliary, or
-`please`); a conjunction does not authorize deleting contrastive repetitions
-like `coffee coffee, or a latte`. A following preposition alone
-also does not justify deletion (`far far from home`). Free-relative overlaps
-such as `What happens happens for a reason` remain intact. Some genuine stutters (such as
-an isolated `use use`) are therefore deliberately left unchanged.
-These rules do not cross sentence boundaries or line breaks, or edit quoted,
-technical, or glossary spans. These rules do not change `2` into `two`. Enable them with
-`"processing": { "mode": "clean" }`; Polished also uses this Clean stage.
+Clean collapses adjacent repeated English prose words by default, including
+standalone repetitions: `left left` → `left`, `right right` → `right`, and
+`I use, use this` → `I use this`. It preserves the first copy's spelling and
+final copy's punctuation, and handles repeats separated by removed fillers.
+No sentence-role, emphasis, or proper-name inference is performed.
+
+Explicit exceptions (defined in `stutterWord` in `daemon/llm/cleanup_engine.zig`)
+include `no`, `very`, `had`, `her`, auxiliary verbs, conjunctions `and`/`or`,
+quantifiers, and number words. Digits, acronyms, mixed-case identifiers, quoted,
+technical, and glossary spans remain protected. Single letters remain unchanged
+except `I`, which is still protected next to other dictated letters or digits.
+Repetition removal does not cross sentence boundaries or line breaks.
+
+**Clean is intentionally aggressive:** unlisted intentional repetitions can be
+shortened and meaning can change. For example, `Rose rose to leave` becomes
+`Rose to leave`, and `I value value my parents taught me` loses one `value`.
+Use Verbatim for exact preservation, or add literal terms/names to the glossary.
+Enable Clean with `"processing": { "mode": "clean" }`; Polished also uses this
+Clean stage. This does not change `2` into `two`.
 
 `hud.show_timer` defaults to `true` and displays recording duration as `mm:ss`.
 Set it to `false` for the centered recording layout without a timer or reserved

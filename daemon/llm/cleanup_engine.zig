@@ -99,7 +99,7 @@ fn countedListStart(tokens: []const Token, noun: usize) usize {
     return direct;
 }
 
-/// Deterministic conservative cleanup. The returned slice is allocator-owned.
+/// Deterministic local cleanup with explicit protections. The returned slice is allocator-owned.
 pub fn clean(gpa: Allocator, transcript: []const u8, glossary: []const []const u8) Error![]u8 {
     const tokens = tokenize(gpa, transcript) catch |err| switch (err) {
         error.TranscriptTooLarge => return gpa.dupe(u8, transcript),
@@ -130,14 +130,10 @@ pub fn clean(gpa: Allocator, transcript: []const u8, glossary: []const []const u
         if (deleted[i]) continue;
         const next_index = nextContextToken(transcript, tokens, omitted_fillers, i) orelse continue;
         const next = tokens[next_index];
-        const context_start = repetitionContextStart(transcript, tokens, omitted_fillers, i);
+        const context_start = if (t.text.len == 1) repetitionContextStart(transcript, tokens, omitted_fillers, i) else i;
         if (!protected[i] and !protected[next_index] and
             stutterWord(t.text) and stutterWord(next.text) and asciiEq(t.text, next.text) and
-            !objectComplementContext(transcript, tokens, context_start) and
-            !nominalSubjectContext(transcript, tokens, deleted, omitted_fillers, context_start) and
-            grammaticalStutterContext(transcript, tokens, deleted, context_start) and
             !spelledLetterContext(transcript, tokens, omitted_fillers, context_start) and
-            hasStutterContinuation(transcript, tokens, deleted, omitted_fillers, context_start) and
             tokenChunkStart(transcript, t) == t.start and
             tokenChunkStart(transcript, next) == next.start)
         {
@@ -629,66 +625,6 @@ fn repetitionContextEnd(source: []const u8, tokens: []const Token, omitted: []co
     return last;
 }
 
-fn functionWord(text: []const u8) bool {
-    for ([_][]const u8{ "i", "you", "we", "they", "he", "she", "it", "the", "a", "an", "this", "these", "those", "to", "of", "in", "for", "with", "and", "or" }) |word| {
-        if (asciiEq(text, word)) return true;
-    }
-    return false;
-}
-
-// An article/determiner-led noun phrase can end with the subject and begin
-// its predicate with the same spelling ("the police police", "the band band
-// together"). A directly preceding copula instead establishes a predicate
-// nominal ("this is the test test for ..."). Preserve uncertain noun phrases.
-fn nominalSubjectContext(source: []const u8, tokens: []const Token, deleted: []const bool, omitted: []const bool, index: usize) bool {
-    // A name may be the second copy ("I use Use for work"), or even two
-    // function words (the band "The The"). Inspect the whole source run.
-    var capitals: usize = 0;
-    var last = index;
-    while (true) {
-        if (tokens[last].text.len > 1 and std.ascii.isUpper(tokens[last].text[0])) {
-            // A later capital can begin a title: "the The Office finale".
-            if (last != index) return true;
-            capitals += 1;
-        }
-        const next = nextContextToken(source, tokens, omitted, last) orelse break;
-        if (!asciiEq(tokens[index].text, tokens[next].text)) break;
-        last = next;
-    }
-    const is_function = functionWord(tokens[index].text);
-    if (capitals >= (if (is_function) @as(usize, 2) else @as(usize, 1))) return true;
-    if (is_function) return false;
-    // Without a subject/verb context, a bare run may begin with a noun or
-    // proper name, not a stutter ("Rose rose to leave"). Capitalized content
-    // words elsewhere may be names too. Do not guess them away.
-    if (index == 0) return true;
-    for (source[tokens[index - 1].end..tokens[index].start]) |c| {
-        if (std.mem.indexOfScalar(u8, ".?!;:\n\r", c) != null) return true;
-    }
-    // Zero-marked plural nouns also occur as bare subjects without articles.
-    for ([_][]const u8{ "police", "people", "fish", "buffalo", "staff", "crew" }) |word| if (asciiEq(tokens[index].text, word)) return true;
-    var i = index;
-    while (i > 0) {
-        i -= 1;
-        for (source[tokens[i].end..tokens[i + 1].start]) |c| {
-            if (std.mem.indexOfScalar(u8, ".?!;:\n\r", c) != null) return false;
-        }
-        if (copula(tokens[i].text)) return false;
-        for ([_][]const u8{ "and", "or", "but", "i", "you", "he", "she", "it", "we", "they" }) |boundary| if (asciiEq(tokens[i].text, boundary)) return false;
-        for ([_][]const u8{ "the", "a", "an", "this", "that", "these", "those", "my", "your", "our", "their", "his", "her", "its" }) |word| {
-            if (asciiEq(tokens[i].text, word)) {
-                const previous = previousContextToken(source, tokens, deleted, i) orelse return true;
-                return !copula(tokens[previous].text);
-            }
-        }
-    }
-    return false;
-}
-fn copula(word: []const u8) bool {
-    for ([_][]const u8{ "am", "is", "are", "was", "were", "be", "been", "being" }) |value| if (asciiEq(word, value)) return true;
-    return false;
-}
-
 // Lowercase a/i can be articles/pronouns or literal letters. Preserve a run
 // adjacent to another letter or a digit token so spelling "g a a" or "a a 9"
 // is never mistaken for a prose stutter.
@@ -708,103 +644,6 @@ fn commaOrSpaceGap(source: []const u8, left: Token, right: Token) bool {
     const end = tokenChunkEnd(source, left);
     const suffix = source[left.end..end];
     return (suffix.len == 0 or std.mem.eql(u8, suffix, ",")) and horizontalGap(source[end..right.start]);
-}
-
-// A closed-class word can straddle two grammatical roles: object/subject
-// ("I told you you ..."), subject/determiner ("Is this this ..."), or a
-// phrasal-verb particle and preposition ("looking for for years"). Collapse
-// these only at a clause start, not after an arbitrary preceding verb. Use
-// the original run start so triple stutters keep the same decision.
-fn grammaticalStutterContext(source: []const u8, tokens: []const Token, deleted: []const bool, index: usize) bool {
-    for ([_][]const u8{ "me", "him", "her", "us", "them" }) |word| if (asciiEq(tokens[index].text, word)) return false;
-    var ambiguous_role = false;
-    for ([_][]const u8{
-        "i",    "you",   "he",      "she",    "it",     "we",     "they",   "this",       "these",   "those",
-        "to",   "of",    "in",      "on",     "at",     "by",     "for",    "from",       "with",    "off",
-        "out",  "up",    "down",    "over",   "under",  "about",  "after",  "before",     "through", "into",
-        "onto", "until", "during",  "around", "beside", "near",   "within", "without",    "toward",  "towards",
-        "upon", "via",   "against", "along",  "across", "behind", "beyond", "underneath", "despite",
-    }) |word| ambiguous_role = ambiguous_role or asciiEq(tokens[index].text, word);
-    if (!ambiguous_role) return true;
-    var previous = index;
-    while (previous > 0) {
-        previous -= 1;
-        if (deleted[previous]) continue;
-        for (source[tokens[previous].end..tokens[index].start]) |c| {
-            if (std.mem.indexOfScalar(u8, ".?!;:\n\r", c) != null) return true;
-        }
-        for ([_][]const u8{ "and", "or", "but", "if", "when", "while", "because", "although", "unless", "that", "whether", "since", "until", "where" }) |word| {
-            if (asciiEq(tokens[previous].text, word)) return true;
-        }
-        return false;
-    }
-    return true;
-}
-
-// Repeated open-class words before another content word can be productive
-// emphasis, regardless of vocabulary: "long long ago", "tiny tiny particles",
-// "many many failures". An isolated/trailing run is ambiguous too. Only edit
-// when the run continues into a grammatical connector/determiner, or when the
-// repeated word itself is a closed-class function word. Missing a stutter is
-// preferable to assuming that every unknown adjective/adverb is a stutter.
-fn hasStutterContinuation(source: []const u8, tokens: []const Token, deleted: []const bool, omitted: []const bool, index: usize) bool {
-    const last = repetitionContextEnd(source, tokens, omitted, index);
-    const continuation = nextContextToken(source, tokens, deleted, last) orelse return false;
-    if (questionSubject(tokens[index].text) and clauseContains(source, tokens, continuation, &.{
-        "alone",      "only",       "myself",       "yourself",     "yourselves", "ourselves", "himself", "herself", "itself", "themselves",
-        "personally", "especially", "particularly", "specifically",
-    })) return false;
-    if (functionWord(tokens[index].text)) return true;
-    // A following preposition alone cannot distinguish a stutter from an
-    // emphatic modifier ("far far from", "long long into"). A directly
-    // copular determiner-led nominal supplies a narrower noun context.
-    const previous = previousContextToken(source, tokens, deleted, index);
-    const before_previous = if (previous) |p| previousContextToken(source, tokens, deleted, p) else null;
-    if (before_previous != null and copula(tokens[before_previous.?].text)) {
-        for ([_][]const u8{ "the", "a", "an" }) |article| {
-            if (!asciiEq(tokens[previous.?].text, article)) continue;
-            for ([_][]const u8{ "for", "of", "in", "on", "at", "with", "from", "by" }) |prep| {
-                if (asciiEq(tokens[continuation].text, prep)) return true;
-            }
-        }
-    }
-    // Content-word repetitions need a predicate position as well as a
-    // continuation. Connectors alone do not prove a stutter ("want coffee
-    // coffee, or a latte", "want coffee coffee this time").
-    if (!predicatePosition(source, tokens, deleted, index)) return false;
-    // An infinitive can follow a nominal object ("use use to describe").
-    // Retain it unless a copula establishes the repeated predicate instead.
-    if (asciiEq(tokens[continuation].text, "to")) return copularPredicatePosition(source, tokens, deleted, index);
-    // Modifiers can intervene before an adjunct head ("the old-fashioned
-    // way"). Conservatively inspect the remainder of this source clause,
-    // rather than guessing how many adjectives its noun phrase contains.
-    var noun = continuation + 1;
-    while (noun < tokens.len) : (noun += 1) {
-        var boundary = false;
-        for (source[tokens[noun - 1].end..tokens[noun].start]) |c| {
-            boundary = boundary or std.mem.indexOfScalar(u8, ".?!;:\n\r", c) != null;
-        }
-        if (boundary) break;
-        for ([_][]const u8{ "time", "times", "way", "ways", "day", "days", "week", "weeks", "month", "months", "year", "years", "morning", "afternoon", "evening", "night", "season", "semester", "hour", "hours", "minute", "minutes", "second", "seconds", "moment", "moments", "while", "period", "occasion" }) |adjunct| {
-            if (asciiEq(tokens[noun].text, adjunct)) return false;
-        }
-    }
-    // A relative "that" or an auxiliary can instead follow a same-spelled
-    // object/embedded subject: "paint paint that dries", "hope hope is ...".
-    for ([_][]const u8{ "the", "a", "an", "this", "these", "those", "my", "your", "our", "their", "his", "her", "its" }) |word| {
-        if (asciiEq(tokens[continuation].text, word)) return true;
-    }
-    return false;
-}
-
-fn clauseContains(source: []const u8, tokens: []const Token, start: usize, words: []const []const u8) bool {
-    for (tokens[start..], start..) |token, index| {
-        if (index > 0) for (source[tokens[index - 1].end..token.start]) |c| {
-            if (std.mem.indexOfScalar(u8, ".?!;:\n\r", c) != null) return false;
-        };
-        for (words) |word| if (asciiEq(token.text, word)) return true;
-    }
-    return false;
 }
 
 fn nextContextToken(source: []const u8, tokens: []const Token, deleted: []const bool, index: usize) ?usize {
@@ -830,72 +669,13 @@ fn previousContextToken(source: []const u8, tokens: []const Token, deleted: []co
     return null;
 }
 
-fn copularPredicatePosition(source: []const u8, tokens: []const Token, deleted: []const bool, index: usize) bool {
-    const previous = previousContextToken(source, tokens, deleted, index) orelse return false;
-    if (copula(tokens[previous].text)) return true;
-    const before = previousContextToken(source, tokens, deleted, previous) orelse return false;
-    if (!copula(tokens[before].text)) return false;
-    if (questionSubject(tokens[previous].text)) return true;
-    for ([_][]const u8{ "this", "that", "these", "those" }) |subject| if (asciiEq(tokens[previous].text, subject)) return true;
-    return false;
-}
-
-fn predicatePosition(source: []const u8, tokens: []const Token, deleted: []const bool, index: usize) bool {
-    const previous = previousContextToken(source, tokens, deleted, index) orelse return false;
-    for ([_][]const u8{
-        "i",    "you",   "we",     "they", "he",    "she", "it",    "please", "to",
-        "am",   "is",    "are",    "was",  "were",  "be",  "been",  "being",  "have",
-        "has",  "had",   "do",     "does", "did",   "can", "could", "may",    "might",
-        "must", "shall", "should", "will", "would",
-    }) |cue| if (asciiEq(tokens[previous].text, cue)) return true;
-    const before_previous = previousContextToken(source, tokens, deleted, previous) orelse return false;
-    if (copula(tokens[before_previous].text)) {
-        for ([_][]const u8{ "this", "that", "these", "those" }) |subject| if (asciiEq(tokens[previous].text, subject)) return true;
-    }
-    return false;
-}
-
-// A preceding object-complement predicate or free-relative marker is
-// evidence that identical words may have different roles ("makes you you", "consider work work"). Preserve
-// repetitions throughout that clause, including coordinated complements,
-// rather than adding the particular repeated nouns/pronouns to an exception
-// list. This intentionally favors missed stutters over deleting meaning.
-fn objectComplementContext(source: []const u8, tokens: []const Token, index: usize) bool {
-    var i = index;
-    while (i > 0) {
-        i -= 1;
-        for (source[tokens[i].end..tokens[i + 1].start]) |c| {
-            if (std.mem.indexOfScalar(u8, ".?!;:\n\r", c) != null) return false;
-        }
-        if (tokens[i].protected) return false;
-        for ([_][]const u8{
-            "what",      "whatever",   "whoever",     "whichever", "whomever",
-            "make",      "makes",      "made",        "making",    "consider",
-            "considers", "considered", "considering", "call",      "calls",
-            "called",    "calling",    "find",        "finds",     "found",
-            "finding",   "deem",       "deems",       "deemed",    "deeming",
-            "declare",   "declares",   "declared",    "declaring", "label",
-            "labels",    "labeled",    "labelled",    "labeling",  "labelling",
-            "name",      "names",      "named",       "naming",    "keep",
-            "keeps",     "kept",       "keeping",     "leave",     "leaves",
-            "left",      "leaving",    "render",      "renders",   "rendered",
-            "rendering", "prove",      "proves",      "proved",    "proven",
-            "proving",   "judge",      "judges",      "judged",    "judging",
-            "elect",     "elects",     "elected",     "electing",  "appoint",
-            "appoints",  "appointed",  "appointing",  "think",     "thinks",
-            "thought",   "thinking",
-        }) |verb| if (asciiEq(tokens[i].text, verb)) return true;
-    }
-    return false;
-}
-
 fn stutterWord(text: []const u8) bool {
     // This is an English prose heuristic, not inference of speaker intent.
     // Keep digits, identifiers, acronyms, and spelled-out letter sequences.
     if (!asciiLetters(text)) return false;
     // "a a batteries" can be AA, not a repeated article. A neighboring
     // third letter is not required for this ambiguity. Only the pronoun I
-    // remains eligible, subject to the clause/spelling context safeguards.
+    // remains eligible, subject to the spelling safeguard.
     if (text.len == 1) return asciiEq(text, "i");
     for (text[1..]) |c| if (std.ascii.isUpper(c)) return false;
     // Object/possessive "her" and auxiliary/copular verbs can legitimately
@@ -910,9 +690,9 @@ fn stutterWord(text: []const u8) bool {
         // "both and and or operators". Keep this closed class ambiguous.
         "and", "or",
     }) |word| if (asciiEq(text, word)) return false;
-    // Meaningful emphasis, grammatical repetitions, and spoken numeric values
-    // must not be silently collapsed. Quotes and glossary spans are protected
-    // separately by the caller.
+    // Explicit emphasis, grammatical, and numeric exceptions. No inference
+    // of unlisted intentional repetitions is attempted. Quotes and glossary
+    // spans are protected separately by the caller.
     for ([_][]const u8{
         "no",      "not",     "never",    "yes",      "very",     "really",  "so",      "too",       "more",     "less",
         "much",    "quite",   "that",     "had",      "bye",      "go",      "hear",    "knock",     "bang",     "zero",
@@ -1184,6 +964,20 @@ test "clean repetition is exact adjacent and at least two tokens" {
     try expectClean("go to, go to work", "go to, go to work", &.{});
 }
 
+test "clean collapses standalone repeats without needing sentence context" {
+    const cases = [_][2][]const u8{
+        .{ "left left", "left" },           .{ "right right", "right" },
+        .{ "Left left", "Left" },           .{ "left, left.", "left." },
+        .{ "left left left left", "left" }, .{ "right right!", "right!" },
+        .{ "left um left", "left" },        .{ "test test", "test" },
+    };
+    for (cases) |case| try expectClean(case[0], case[1], &.{});
+    try expectClean("left left", "left left", &.{"left"});
+    try expectClean("say \"left left\"", "say \"left left\"", &.{});
+    try expectClean("left. left", "left. left", &.{});
+    try expectClean("left\nleft", "left\nleft", &.{});
+}
+
 test "clean collapses common single word stutters and preserves final punctuation" {
     try expectClean("I I use use this", "I use this", &.{});
     try expectClean("please use use use this.", "please use this.", &.{});
@@ -1205,12 +999,12 @@ test "clean stutter context skips removed fillers without crossing sentence boun
     try expectClean("I um use use uh this", "I use this", &.{});
     try expectClean("please test test uh the change", "please test the change", &.{});
     try expectClean("I use use, um this", "I use, this", &.{});
-    try expectClean("I use use um. this", "I use use this", &.{});
+    try expectClean("I use use um. this", "I use this", &.{});
     try expectClean("Is um this uh expected expected to work", "Is this expected to work", &.{});
     try expectClean("This is um the test test for cleanup", "This is the test for cleanup", &.{});
     try expectClean("This is the um test test for cleanup", "This is the test for cleanup", &.{});
-    try expectClean("I. um use use this", "I. use use this", &.{});
-    try expectClean("I um. use use this", "I use use this", &.{});
+    try expectClean("I. um use use this", "I. use this", &.{});
+    try expectClean("I um. use use this", "I use this", &.{});
 }
 
 test "clean joins repetitions exposed by filler deletion with source boundaries intact" {
@@ -1219,11 +1013,12 @@ test "clean joins repetitions exposed by filler deletion with source boundaries 
     try expectClean("I use, um, use this", "I use this", &.{});
     try expectClean("I use um. use this", "I use use this", &.{});
     try expectClean("I use um\nuse this", "I use\nuse this", &.{});
-    try expectClean("Rose um rose rose to leave", "Rose rose rose to leave", &.{});
-    try expectClean("I use um Use use this", "I use Use use this", &.{});
+    try expectClean("Rose um rose rose to leave", "Rose to leave", &.{});
+    try expectClean("I use um Use use this", "I use this", &.{});
     try expectClean("I use um use this", "I use use this", &.{"use"});
-    try expectClean("I watched the The Office finale", "I watched the The Office finale", &.{});
-    try expectClean("I watched the um The Office finale", "I watched the The Office finale", &.{});
+    try expectClean("I watched the The Office finale", "I watched the Office finale", &.{});
+    try expectClean("I watched the um The Office finale", "I watched the Office finale", &.{});
+    try expectClean("I watched the The Office finale", "I watched the The Office finale", &.{"The Office"});
     try expectClean("The um the tool", "The tool", &.{});
 }
 
@@ -1259,37 +1054,37 @@ test "clean collapses ordinary words beyond the original allowlist" {
     for (protected) |text| try expectClean(text, text, &.{});
 }
 
-test "clean protects object complements by clause context rather than repeated word identity" {
-    const unchanged = [_][]const u8{
-        "What makes you you?",
-        "I consider work work",
-        "What really makes you you every day?",
-        "They considered work work and play play",
-        "I call a test test",
-        "We find work work even on weekends",
-        "They MADE you you",
-        "Keep work work",
-        "I consider work, work",
+test "clean uses explicit exceptions rather than object complement inference" {
+    const cases = [_][2][]const u8{
+        .{ "What makes you you?", "What makes you?" },
+        .{ "I consider work work", "I consider work" },
+        .{ "What really makes you you every day?", "What really makes you every day?" },
+        .{ "They considered work work and play play", "They considered work and play" },
+        .{ "I call a test test", "I call a test" },
+        .{ "We find work work even on weekends", "We find work even on weekends" },
+        .{ "They MADE you you", "They MADE you" },
+        .{ "Keep work work", "Keep work" },
+        .{ "I consider work, work", "I consider work" },
     };
-    for (unchanged) |text| try expectClean(text, text, &.{});
-    // The same words still collapse without evidence of a complement, and
-    // a predicate in an earlier sentence/line cannot inhibit later cleanup.
-    try expectClean("you you know work work starts now", "you know work work starts now", &.{});
+    for (cases) |case| try expectClean(case[0], case[1], &.{});
+    try expectClean("you you know work work starts now", "you know work starts now", &.{});
     try expectClean("Consider this. Please test test this", "Consider this. Please test this", &.{});
     try expectClean("Consider this\nplease test test this", "Consider this\nplease test this", &.{});
-    try expectClean("I use use this and consider work work", "I use this and consider work work", &.{});
+    try expectClean("I use use this and consider work work", "I use this and consider work", &.{});
     try expectClean("Can you make make this?", "Can you make this?", &.{});
 }
 
-test "clean preserves pronoun focus through its source clause" {
-    const unchanged = [_][]const u8{
-        "You, you alone can fix this",
-        "I I myself will do it",
-        "You you are the only one who can help",
-        "We we personally approved this",
+test "clean does not infer pronoun focus from nearby words" {
+    const cases = [_][2][]const u8{
+        .{ "You, you alone can fix this", "You alone can fix this" },
+        .{ "I I myself will do it", "I myself will do it" },
+        .{ "You you are the only one who can help", "You are the only one who can help" },
+        .{ "We we personally approved this", "We personally approved this" },
+        .{ "I I think this is only a test", "I think this is only a test" },
+        .{ "I I typed \"only\"", "I typed \"only\"" },
     };
-    for (unchanged) |text| try expectClean(text, text, &.{});
-    try expectClean("I um I alone can do it", "I I alone can do it", &.{});
+    for (cases) |case| try expectClean(case[0], case[1], &.{});
+    try expectClean("I um I alone can do it", "I alone can do it", &.{});
     try expectClean("you you know this", "you know this", &.{});
     try expectClean("I I use this. You alone can fix that", "I use this. You alone can fix that", &.{});
 }
@@ -1307,60 +1102,75 @@ test "clean preserves unquoted conjunction names and protected uniform runs" {
     for (unchanged) |text| try expectClean(text, text, &.{});
 }
 
-test "clean preserves verb object homographs before relative and embedded clauses" {
-    const unchanged = [_][]const u8{
-        "I fish fish that migrate",
-        "I paint paint that dries quickly",
-        "I hope hope is enough",
-        "I hope hope will prevail",
-        "I use use to describe practical utility",
-        "I spray spray to repel insects",
-        "I use use this way",
-        "I use use this year",
-        "I paint paint the old-fashioned way",
-        "I paint paint the very unusual old-fashioned way",
-        "I paint paint the \"old-fashioned\" way",
-        "I use use this particular academic year",
-        "I spray spray a little while",
+test "clean normalizes unprotected homographs without semantic inference" {
+    const cases = [_][2][]const u8{
+        .{ "I fish fish that migrate", "I fish that migrate" },
+        .{ "I paint paint that dries quickly", "I paint that dries quickly" },
+        .{ "I hope hope is enough", "I hope is enough" },
+        .{ "I hope hope will prevail", "I hope will prevail" },
+        .{ "I use use to describe practical utility", "I use to describe practical utility" },
+        .{ "I spray spray to repel insects", "I spray to repel insects" },
+        .{ "I use use this way", "I use this way" },
+        .{ "I use use this year", "I use this year" },
+        .{ "I paint paint the old-fashioned way", "I paint the old-fashioned way" },
+        .{ "I paint paint the very unusual old-fashioned way", "I paint the very unusual old-fashioned way" },
+        .{ "I paint paint the \"old-fashioned\" way", "I paint the \"old-fashioned\" way" },
+        .{ "I use use this particular academic year", "I use this particular academic year" },
+        .{ "I spray spray a little while", "I spray a little while" },
+        .{ "I value value my parents taught me", "I value my parents taught me" },
     };
-    for (unchanged) |text| try expectClean(text, text, &.{});
+    for (cases) |case| try expectClean(case[0], case[1], &.{});
+    try expectClean("I value value my parents taught me", "I value value my parents taught me", &.{"value"});
     try expectClean("I use use this tool", "I use this tool", &.{});
     try expectClean("Is it expected expected to work", "Is it expected to work", &.{});
 }
 
-test "clean preserves free relative subject predicate overlaps" {
-    const unchanged = [_][]const u8{
-        "What happens happens for a reason",
-        "Whatever happens happens for a reason",
-        "Whoever calls calls to ask for help",
-        "What works works for everyone",
-        "Whatever remains remains in place",
+test "clean does not infer relative clause roles" {
+    const cases = [_][2][]const u8{
+        .{ "What happens happens for a reason", "What happens for a reason" },
+        .{ "Whatever happens happens for a reason", "Whatever happens for a reason" },
+        .{ "Whoever calls calls to ask for help", "Whoever calls to ask for help" },
+        .{ "What works works for everyone", "What works for everyone" },
+        .{ "Whatever remains remains in place", "Whatever remains in place" },
     };
-    for (unchanged) |text| try expectClean(text, text, &.{});
-    try expectClean("What works works. I use use this", "What works works. I use this", &.{});
+    for (cases) |case| try expectClean(case[0], case[1], &.{});
+    try expectClean("What works works. I use use this", "What works. I use this", &.{});
 }
 
-test "clean preserves proper name verb repetitions and bare subject ambiguity" {
-    const unchanged = [_][]const u8{
-        "Rose rose to leave",       "rose rose to leave",             "Today Rose rose to leave",
-        "Mark mark the spot",       "Bora Bora is beautiful",         "Duran Duran are performing",
-        "Stop. Rose rose to leave", "Use use this",                   "Rose rose rose to leave",
-        "I use Use for work",       "We listen to The The on repeat", "I use Use use this",
+test "clean uses glossary protection rather than guessing proper names" {
+    const cases = [_][2][]const u8{
+        .{ "Rose rose to leave", "Rose to leave" },
+        .{ "rose rose to leave", "rose to leave" },
+        .{ "Today Rose rose to leave", "Today Rose to leave" },
+        .{ "Mark mark the spot", "Mark the spot" },
+        .{ "Bora Bora is beautiful", "Bora is beautiful" },
+        .{ "Duran Duran are performing", "Duran are performing" },
+        .{ "Stop. Rose rose to leave", "Stop. Rose to leave" },
+        .{ "Use use this", "Use this" },
+        .{ "Rose rose rose to leave", "Rose to leave" },
+        .{ "I use Use for work", "I use for work" },
+        .{ "We listen to The The on repeat", "We listen to The on repeat" },
+        .{ "I use Use use this", "I use this" },
     };
-    for (unchanged) |text| try expectClean(text, text, &.{});
+    for (cases) |case| try expectClean(case[0], case[1], &.{});
+    try expectClean("Bora Bora is beautiful", "Bora Bora is beautiful", &.{"Bora Bora"});
     try expectClean("I use use this", "I use this", &.{});
     try expectClean("Please make make make this change", "Please make this change", &.{});
 }
 
-test "clean preserves noun verb homographs and still removes imperative stutters" {
-    const unchanged = [_][]const u8{
-        "The police police the area",       "Police police the area",
-        "The local police police the area", "The band band together",
-        "The crowd crowd around the stage", "Fish fish in shallow water",
-        "People people the planet",         "The fish fish in schools",
+test "clean treats noun verb homographs and imperatives consistently" {
+    const cases = [_][2][]const u8{
+        .{ "The police police the area", "The police the area" },
+        .{ "Police police the area", "Police the area" },
+        .{ "The local police police the area", "The local police the area" },
+        .{ "The band band together", "The band together" },
+        .{ "The crowd crowd around the stage", "The crowd around the stage" },
+        .{ "Fish fish in shallow water", "Fish in shallow water" },
+        .{ "People people the planet", "People the planet" },
+        .{ "The fish fish in schools", "The fish in schools" },
     };
-    for (unchanged) |text| try expectClean(text, text, &.{});
-    try expectClean("Make make make this change", "Make make make this change", &.{});
+    for (cases) |case| try expectClean(case[0], case[1], &.{});
+    try expectClean("Make make make this change", "Make this change", &.{});
     try expectClean("Please make make make this change", "Please make this change", &.{});
     try expectClean("Please find find find the file", "Please find the file", &.{});
     try expectClean("Please test test this change", "Please test this change", &.{});
@@ -1368,21 +1178,21 @@ test "clean preserves noun verb homographs and still removes imperative stutters
     try expectClean("This is the test test test for clean mode", "This is the test for clean mode", &.{});
 }
 
-test "clean preserves particles and prepositions across grammatical boundaries" {
-    const unchanged = [_][]const u8{
-        "This is what I was looking for for years",
-        "What did you put it in in the morning?",
-        "That is what I held on on Tuesday",
-        "The person I spoke to to get help",
-        "This is what I gave up up north",
-        "I was looking for, for years",
-        "Is this this person's book?",
-        "Are these these people's belongings?",
+test "clean normalizes prepositions without guessing grammatical roles" {
+    const cases = [_][2][]const u8{
+        .{ "This is what I was looking for for years", "This is what I was looking for years" },
+        .{ "What did you put it in in the morning?", "What did you put it in the morning?" },
+        .{ "That is what I held on on Tuesday", "That is what I held on Tuesday" },
+        .{ "The person I spoke to to get help", "The person I spoke to get help" },
+        .{ "This is what I gave up up north", "This is what I gave up north" },
+        .{ "I was looking for, for years", "I was looking for years" },
+        .{ "Is this this person's book?", "Is this person's book?" },
+        .{ "Are these these people's belongings?", "Are these people's belongings?" },
     };
-    for (unchanged) |text| try expectClean(text, text, &.{});
+    for (cases) |case| try expectClean(case[0], case[1], &.{});
     try expectClean("in in this room", "in this room", &.{});
     try expectClean("We waited. In in this room", "We waited. In this room", &.{});
-    try expectClean("I I was looking for for years", "I was looking for for years", &.{});
+    try expectClean("I I was looking for for years", "I was looking for years", &.{});
 }
 
 test "clean protects repeated letters beside other dictated letters and digits" {
@@ -1399,18 +1209,18 @@ test "clean protects repeated letters beside other dictated letters and digits" 
     try expectClean("insert a, a batteries", "insert a, a batteries", &.{});
 }
 
-test "clean preserves pronouns shared across complement clauses" {
-    const unchanged = [_][]const u8{
-        "I told you you were wrong",
-        "I assure you you can do it",
-        "We warned you you would regret it",
-        "They convinced me me being there mattered",
-        "I told it it was wrong",
-        "It is you you should ask",
-        "Are you you today?",
-        "I told you, you were wrong",
+test "clean normalizes unprotected pronouns regardless of clause position" {
+    const cases = [_][2][]const u8{
+        .{ "I told you you were wrong", "I told you were wrong" },
+        .{ "I assure you you can do it", "I assure you can do it" },
+        .{ "We warned you you would regret it", "We warned you would regret it" },
+        .{ "They convinced me me being there mattered", "They convinced me being there mattered" },
+        .{ "I told it it was wrong", "I told it was wrong" },
+        .{ "It is you you should ask", "It is you should ask" },
+        .{ "Are you you today?", "Are you today?" },
+        .{ "I told you, you were wrong", "I told you were wrong" },
     };
-    for (unchanged) |text| try expectClean(text, text, &.{});
+    for (cases) |case| try expectClean(case[0], case[1], &.{});
     try expectClean("You you know", "You know", &.{});
     try expectClean("I I I use this", "I use this", &.{});
     try expectClean("um I I use this", "I use this", &.{});
@@ -1418,32 +1228,32 @@ test "clean preserves pronouns shared across complement clauses" {
     try expectClean("if you you know", "if you know", &.{});
 }
 
-test "clean preserves productive emphasis without an adjective vocabulary" {
-    const unchanged = [_][]const u8{
-        "It happened long long ago",
-        "It lasted long long into the night",
-        "He traveled far far from home",
-        "It lasted long long after midnight",
-        "She stood close close by the door",
-        "He went far far away",
-        "There were many many failures",
-        "Do you want coffee coffee, or a latte?",
-        "Do you want coffee coffee and a croissant?",
-        "I want coffee coffee this time",
-        "She prefers tea tea or hot chocolate",
-        "There were many many of them",
-        "a tiny tiny particle",
-        "a large large building",
-        "deep deep underground",
-        "better better results",
-        "It was enormous enormous",
-        "a bright, bright light",
-        "a tiny tiny tiny particle",
-        "long long. Another sentence",
-        "use use",
+test "clean protects listed emphasis words rather than inferring intent" {
+    const cases = [_][2][]const u8{
+        .{ "It happened long long ago", "It happened long ago" },
+        .{ "It lasted long long into the night", "It lasted long into the night" },
+        .{ "He traveled far far from home", "He traveled far from home" },
+        .{ "It lasted long long after midnight", "It lasted long after midnight" },
+        .{ "She stood close close by the door", "She stood close by the door" },
+        .{ "He went far far away", "He went far away" },
+        .{ "There were many many failures", "There were many many failures" },
+        .{ "Do you want coffee coffee, or a latte?", "Do you want coffee, or a latte?" },
+        .{ "Do you want coffee coffee and a croissant?", "Do you want coffee and a croissant?" },
+        .{ "I want coffee coffee this time", "I want coffee this time" },
+        .{ "She prefers tea tea or hot chocolate", "She prefers tea or hot chocolate" },
+        .{ "There were many many of them", "There were many many of them" },
+        .{ "a tiny tiny particle", "a tiny particle" },
+        .{ "a large large building", "a large building" },
+        .{ "deep deep underground", "deep underground" },
+        .{ "better better results", "better results" },
+        .{ "It was enormous enormous", "It was enormous" },
+        .{ "a bright, bright light", "a bright light" },
+        .{ "a tiny tiny tiny particle", "a tiny particle" },
+        .{ "long long. Another sentence", "long. Another sentence" },
+        .{ "use use", "use" },
     };
-    for (unchanged) |text| try expectClean(text, text, &.{});
-    try expectClean("I I saw a tiny tiny particle", "I saw a tiny tiny particle", &.{});
+    for (cases) |case| try expectClean(case[0], case[1], &.{});
+    try expectClean("I I saw a tiny tiny particle", "I saw a tiny particle", &.{});
     try expectClean("please test test this. It is expected expected to work", "please test this. It is expected to work", &.{});
 }
 
@@ -1497,7 +1307,7 @@ test "clean combines stutters fillers and phrases without changing numbers" {
     try expectClean(source, expected, &.{});
     try expectClean(expected, expected, &.{});
     try expectClean("please use use these 2 files and one folder", "please use these 2 files and one folder", &.{});
-    try expectClean("use use", "use use", &.{});
+    try expectClean("use use", "use", &.{});
     try expectClean("use", "use", &.{});
     try expectClean("", "", &.{});
 }
